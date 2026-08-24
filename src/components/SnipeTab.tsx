@@ -32,6 +32,7 @@ import {
 } from "../lib/rpcBlast";
 import { waitUntil } from "../lib/snipeTimer";
 import { Steps, TxLink, type StepView } from "./Bits";
+import RemoteRunner from "./RemoteRunner";
 
 interface SnipeTarget {
   address: `0x${string}`;
@@ -768,6 +769,15 @@ export default function SnipeTab() {
           </div>
         </div>
       ) : null}
+
+      <RemoteRunner
+        collection={target?.address}
+        stage={stage}
+        quantity={quantity}
+        gas={{ maxFeeGwei, tipGwei, limit: Number(gasLimitStr) || 250000 }}
+        extraRpcs={extraRpcText.split("\n").map((l) => l.trim()).filter(Boolean)}
+        timing={timing}
+      />
 
       {phase === "firing" && countdownMs !== null ? (
         <div className="panel">

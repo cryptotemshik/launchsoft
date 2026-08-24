@@ -1347,6 +1347,23 @@ tr.project-detail td {
   }
 }
 
+/* Remote runner log tail. */
+.runner-log {
+  margin: 12px 0 0;
+  padding: 12px;
+  max-height: 260px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: rgba(3, 14, 8, 0.75);
+  color: var(--dim);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 /* Outbound-link click tallies. */
 .click-row {
   display: flex;

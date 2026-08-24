@@ -478,6 +478,52 @@ exactly what would be broadcast. Nothing leaves the machine without `--yes`.
 
 To keep it alive across reboots: `pm2 start "npm run snipe -- --yes" --name sniper && pm2 save && pm2 startup`.
 
+### Driving it from the browser (control server)
+
+Editing JSON over SSH for every drop gets old. `npm run snipe:server` exposes
+the same runner to the **Remote runner** panel in the Snipe tab, so you pick the
+collection in the browser and press fire.
+
+This does **not** put the browser in the firing path. A request only *starts* a
+run; from then on the server holds and fires on its own clock, so a
+browser-started run is exactly as fast as an SSH-started one — and you can close
+the tab while it holds.
+
+```bash
+export SNIPE_TOKEN=$(openssl rand -hex 32)   # keep this; the panel needs it
+npm run snipe:server                          # listens on 127.0.0.1:8787 only
+```
+
+It binds to localhost on purpose — nothing is reachable until you publish it.
+The documented route is a Cloudflare Tunnel, which is outbound-only, so **no
+inbound port is ever opened on the box** and you get HTTPS for free (the panel
+is served over HTTPS, so a plain-HTTP server would be blocked as mixed content
+anyway):
+
+```bash
+curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
+chmod +x cloudflared && sudo mv cloudflared /usr/local/bin/
+cloudflared tunnel --url http://127.0.0.1:8787
+```
+
+It prints a `https://….trycloudflare.com` URL. Paste that plus the token into
+the panel and press **connect**.
+
+| Env var | Default | Meaning |
+|---|---|---|
+| `SNIPE_TOKEN` | — | **required**, ≥16 chars; the only thing guarding your wallets |
+| `SNIPE_PORT` | `8787` | port to listen on |
+| `SNIPE_HOST` | `127.0.0.1` | keep as-is unless you know why not |
+| `SNIPE_ORIGINS` | `*` | comma-separated allowed origins; set to your site to narrow |
+| `SNIPE_CONFIG` | `snipe.config.json` | config whose keys/defaults the server uses |
+
+Routes: `GET /api/ping` (unauthenticated liveness), `GET /api/status`,
+`POST /api/snipe`, `POST /api/abort`. Everything but ping needs
+`Authorization: Bearer $SNIPE_TOKEN`, compared in constant time. Keys never
+leave the server — the panel receives addresses and balances only.
+
+Under pm2: `pm2 start "npm run snipe:server" --name snipe-api && pm2 save`.
+
 ### Config
 
 | Key | Meaning |
