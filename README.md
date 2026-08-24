@@ -370,29 +370,26 @@ OpenSea/Blockscout link (the registry is addresses-only, stored locally).
   Click a column header to sort; "only mine" filters to collections owned by
   the connected wallet. Click a row to expand the full Status-style detail.
 
-## Mint tab
-
-Quick manual public mint — one wallet, one click, the same `mintPublic` call
-the drop page makes. Paste a collection address or OpenSea link, see the drop
-state (price, countdown, per-wallet limit), pick a quantity, sign. Minted token
-ids come back with direct OpenSea item links; listing happens on the item
-page's **Sell** button (first listing asks for a one-time approval in your
-wallet). There is deliberately no in-app listing — OpenSea's order book API
-needs an API key and a backend, and LaunchPad has neither. For multi-wallet or
-precision-timed minting, see the **Snipe** tab below.
-
 ## Snipe tab
 
-Pre-signed, multi-wallet racing for a SeaDrop **public** stage — paste any
-number of private keys, and every wallet mints in parallel the instant the
-stage opens, or immediately if it's already live.
+Everything about minting a live drop lives here, split into two independent
+paths depending on which stage you're minting:
 
-- **On-chain only, same as the Mint tab.** Price, fee recipient and per-wallet
-  limit are read straight from the SeaDrop contract — no OpenSea account,
-  login or API key involved, and nothing here can touch an allow-list, signed,
-  or token-gated stage (those need a signature or list only the drop's own
-  backend can produce). Use the Mint tab's allow-list detection or opensea.io
-  for those.
+**Allow-list mint (connected wallet).** If the drop has one and your
+connected wallet is on it, mint that stage with one click — see "Allow-list
+detection" below for how eligibility is proven. Single wallet, signs through
+your injected wallet (MetaMask/Rabby) or fast-mode's local signer, same as
+any other tab.
+
+**Public stage — pre-signed, multi-wallet racing.** Paste any number of
+private keys, and every wallet mints the public stage in parallel the instant
+it opens, or immediately if it's already live.
+
+- **On-chain only.** Price, fee recipient and per-wallet limit are read
+  straight from the SeaDrop contract — no OpenSea account, login or API key
+  involved. This path is public-stage only; signed/token-gated stages need a
+  signature or list only the drop's own backend can produce (see "Three kinds
+  of gate" below) — mint those on opensea.io.
 - **Pre-signed, then blasted.** Every wallet's transaction is signed and
   serialised *before* the stage opens, so at T-0 the only work left is writing
   bytes to the network — signing and encoding are off the critical path. Each
@@ -410,14 +407,12 @@ stage opens, or immediately if it's already live.
 Racing other bidders on a public mint isn't hacking or a contract exploit —
 it calls the exact function anyone can call, just faster and from more
 wallets — but it *is* a competitive-advantage tool, not a neutral one. Decide
-for yourself whether that fits how you want to use LaunchPad; the Mint tab
-above stays a plain, single-wallet, one-click mint for everyone who doesn't
-want it.
+for yourself whether that fits how you want to use LaunchPad.
 
-## Allow-list detection (Mint tab)
+## Allow-list detection (Snipe tab)
 
-The Mint tab works out by itself whether your wallet can mint from an
-allow-list stage, not just the public one:
+The Snipe tab works out by itself whether your connected wallet can mint from
+an allow-list stage, not just the public one:
 
 1. Reads `getAllowListMerkleRoot` — a non-zero root means the drop has a list.
 2. Finds the list's `allowListURI` from SeaDrop's `AllowListUpdated` event
@@ -425,9 +420,9 @@ allow-list stage, not just the public one:
    ranges), and fetches it — `http(s)`, `ipfs://` and inline `data:` all work.
 3. Looks the connected wallet up and derives its merkle proof, **verifying it
    against the root the contract actually holds** before offering the mint.
-4. Shows a public / allowlist stage picker. The allowlist tab only unlocks when
-   the proof verifies, and selecting it switches the price, per-wallet limit
-   and window to that stage's `MintParams` and mints via `mintAllowList`.
+4. Once the proof verifies, the allow-list mint button unlocks — price,
+   per-wallet limit and window come from that stage's `MintParams`, and it
+   mints via `mintAllowList`.
 
 Leaf encoding is `keccak256(abi.encode(minter, mintParams))` with sorted-pair
 proofs — verified against a live drop, reproducing its published leaf and

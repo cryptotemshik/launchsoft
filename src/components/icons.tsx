@@ -45,12 +45,6 @@ export const GridIcon = (p: SVGProps<SVGSVGElement>) => (
   </svg>
 );
 
-export const BoltIcon = (p: SVGProps<SVGSVGElement>) => (
-  <svg {...base(p)}>
-    <path d="M13 2L4.5 13.5H11l-1 8.5 9-12H12l1-8z" />
-  </svg>
-);
-
 export const ArrowRight = (p: SVGProps<SVGSVGElement>) => (
   <svg {...base(p)}>
     <path d="M5 12h14M13 6l6 6-6 6" />
