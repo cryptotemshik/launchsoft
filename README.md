@@ -10,13 +10,16 @@ canonical **SeaDrop** contract that OpenSea natively understands.
 This is a creator tool for launching **your own** collections from **your own**
 connected wallet:
 
-- **No private keys, ever.** All signing happens in your injected wallet
-  (MetaMask/Rabby) via wagmi/viem. The only secrets you touch are your wallet
-  (in the extension) and your Pinata JWT (pasted per session, held in memory
-  only, never persisted).
-- **No minting-bot features.** No wallet generation, no multi-wallet minting,
-  no auto-listing. Public mint stage only — allowlist/signed/token-gated stages
-  are intentionally not built.
+- **No private keys, by default.** Launching, revealing and managing a
+  collection all sign through your injected wallet (MetaMask/Rabby) via
+  wagmi/viem. The only secrets you touch there are your wallet (in the
+  extension) and your Pinata JWT (pasted per session, held in memory only,
+  never persisted). The **Snipe** tab is the one deliberate exception — it
+  takes pasted private keys for multi-wallet public-stage minting, held in
+  memory only and never persisted; see that section below before using it.
+- **No auto-listing.** Public and allow-list mint stages are supported;
+  signed/token-gated stages are intentionally not built (see Allow-list
+  detection below for why).
 - The deployed contract's `owner` is your connected wallet. The app holds zero
   privileges.
 
@@ -374,9 +377,42 @@ the drop page makes. Paste a collection address or OpenSea link, see the drop
 state (price, countdown, per-wallet limit), pick a quantity, sign. Minted token
 ids come back with direct OpenSea item links; listing happens on the item
 page's **Sell** button (first listing asks for a one-time approval in your
-wallet). There is deliberately no automation, no sniping, no multi-wallet, and
-no in-app listing — OpenSea's order book API needs an API key and a backend,
-and LaunchPad has neither.
+wallet). There is deliberately no in-app listing — OpenSea's order book API
+needs an API key and a backend, and LaunchPad has neither. For multi-wallet or
+precision-timed minting, see the **Snipe** tab below.
+
+## Snipe tab
+
+Pre-signed, multi-wallet racing for a SeaDrop **public** stage — paste any
+number of private keys, and every wallet mints in parallel the instant the
+stage opens, or immediately if it's already live.
+
+- **On-chain only, same as the Mint tab.** Price, fee recipient and per-wallet
+  limit are read straight from the SeaDrop contract — no OpenSea account,
+  login or API key involved, and nothing here can touch an allow-list, signed,
+  or token-gated stage (those need a signature or list only the drop's own
+  backend can produce). Use the Mint tab's allow-list detection or opensea.io
+  for those.
+- **Pre-signed, then blasted.** Every wallet's transaction is signed and
+  serialised *before* the stage opens, so at T-0 the only work left is writing
+  bytes to the network — signing and encoding are off the critical path. Each
+  signed transaction is sent to every configured RPC endpoint at once
+  (chain defaults plus any you paste, e.g. your own Alchemy key), and whichever
+  answers first wins.
+- **Guarded the same way the CLI original was.** A max fee under the current
+  base fee, a tip above the ceiling, or a wallet that can't cover
+  `gas × max fee + mint price` are all caught before firing, not after a
+  transaction is rejected on-chain.
+- **Keys never leave the tab.** Pasted private keys are held in memory for
+  that session only — never written to disk, never sent anywhere except as a
+  locally-signed transaction. Refreshing the page clears them.
+
+Racing other bidders on a public mint isn't hacking or a contract exploit —
+it calls the exact function anyone can call, just faster and from more
+wallets — but it *is* a competitive-advantage tool, not a neutral one. Decide
+for yourself whether that fits how you want to use LaunchPad; the Mint tab
+above stays a plain, single-wallet, one-click mint for everyone who doesn't
+want it.
 
 ## Allow-list detection (Mint tab)
 

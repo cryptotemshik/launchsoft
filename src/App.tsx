@@ -6,12 +6,14 @@ import LaunchTab from "./components/LaunchTab";
 import LiveTab from "./components/LiveTab";
 import MintTab from "./components/MintTab";
 import RevealTab from "./components/RevealTab";
+import SnipeTab from "./components/SnipeTab";
 import StatusTab from "./components/StatusTab";
 import WalletsTab from "./components/WalletsTab";
 import { useActiveChain } from "./signer";
 import { CHAINS_BY_ID, DEFAULT_CHAIN_ID } from "./chains";
 import {
   BoltIcon,
+  CrosshairIcon,
   EyeIcon,
   GridIcon,
   PulseIcon,
@@ -27,7 +29,8 @@ type Tab =
   | "status"
   | "live"
   | "wallets"
-  | "mint";
+  | "mint"
+  | "snipe";
 
 const TAB_ICON = {
   launch: RocketIcon,
@@ -37,6 +40,7 @@ const TAB_ICON = {
   wallets: WalletIcon,
   dashboard: GridIcon,
   mint: BoltIcon,
+  snipe: CrosshairIcon,
 } as const;
 
 export default function App() {
@@ -86,6 +90,13 @@ export default function App() {
           <BoltIcon />
           MINT
         </button>
+        <button
+          className={`tab-mint ${tab === "snipe" ? "active" : ""}`}
+          onClick={() => setTab("snipe")}
+        >
+          <CrosshairIcon />
+          SNIPE
+        </button>
       </div>
       {tab === "dashboard" ? <DashboardTab /> : null}
       {tab === "launch" ? <LaunchTab /> : null}
@@ -94,6 +105,7 @@ export default function App() {
       {tab === "live" ? <LiveTab /> : null}
       {tab === "wallets" ? <WalletsTab /> : null}
       {tab === "mint" ? <MintTab /> : null}
+      {tab === "snipe" ? <SnipeTab /> : null}
       <div className="footer">
         {info.label} · explorer:{" "}
         <a href={info.explorerUrl} target="_blank" rel="noreferrer">

@@ -50,6 +50,26 @@ export interface ProfitData {
   createdAt: number | null;
 }
 
+/**
+ * Pick the fee recipient a mint call should pass: OpenSea's recipient when
+ * the drop doesn't restrict, when it's explicitly allowed, or — for drops
+ * that restrict but never got OpenSea into their allow-list — the first
+ * allowed address. Returns null when the drop restricts and allows no one,
+ * which makes a public mint impossible to construct at all.
+ */
+export function pickFeeRecipient(
+  info: ChainInfo,
+  allowedFeeRecipients: readonly string[],
+  restrictFeeRecipients: boolean,
+): `0x${string}` | null {
+  const openSeaFee = info.feeRecipient;
+  const allowed = allowedFeeRecipients.map((a) => a.toLowerCase());
+  if (openSeaFee && !restrictFeeRecipients) return openSeaFee;
+  if (openSeaFee && allowed.includes(openSeaFee.toLowerCase())) return openSeaFee;
+  if (allowedFeeRecipients.length > 0) return allowedFeeRecipients[0] as `0x${string}`;
+  return null;
+}
+
 export const seaDropMintEvent = parseAbiItem(
   "event SeaDropMint(address indexed nftContract, address indexed minter, address indexed feeRecipient, address payer, uint256 quantityMinted, uint256 unitMintPrice, uint256 feeBps, uint256 dropStageIndex)",
 );

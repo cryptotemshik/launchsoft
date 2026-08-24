@@ -17,6 +17,7 @@ import {
   type AllowListSource,
 } from "../lib/allowlistSource";
 import { formatEthShort } from "../lib/profit";
+import { pickFeeRecipient } from "../lib/collectionData";
 import { TxLink } from "./Bits";
 
 const TRANSFER_TOPIC =
@@ -185,16 +186,6 @@ export default function MintTab() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [address]);
 
-  function pickFeeRecipient(t: MintTarget): `0x${string}` | null {
-    const openSeaFee = chainInfo?.feeRecipient;
-    const allowed = t.allowedFeeRecipients.map((a) => a.toLowerCase());
-    if (openSeaFee && !t.restrictFeeRecipients) return openSeaFee;
-    if (openSeaFee && allowed.includes(openSeaFee.toLowerCase())) return openSeaFee;
-    if (t.allowedFeeRecipients.length > 0)
-      return t.allowedFeeRecipients[0] as `0x${string}`;
-    return null;
-  }
-
   /** Price and limit for the stage the user is on. */
   function activeStage(t: MintTarget): {
     price: bigint;
@@ -229,7 +220,11 @@ export default function MintTab() {
     setMintedIds(null);
     setMintTx(null);
     try {
-      const feeRecipient = pickFeeRecipient(target);
+      const feeRecipient = pickFeeRecipient(
+        chainInfo,
+        target.allowedFeeRecipients,
+        target.restrictFeeRecipients,
+      );
       if (!feeRecipient) {
         throw new Error("This drop restricts fee recipients and allows none — cannot mint");
       }
@@ -305,8 +300,8 @@ export default function MintTab() {
         <h2>Quick mint</h2>
         <p className="dim">
           Manual public mint from YOUR connected wallet — one wallet, one click,
-          the same call the drop page makes. No automation, no sniping, no
-          multi-wallet.
+          the same call the drop page makes. For pre-signed multi-wallet
+          racing on a public stage, see the SNIPE tab.
         </p>
         <div style={{ display: "flex", gap: 8 }}>
           <input
