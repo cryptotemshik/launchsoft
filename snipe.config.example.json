@@ -1,0 +1,14 @@
+{
+  "chainId": 4663,
+  "collection": "0x0000000000000000000000000000000000000000",
+  "stage": "public",
+  "quantity": 1,
+  "keysFile": "./snipe.keys",
+  "extraRpcs": [],
+  "gas": {
+    "maxFeeGwei": "2",
+    "tipGwei": "0.05",
+    "limit": 250000
+  },
+  "timing": "wait"
+}

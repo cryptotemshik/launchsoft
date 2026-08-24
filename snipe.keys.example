@@ -1,0 +1,8 @@
+# One private key per line. Blank lines and #-comments are ignored, so a wallet
+# can be labelled or temporarily disabled without deleting it.
+#
+# Copy this file to snipe.keys (which git ignores) and put real keys there.
+# Fund these wallets with only what the mint needs — this file sits on a server.
+#
+# 0x1111111111111111111111111111111111111111111111111111111111111111  # wallet A
+# 0x2222222222222222222222222222222222222222222222222222222222222222  # wallet B

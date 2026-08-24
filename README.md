@@ -421,6 +421,80 @@ the exact function anyone can call, just faster and from more wallets — but it
 *is* a competitive-advantage tool, not a neutral one. Decide for yourself
 whether that fits how you want to use LaunchPad.
 
+## Headless runner (`npm run snipe`) — for a VPS next to the sequencer
+
+The Snipe tab needs an open browser tab on your machine. That's the wrong place
+to race from, because these chains order by **arrival time at the sequencer**,
+not by gas. The runner is the same logic without the browser, so it can sit on a
+server beside the sequencer under `pm2`.
+
+### Where the sequencer actually is
+
+Resolved 2026-08-24, and confirmed against `ip-ranges.amazonaws.com`:
+
+```
+sequencer.mainnet.chain.robinhood.com
+  → CNAME ac23019b22f1ae5a-sequencer.ue2v1.rhm.arbitrum-internal.io
+  → 3.136.74.196 / 3.141.111.43 / 3.142.9.34   (all in 3.136.0.0/13)
+  → AWS us-east-2 (Ohio)
+```
+
+So an EC2 instance in **us-east-2** reaches it over AWS's own regional network
+(~1ms) instead of the open internet (~100ms+ from Europe). The public RPC, by
+contrast, sits behind Cloudflare — one more hop the sequencer doesn't have.
+
+Because Arbitrum Orbit sequences first-come-first-served with no mempool, that
+latency is the *only* lever: raising the tip cannot buy priority here.
+
+### Setup
+
+```bash
+# on an Ubuntu EC2 instance in us-east-2
+curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - && sudo apt-get install -y nodejs git
+git clone <this repo> && cd launchsoft && npm install
+
+cp snipe.config.example.json snipe.config.json   # edit: collection, quantity, gas
+cp snipe.keys.example snipe.keys                 # one private key per line
+```
+
+Confirm you're actually close before trusting it — `connect` must be under ~5ms:
+
+```bash
+curl -s -o /dev/null -w "connect=%{time_connect}s\n" -X POST \
+  -H 'content-type: application/json' --data '{"jsonrpc":"2.0","method":"eth_sendRawTransaction","params":["0x00"],"id":1}' \
+  https://sequencer.mainnet.chain.robinhood.com
+```
+
+### Running it
+
+```bash
+npm run snipe                 # DRY RUN — reads the drop, prints the plan, sends nothing
+npm run snipe -- --yes        # actually fires
+```
+
+The dry run is the default on purpose: it reads the live drop, resolves the
+stage, checks every wallet's balance against `gas × maxFee + price`, and prints
+exactly what would be broadcast. Nothing leaves the machine without `--yes`.
+
+To keep it alive across reboots: `pm2 start "npm run snipe -- --yes" --name sniper && pm2 save && pm2 startup`.
+
+### Config
+
+| Key | Meaning |
+|---|---|
+| `chainId` | 4663 = Robinhood Chain; any id from `src/chains.ts` |
+| `collection` | the drop's contract address |
+| `stage` | `"public"` or `"allowlist"` (per-wallet proofs are derived locally) |
+| `quantity` | NFTs per wallet, clamped to the stage's cap |
+| `keysFile` | path to the keys file, relative to the config |
+| `extraRpcs` | your own endpoints; also used for reads |
+| `gas` | `maxFeeGwei`, `tipGwei`, `limit` — validated against the live base fee |
+| `timing` | `"wait"` holds until the stage opens, `"now"` fires immediately |
+
+`snipe.config.json` and `snipe.keys` are gitignored. Keys are read at start,
+held in memory, and never written anywhere — but they *are* on a server, so
+fund those wallets with only what the mint needs.
+
 ## Allow-list detection (Snipe tab)
 
 The Snipe tab works out by itself whether your connected wallet can mint from
