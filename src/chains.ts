@@ -43,6 +43,17 @@ export interface ChainInfo {
    * send an approval to a scam contract.
    */
   weth?: `0x${string}`;
+  /**
+   * Extra endpoints that accept `eth_sendRawTransaction` — the chain's own
+   * sequencer, where it exposes one. These are the shortest path into the
+   * ordering queue: an L2 sequencer orders by arrival time, so submitting
+   * straight to it skips the forwarding hop a public RPC adds.
+   *
+   * Send-only by design: several reject reads (`eth_chainId` answers "method
+   * not allowed"), so they're used for broadcasting only, never for reading.
+   * Every entry here was probed directly — it must accept a raw transaction.
+   */
+  submitRpcs?: string[];
 }
 
 /** OP-stack predeploy WETH — same address on every OP-stack chain (verified). */
@@ -60,6 +71,7 @@ function make(params: {
   blockscoutApi?: string;
   currencyName?: string;
   weth?: `0x${string}`;
+  submitRpcs?: string[];
 }): ChainInfo {
   const chain = defineChain({
     id: params.id,
@@ -87,6 +99,7 @@ function make(params: {
     explorerUrl: params.explorerUrl,
     blockscoutApi: params.blockscoutApi,
     weth: params.weth,
+    submitRpcs: params.submitRpcs,
   };
 }
 
@@ -102,6 +115,10 @@ export const CHAINS: ChainInfo[] = [
     blockscoutApi: "https://robinhoodchain.blockscout.com/api/v2",
     // Verified: TransparentUpgradeableProxy → aeWETH, 425k holders, Seaport settles in it.
     weth: "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73",
+    // Probed 2026-08-24: accepts eth_sendRawTransaction, refuses eth_chainId
+    // ("method does not exist") — send-only, and the shortest path into this
+    // Orbit chain's first-come-first-served sequencing queue.
+    submitRpcs: ["https://sequencer.mainnet.chain.robinhood.com"],
   }),
   make({
     id: 1,
@@ -123,6 +140,9 @@ export const CHAINS: ChainInfo[] = [
     openSeaSlug: "base",
     blockscoutApi: "https://base.blockscout.com/api/v2",
     weth: OP_WETH,
+    // Probed 2026-08-24: accepts eth_sendRawTransaction, refuses reads
+    // ("rpc method is not allowed") — send-only.
+    submitRpcs: ["https://mainnet-sequencer.base.org"],
   }),
   make({
     id: 42161,
@@ -152,6 +172,8 @@ export const CHAINS: ChainInfo[] = [
     openSeaSlug: "optimism",
     blockscoutApi: "https://optimism.blockscout.com/api/v2",
     weth: OP_WETH,
+    // Probed 2026-08-24: accepts eth_sendRawTransaction (and reads).
+    submitRpcs: ["https://mainnet-sequencer.optimism.io"],
   }),
   make({
     id: 137,

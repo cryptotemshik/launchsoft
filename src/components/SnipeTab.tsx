@@ -27,6 +27,7 @@ import {
   parseRpcEndpoints,
   prepareBlast,
   waitForReceiptOrNull,
+  warmEndpoints,
   type RpcEndpoint,
 } from "../lib/rpcBlast";
 import { waitUntil } from "../lib/snipeTimer";
@@ -179,11 +180,14 @@ export default function SnipeTab() {
 
   const endpoints: RpcEndpoint[] = useMemo(() => {
     const defaults = chainInfo?.chain.rpcUrls.default.http ?? [];
+    // The chain's own sequencer, where it has one: an L2 orders by arrival
+    // time, so this is the shortest path into the queue.
+    const submit = chainInfo?.submitRpcs ?? [];
     const extra = extraRpcText
       .split("\n")
       .map((l) => l.trim())
       .filter(Boolean);
-    return parseRpcEndpoints([...defaults, ...extra]);
+    return parseRpcEndpoints([...submit, ...defaults, ...extra]);
   }, [chainInfo, extraRpcText]);
 
   // Live base fee, so the gas fields have a real number to aim above.
@@ -459,11 +463,17 @@ export default function SnipeTab() {
         }),
       );
 
+      // Open every connection now so the broadcast pays only a round-trip.
+      await warmEndpoints(endpoints);
+
       if (timing === "wait" && stageStart * 1000 > Date.now()) {
         abortRef.current = new AbortController();
         const outcome = await waitUntil(stageStart * 1000, {
           onTick: setCountdownMs,
           signal: abortRef.current.signal,
+          // Re-warm shortly before the stage opens: a long hold would
+          // otherwise let idle connections drop and hand back the TLS cost.
+          onApproach: () => void warmEndpoints(endpoints),
         });
         setCountdownMs(null);
         if (outcome === "aborted") {
@@ -662,9 +672,14 @@ export default function SnipeTab() {
         <h2>RPC endpoints</h2>
         <p className="dim">
           Every endpoint gets the raw signed transaction at the same instant;
-          whichever accepts it first wins. Chain defaults are always included —
-          paste extra ones (e.g. your own Alchemy URL) below, one per line, for a
-          real edge over public nodes.
+          whichever accepts it first wins. The chain&apos;s <b>sequencer</b> and
+          public RPC are included automatically
+          {chainInfo?.submitRpcs?.length
+            ? " — this chain's sequencer is the shortest path into its ordering queue, since an L2 sequences by arrival time"
+            : ""}
+          . Paste extra endpoints (e.g. your own Alchemy URL) below, one per
+          line. All connections are opened before the stage opens, so firing
+          costs only a round-trip.
         </p>
         <textarea
           rows={2}

@@ -7,17 +7,29 @@
 export type WaitOutcome = "fired" | "aborted";
 
 const SPIN_WINDOW_MS = 40;
+/** How long before the target `onApproach` fires (once). */
+const APPROACH_MS = 3_000;
 
 export async function waitUntil(
   targetMs: number,
-  opts: { onTick?: (msLeft: number) => void; signal?: AbortSignal } = {},
+  opts: {
+    onTick?: (msLeft: number) => void;
+    signal?: AbortSignal;
+    /** Called once, ~3s out — the moment to re-open idle connections. */
+    onApproach?: () => void;
+  } = {},
 ): Promise<WaitOutcome> {
-  const { onTick, signal } = opts;
+  const { onTick, signal, onApproach } = opts;
+  let approached = false;
 
   while (true) {
     if (signal?.aborted) return "aborted";
     const msLeft = targetMs - Date.now();
     if (msLeft <= SPIN_WINDOW_MS) break;
+    if (!approached && msLeft <= APPROACH_MS) {
+      approached = true;
+      onApproach?.();
+    }
     onTick?.(msLeft);
     // Sleep in short hops so onTick keeps a live countdown, and so an abort
     // mid-wait doesn't have to wait out a long single timeout.

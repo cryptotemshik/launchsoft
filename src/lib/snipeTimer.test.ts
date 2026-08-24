@@ -30,6 +30,22 @@ describe("waitUntil", () => {
     expect(outcome).toBe("aborted");
   });
 
+  it("fires onApproach once, before the target", async () => {
+    let calls = 0;
+    const start = Date.now();
+    // Target inside the approach window, so it should fire on the first pass.
+    await waitUntil(start + 120, { onApproach: () => calls++ });
+    expect(calls).toBe(1);
+  });
+
+  it("does not call onApproach when aborted early", async () => {
+    const controller = new AbortController();
+    let calls = 0;
+    controller.abort();
+    await waitUntil(Date.now() + 5000, { signal: controller.signal, onApproach: () => calls++ });
+    expect(calls).toBe(0);
+  });
+
   it("calls onTick with a decreasing countdown", async () => {
     const ticks: number[] = [];
     await waitUntil(Date.now() + 80, { onTick: (ms) => ticks.push(ms) });

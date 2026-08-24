@@ -111,6 +111,30 @@ export function blastToAll(
   return { txHash: prepared.txHash, results };
 }
 
+/**
+ * Open a TLS connection to every endpoint ahead of the fire moment.
+ *
+ * A cold HTTPS request pays DNS + TCP + TLS before a single byte of the
+ * transaction moves — measured at ~400ms of a ~470ms request, i.e. most of the
+ * cost. The browser keeps the connection alive afterwards, so warming here
+ * means the actual broadcast is just the round-trip. Errors are irrelevant:
+ * any response at all means the handshake completed, which is the whole point.
+ */
+export async function warmEndpoints(endpoints: RpcEndpoint[]): Promise<void> {
+  await Promise.all(
+    endpoints.map((ep) =>
+      fetch(ep.url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        // Cheapest possible call; send-only endpoints reject it, and that's
+        // fine — the connection is open either way.
+        body: JSON.stringify({ jsonrpc: "2.0", method: "eth_chainId", params: [], id: 1 }),
+        keepalive: true,
+      }).catch(() => undefined),
+    ),
+  );
+}
+
 /** True when a per-endpoint error means "already broadcast", not "rejected". */
 export function isAlreadyKnown(error: string | null): boolean {
   if (!error) return false;
