@@ -85,3 +85,9 @@ export const CrosshairIcon = (p: SVGProps<SVGSVGElement>) => (
     <path d="M12 2v4M12 18v4M2 12h4M18 12h4" />
   </svg>
 );
+
+export const ChevronDownIcon = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...base(p)}>
+    <path d="M6 9l6 6 6-6" />
+  </svg>
+);

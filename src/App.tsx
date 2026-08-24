@@ -11,6 +11,7 @@ import WalletsTab from "./components/WalletsTab";
 import { useActiveChain } from "./signer";
 import { CHAINS_BY_ID, DEFAULT_CHAIN_ID } from "./chains";
 import {
+  ChevronDownIcon,
   CrosshairIcon,
   EyeIcon,
   GridIcon,
@@ -66,7 +67,40 @@ export default function App() {
         }}
       />
       <div className="tabs">
-        {(["launch", "reveal", "status", "live", "wallets", "dashboard"] as const).map((t) => {
+        {/* Launch is the entry point; Reveal and Status are its later stages,
+            so they live in a hover menu under it instead of as sibling tabs. */}
+        <div className="tab-group">
+          <button
+            className={
+              tab === "launch" || tab === "reveal" || tab === "status" ? "active" : ""
+            }
+            onClick={() => setTab("launch")}
+          >
+            <RocketIcon />
+            LAUNCH
+            <ChevronDownIcon width={13} height={13} />
+          </button>
+          <div className="tab-menu">
+            {(["reveal", "status"] as const).map((t) => {
+              const Icon = TAB_ICON[t];
+              return (
+                <button
+                  key={t}
+                  className={tab === t ? "active" : ""}
+                  onClick={() => setTab(t)}
+                >
+                  <Icon />
+                  {t.toUpperCase()}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+        {([
+          ["live", "LIVE"],
+          ["wallets", "TRACKER"],
+          ["dashboard", "DASHBOARD"],
+        ] as const).map(([t, label]) => {
           const Icon = TAB_ICON[t];
           return (
             <button
@@ -75,7 +109,7 @@ export default function App() {
               onClick={() => setTab(t)}
             >
               <Icon />
-              {t.toUpperCase()}
+              {label}
             </button>
           );
         })}

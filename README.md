@@ -334,7 +334,7 @@ OpenSea drops use). It needs a **Blockscout API** for the active chain, so it's
 enabled on Robinhood, Base, Optimism, Zora, Soneium, Unichain, Shape, B3, and
 Flow, and shows a "switch chain" note elsewhere.
 
-## Wallets tracker tab
+## Tracker tab
 
 Watch any set of wallets and get alerted when they **mint**, **buy**, or
 **sell** an NFT. **Addresses only — never keys.**
@@ -372,24 +372,23 @@ OpenSea/Blockscout link (the registry is addresses-only, stored locally).
 
 ## Snipe tab
 
-Everything about minting a live drop lives here, split into two independent
-paths depending on which stage you're minting:
+Pre-signed, multi-wallet racing for a SeaDrop drop — **public** or
+**allow-list**, chosen with the stage toggle. Paste any number of private
+keys and each wallet builds, signs and races its own transaction; the two
+stages differ only in the calldata each wallet carries.
 
-**Allow-list mint (connected wallet).** If the drop has one and your
-connected wallet is on it, mint that stage with one click — see "Allow-list
-detection" below for how eligibility is proven. Single wallet, signs through
-your injected wallet (MetaMask/Rabby) or fast-mode's local signer, same as
-any other tab.
-
-**Public stage — pre-signed, multi-wallet racing.** Paste any number of
-private keys, and every wallet mints the public stage in parallel the instant
-it opens, or immediately if it's already live.
-
-- **On-chain only.** Price, fee recipient and per-wallet limit are read
-  straight from the SeaDrop contract — no OpenSea account, login or API key
-  involved. This path is public-stage only; signed/token-gated stages need a
-  signature or list only the drop's own backend can produce (see "Three kinds
-  of gate" below) — mint those on opensea.io.
+- **One flow for both stages.** The public stage sends a byte-identical
+  `mintPublic` from every wallet. The allow-list stage builds a per-wallet
+  `mintAllowList` — each wallet's own merkle proof, verified against the
+  contract's on-chain root before it's offered — so being on the list is
+  proven locally, per wallet, and wallets that aren't on it are skipped rather
+  than sent to revert.
+- **On-chain only.** Price, fee recipient, per-wallet limit and (for the
+  allow-list stage) each wallet's mint params all come straight from the
+  SeaDrop contract and the published list — no OpenSea account, login or API
+  key. Signed/token-gated stages need a signature or list only the drop's own
+  backend can produce (see "Three kinds of gate" below) — mint those on
+  opensea.io.
 - **Pre-signed, then blasted.** Every wallet's transaction is signed and
   serialised *before* the stage opens, so at T-0 the only work left is writing
   bytes to the network — signing and encoding are off the critical path. Each
@@ -404,10 +403,10 @@ it opens, or immediately if it's already live.
   that session only — never written to disk, never sent anywhere except as a
   locally-signed transaction. Refreshing the page clears them.
 
-Racing other bidders on a public mint isn't hacking or a contract exploit —
-it calls the exact function anyone can call, just faster and from more
-wallets — but it *is* a competitive-advantage tool, not a neutral one. Decide
-for yourself whether that fits how you want to use LaunchPad.
+Racing other bidders on a mint isn't hacking or a contract exploit — it calls
+the exact function anyone can call, just faster and from more wallets — but it
+*is* a competitive-advantage tool, not a neutral one. Decide for yourself
+whether that fits how you want to use LaunchPad.
 
 ## Allow-list detection (Snipe tab)
 

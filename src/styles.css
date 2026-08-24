@@ -290,6 +290,47 @@ h1 .cursor {
   box-shadow: 0 0 18px -5px rgba(0, 200, 5, 0.7);
 }
 
+/* Launch group — hover reveals Reveal/Status beneath it. */
+.tab-group {
+  position: relative;
+  display: inline-flex;
+}
+.tab-menu {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 20;
+  min-width: 160px;
+  padding: 6px;
+  margin-top: 6px;
+  display: none;
+  flex-direction: column;
+  gap: 2px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface-2);
+  backdrop-filter: blur(12px);
+  box-shadow: var(--shadow);
+}
+/* Bridge the 6px gap so the menu doesn't vanish while the cursor crosses it. */
+.tab-group::after {
+  content: "";
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  height: 10px;
+}
+.tab-group:hover .tab-menu,
+.tab-menu:hover {
+  display: flex;
+}
+.tab-menu button {
+  justify-content: flex-start;
+  width: 100%;
+  border-radius: 10px;
+}
+
 /* ── Panels / cards ──────────────────────────────────────────────────────── */
 .panel {
   position: relative;
