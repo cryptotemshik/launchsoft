@@ -1013,12 +1013,54 @@ tr.project-detail td {
   }
   .tabs button {
     flex: 1 1 40%;
+    justify-content: center;
     text-align: center;
-    padding: 10px 8px;
+    padding: 11px 8px;
   }
   .tabs button.tab-mint {
     margin-left: 0;
     flex-basis: 100%;
+  }
+  /* No reliable hover on touch, so the Launch menu can't be a dropdown —
+     flatten the group so Reveal/Status render as ordinary tabs alongside
+     Launch. The hover selectors are re-stated here (equal specificity, later
+     in the file → wins) so a stray touch-hover can't turn the menu back into
+     an absolutely-positioned overlay that swallows taps on the tabs below. */
+  .tab-group,
+  .tab-menu,
+  .tab-group:hover .tab-menu,
+  .tab-menu:hover {
+    display: contents;
+  }
+  .tab-chevron {
+    display: none;
+  }
+  .tab-group::after {
+    content: none;
+  }
+  /* 16px inputs stop iOS from auto-zooming the page on focus. */
+  input,
+  textarea,
+  select {
+    font-size: 16px;
+  }
+  .net-select {
+    font-size: 14px;
+  }
+  /* Comfortable tap targets everywhere. */
+  button {
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+  }
+  .modal dl {
+    grid-template-columns: 1fr;
+    gap: 2px 0;
+  }
+  .modal dt {
+    margin-top: 8px;
+  }
+  .modal dd {
+    margin-bottom: 2px;
   }
   .panel {
     padding: 16px;

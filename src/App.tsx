@@ -78,7 +78,7 @@ export default function App() {
           >
             <RocketIcon />
             LAUNCH
-            <ChevronDownIcon width={13} height={13} />
+            <ChevronDownIcon className="tab-chevron" width={13} height={13} />
           </button>
           <div className="tab-menu">
             {(["reveal", "status"] as const).map((t) => {
