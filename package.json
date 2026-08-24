@@ -1,0 +1,30 @@
+{
+  "name": "launchpad",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "One-click NFT drop launcher for Robinhood Chain (SeaDrop-compatible, OpenSea-indexed)",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "deploy:cf": "npm run build && npx -y wrangler pages deploy"
+  },
+  "dependencies": {
+    "@tanstack/react-query": "^5.59.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "viem": "^2.21.19",
+    "wagmi": "^2.12.17"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.10",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.2",
+    "typescript": "^5.6.2",
+    "vite": "^5.4.8",
+    "vitest": "^2.1.2"
+  }
+}

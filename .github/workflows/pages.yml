@@ -1,0 +1,38 @@
+name: Deploy to GitHub Pages
+
+# Publishes the built app to the gh-pages branch; GitHub Pages serves it at
+# https://cryptotemshik.github.io/launchsoft/
+# (enabling Pages via the deployment API needs admin rights the workflow token
+# doesn't have, so we use the classic gh-pages branch route instead — if the
+# site doesn't appear, pick "Deploy from a branch: gh-pages" once in
+# Settings → Pages).
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # Pages serves under /launchsoft/, so Vite needs the matching base path.
+      - run: npm run build -- --base=/launchsoft/
+      - run: touch dist/.nojekyll
+      - uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./dist

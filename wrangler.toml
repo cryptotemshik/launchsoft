@@ -1,0 +1,4 @@
+# Cloudflare Pages config — makes `npx wrangler pages deploy` work with no flags.
+name = "launchpad"
+pages_build_output_dir = "dist"
+compatibility_date = "2026-08-19"
