@@ -4,6 +4,7 @@
  */
 import { parseAbiItem, zeroAddress, type PublicClient } from "viem";
 import type { ChainInfo } from "../chains";
+import { ipfsUrl } from "../chains";
 import { seaDropAbi, tokenAbi } from "../contracts/seadrop";
 import { loadLaunchState } from "./launchState";
 import {
@@ -68,6 +69,59 @@ export function pickFeeRecipient(
   if (openSeaFee && allowed.includes(openSeaFee.toLowerCase())) return openSeaFee;
   if (allowedFeeRecipients.length > 0) return allowedFeeRecipients[0] as `0x${string}`;
   return null;
+}
+
+/**
+ * A collection's logo image URI (from its `contractURI` JSON), resolved once
+ * and cached — nulls included, so a collection without art isn't re-fetched.
+ * Used to put avatars in the Live feed. Returns the raw `image` value (usually
+ * an ipfs:// URI); render it through `IpfsImg`.
+ */
+const collectionImageCache = new Map<string, string | null>();
+
+export async function fetchCollectionImage(
+  publicClient: PublicClient,
+  contract: `0x${string}`,
+): Promise<string | null> {
+  const key = contract.toLowerCase();
+  const cached = collectionImageCache.get(key);
+  if (cached !== undefined) return cached;
+  try {
+    const uri = (await publicClient.readContract({
+      address: contract,
+      abi: tokenAbi,
+      functionName: "contractURI",
+    })) as string;
+    if (!uri) {
+      collectionImageCache.set(key, null);
+      return null;
+    }
+    let json: unknown;
+    if (uri.startsWith("data:")) {
+      const comma = uri.indexOf(",");
+      const payload = uri.slice(comma + 1);
+      const text = uri.slice(0, comma).includes(";base64")
+        ? atob(payload)
+        : decodeURIComponent(payload);
+      json = JSON.parse(text);
+    } else {
+      const res = await fetch(ipfsUrl(uri));
+      if (!res.ok) {
+        collectionImageCache.set(key, null);
+        return null;
+      }
+      json = await res.json();
+    }
+    const image =
+      json && typeof (json as { image?: unknown }).image === "string"
+        ? ((json as { image: string }).image)
+        : null;
+    collectionImageCache.set(key, image);
+    return image;
+  } catch {
+    collectionImageCache.set(key, null);
+    return null;
+  }
 }
 
 export const seaDropMintEvent = parseAbiItem(

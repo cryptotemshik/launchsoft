@@ -199,22 +199,25 @@ Two ways to sign, chosen with the **wallet | fast ⚡** toggle in the top bar:
 
 - **wallet** (default): your injected wallet (MetaMask/Rabby). Every transaction
   shows a confirmation pop-up. Nothing sensitive touches the app.
-- **fast ⚡** (local signer): paste **one** private key; transactions then sign
-  automatically with **no pop-up** — the same convenience a deploy script has.
-  The key is held in the browser tab's memory only: never written to
-  localStorage, never sent over the network (viem signs locally and broadcasts
-  the already-signed transaction), and gone the moment you refresh.
+- **fast ⚡** (local signer): paste one or more private keys (one per line);
+  transactions then sign automatically with **no pop-up** — the same
+  convenience a deploy script has. Keys are held in the browser tab's memory
+  only: never written to localStorage, never sent over the network (viem signs
+  locally and broadcasts the already-signed transaction), and gone the moment
+  you refresh. When several are loaded, a selector in the top bar picks the
+  **active** wallet — the one that signs and launches — so you can launch from
+  whichever wallet you want without re-pasting.
 
-Fast mode is a deliberate footgun with rails. It is **single-key by design**
-(no wallet list, no generation, no multi-account — that stays out on purpose).
-The real risk is exposure: anything that can run script in the page — a browser
-extension, a compromised dependency, an XSS bug — can read a key while it's
-loaded. So for real funds:
+Fast mode is a deliberate footgun with rails. There is **no key generation and
+no persistence** — keys live in memory for the session only. The real risk is
+exposure: anything that can run script in the page — a browser extension, a
+compromised dependency, an XSS bug — can read a key while it's loaded. So for
+real funds:
 
 - Run LaunchPad **locally** (`npm run dev` on your own machine), not the public
   URL, when a key is loaded.
-- Use a wallet that holds only what the session needs, and remove the key
-  (top bar → **remove key**) when done.
+- Use wallets that hold only what the session needs, and remove the keys
+  (top bar → **remove key/all**) when done.
 
 There is no server and no key database anywhere in this project — a backend that
 stored keys would concentrate every wallet behind one breachable door, which is
@@ -325,9 +328,19 @@ shows:
   minters, distinct collections.
 - **Trending — most minted**: collections ranked by NFTs minted (then unique
   minters), with a rough secondary of mint volume and how long ago the last
-  mint landed. Collection names are resolved on-chain via `name()` and cached.
-- **Latest mints**: a live ticker of individual mints (who minted how many of
-  what, unit price, time-ago, tx link), auto-refreshing every 5s.
+  mint landed. Collection names are resolved on-chain via `name()`, and each
+  collection shows its logo (pulled from `contractURI` and cached).
+- **Latest mints**: a live ticker of individual mints with the collection's
+  avatar, the minter linked to their **OpenSea profile**, quantity, unit
+  price, time-ago and tx link.
+- **Realtime (optional)**: the Blockscout feed auto-refreshes every 5s; paste a
+  **WebSocket RPC** (`wss://…` that supports `eth_subscribe`, e.g. your Alchemy
+  WebSocket URL) and it subscribes directly to SeaDrop mint logs for
+  instant, no-poll updates. Nothing is stored.
+
+Collection logos and pre-reveal art resolve through a **fallback chain of IPFS
+gateways** (ipfs.io → Pinata → Cloudflare → dweb.link → nft.storage), so a
+single slow or rate-limited gateway no longer leaves a broken image.
 
 Only mints that go through SeaDrop are visible here (that's what LaunchPad and
 OpenSea drops use). It needs a **Blockscout API** for the active chain, so it's

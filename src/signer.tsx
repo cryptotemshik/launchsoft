@@ -23,16 +23,25 @@ import { normalizePrivateKey } from "./lib/convert";
 
 export type SignerMode = "wallet" | "local";
 
-interface LocalSigner {
+export interface LocalSigner {
   account: PrivateKeyAccount;
 }
 
 interface SignerControls {
   mode: SignerMode;
   setMode: (m: SignerMode) => void;
-  local: LocalSigner | null;
-  setLocalKey: (raw: string) => void;
-  clearLocal: () => void;
+  /** All loaded fast-mode keys, in the order they were added. */
+  locals: LocalSigner[];
+  /** The key currently used for signing, or null if none loaded. */
+  active: LocalSigner | null;
+  /** Add a key to the list (throws on a bad key; dedupes by address). */
+  addLocalKey: (raw: string) => void;
+  /** Remove one loaded key by its address. */
+  removeLocal: (address: string) => void;
+  /** Drop every loaded key. */
+  clearLocals: () => void;
+  /** Make one loaded key the active signer. */
+  selectLocal: (address: string) => void;
   /** Chain the user has selected in fast mode (ignored in wallet mode). */
   selectedChainId: number;
   setSelectedChainId: (id: number) => void;
@@ -42,20 +51,54 @@ const Ctx = createContext<SignerControls | null>(null);
 
 export function SignerProvider({ children }: { children: ReactNode }) {
   const [mode, setMode] = useState<SignerMode>("wallet");
-  const [local, setLocal] = useState<LocalSigner | null>(null);
+  const [locals, setLocals] = useState<LocalSigner[]>([]);
+  const [activeAddr, setActiveAddr] = useState<string | null>(null);
   const [selectedChainId, setSelectedChainId] = useState<number>(DEFAULT_CHAIN_ID);
 
-  function setLocalKey(raw: string) {
-    const key = normalizePrivateKey(raw);
-    setLocal({ account: privateKeyToAccount(key) });
+  function addLocalKey(raw: string) {
+    const account = privateKeyToAccount(normalizePrivateKey(raw));
+    const addr = account.address.toLowerCase();
+    setLocals((prev) =>
+      prev.some((l) => l.account.address.toLowerCase() === addr) ? prev : [...prev, { account }],
+    );
+    // First key added becomes the active signer automatically.
+    setActiveAddr((prev) => prev ?? addr);
   }
-  function clearLocal() {
-    setLocal(null);
+  function removeLocal(address: string) {
+    const addr = address.toLowerCase();
+    setLocals((prev) => {
+      const next = prev.filter((l) => l.account.address.toLowerCase() !== addr);
+      setActiveAddr((cur) =>
+        cur === addr ? (next[0]?.account.address.toLowerCase() ?? null) : cur,
+      );
+      return next;
+    });
+  }
+  function clearLocals() {
+    setLocals([]);
+    setActiveAddr(null);
+  }
+  function selectLocal(address: string) {
+    setActiveAddr(address.toLowerCase());
   }
 
+  const active =
+    locals.find((l) => l.account.address.toLowerCase() === activeAddr) ?? null;
+
   const value = useMemo(
-    () => ({ mode, setMode, local, setLocalKey, clearLocal, selectedChainId, setSelectedChainId }),
-    [mode, local, selectedChainId],
+    () => ({
+      mode,
+      setMode,
+      locals,
+      active,
+      addLocalKey,
+      removeLocal,
+      clearLocals,
+      selectLocal,
+      selectedChainId,
+      setSelectedChainId,
+    }),
+    [mode, locals, active, selectedChainId],
   );
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
@@ -91,7 +134,7 @@ export function useSigner(): ActiveSigner {
 
   if (ctx?.mode === "local") {
     const info = getChainInfo(ctx.selectedChainId);
-    if (!ctx.local || !info) {
+    if (!ctx.active || !info) {
       return {
         mode: "local",
         chainId: ctx.selectedChainId,
@@ -100,16 +143,17 @@ export function useSigner(): ActiveSigner {
         wrongNetwork: false,
       };
     }
-    // Local wallet client built for the selected chain; signs locally.
+    // Local wallet client built for the selected chain; signs locally with the
+    // active key (fast mode can hold several — this is the chosen one).
     const walletClient = createWalletClient({
-      account: ctx.local.account,
+      account: ctx.active.account,
       chain: info.chain,
       transport: http(),
     });
     return {
       mode: "local",
-      address: ctx.local.account.address,
-      txAccount: ctx.local.account,
+      address: ctx.active.account.address,
+      txAccount: ctx.active.account,
       walletClient,
       chainId: info.id,
       chainInfo: info,

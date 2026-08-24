@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { usePublicClient } from "wagmi";
 import { useActiveChain } from "../signer";
-import { openSeaCollectionUrl } from "../chains";
+import { openSeaCollectionUrl, openSeaProfileUrl } from "../chains";
 import { tokenAbi } from "../contracts/seadrop";
+import { fetchCollectionImage } from "../lib/collectionData";
 import { formatEthShort } from "../lib/profit";
 import { timeAgo } from "../lib/convert";
 import {
@@ -12,8 +13,9 @@ import {
   mergeMints,
   type MintEvent,
 } from "../lib/mintfeed";
+import { watchMints, type MintWatch, type WatchStatus } from "../lib/mintWatch";
 import { shortAddress } from "./ConnectBar";
-import { CopyButton, TxLink } from "./Bits";
+import { CopyButton, IpfsImg, TxLink } from "./Bits";
 import { TrendingIcon } from "./icons";
 
 const POLL_MS = 5_000;
@@ -25,12 +27,21 @@ export default function LiveTab() {
 
   const [mints, setMints] = useState<MintEvent[]>([]);
   const [names, setNames] = useState<Map<string, string>>(new Map());
+  const [images, setImages] = useState<Map<string, string | null>>(new Map());
   const [updatedAt, setUpdatedAt] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Realtime (optional) — a pasted WebSocket RPC gives instant mints.
+  const [wssInput, setWssInput] = useState("");
+  const [wssUrl, setWssUrl] = useState("");
+  const [wsStatus, setWsStatus] = useState<WatchStatus | "off">("off");
+  const [wsError, setWsError] = useState<string | null>(null);
+
   const namesRef = useRef<Map<string, string>>(new Map());
+  const imagesRef = useRef<Map<string, string | null>>(new Map());
   const timerRef = useRef<ReturnType<typeof setInterval>>();
+  const watchRef = useRef<MintWatch | null>(null);
 
   async function resolveNames(addrs: string[]) {
     if (!publicClient) return;
@@ -55,15 +66,35 @@ export default function LiveTab() {
     setNames(new Map(namesRef.current));
   }
 
+  async function resolveImages(addrs: string[]) {
+    if (!publicClient) return;
+    const todo = [...new Set(addrs.map((a) => a.toLowerCase()))]
+      .filter((a) => !imagesRef.current.has(a))
+      .slice(0, 8);
+    if (todo.length === 0) return;
+    await Promise.all(
+      todo.map(async (a) => {
+        const img = await fetchCollectionImage(publicClient, a as `0x${string}`);
+        imagesRef.current.set(a, img);
+      }),
+    );
+    setImages(new Map(imagesRef.current));
+  }
+
+  function ingest(incoming: MintEvent[]) {
+    setMints((prev) => mergeMints(prev, incoming));
+    void resolveNames(incoming.map((e) => e.collection));
+    void resolveImages(incoming.map((e) => e.collection));
+  }
+
   async function poll() {
     if (!api || !chainInfo) return;
     setLoading(true);
     setError(null);
     try {
       const incoming = await fetchMintFeed(api, chainInfo.seaDrop);
-      setMints((prev) => mergeMints(prev, incoming));
+      ingest(incoming);
       setUpdatedAt(Date.now());
-      void resolveNames(incoming.map((e) => e.collection));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -71,22 +102,53 @@ export default function LiveTab() {
     }
   }
 
+  // Blockscout REST backfill + periodic refresh.
   useEffect(() => {
     setMints([]);
     namesRef.current = new Map();
+    imagesRef.current = new Map();
     setNames(new Map());
+    setImages(new Map());
     void poll();
     timerRef.current = setInterval(() => void poll(), POLL_MS);
     return () => clearInterval(timerRef.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [api, chainInfo?.id]);
 
+  // Realtime WebSocket subscription (when a wss URL is set).
+  useEffect(() => {
+    watchRef.current?.stop();
+    watchRef.current = null;
+    setWsStatus("off");
+    setWsError(null);
+    if (!wssUrl || !chainInfo) return;
+    setWsStatus("connecting");
+    watchRef.current = watchMints({
+      wssUrl,
+      chain: chainInfo.chain,
+      seaDrop: chainInfo.seaDrop,
+      onMint: (e) => {
+        ingest([e]);
+        setUpdatedAt(Date.now());
+      },
+      onStatus: (s, msg) => {
+        setWsStatus(s);
+        setWsError(s === "error" ? msg ?? "connection error" : null);
+      },
+    });
+    return () => {
+      watchRef.current?.stop();
+      watchRef.current = null;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wssUrl, chainInfo?.id]);
+
   const stats = useMemo(() => feedStats(mints), [mints]);
   const trending = useMemo(() => aggregateTrending(mints).slice(0, 8), [mints]);
   const oldest = mints.length ? mints[mints.length - 1].t : null;
 
-  const nameOf = (addr: string) =>
-    names.get(addr.toLowerCase()) || shortAddress(addr);
+  const nameOf = (addr: string) => names.get(addr.toLowerCase()) || shortAddress(addr);
+  const imgOf = (addr: string) => images.get(addr.toLowerCase()) ?? undefined;
 
   if (!api) {
     return (
@@ -135,10 +197,60 @@ export default function LiveTab() {
         </div>
         <p className="hint dim" style={{ marginBottom: 0 }}>
           Newest SeaDrop mints across every collection on {chainInfo?.label}
-          {oldest ? `, over roughly the last ${timeAgo(oldest)}` : ""}. Refreshes
-          every {POLL_MS / 1000}s. {loading ? "updating…" : ""}
+          {oldest ? `, over roughly the last ${timeAgo(oldest)}` : ""}.{" "}
+          {wsStatus === "live"
+            ? "Realtime via WebSocket."
+            : `Refreshes every ${POLL_MS / 1000}s.`}{" "}
+          {loading ? "updating…" : ""}
         </p>
         {error ? <p className="error" style={{ marginBottom: 0 }}>{error}</p> : null}
+      </div>
+
+      <div className="panel">
+        <h2>Realtime feed (optional)</h2>
+        <p className="dim" style={{ marginTop: 0 }}>
+          The list above refreshes every {POLL_MS / 1000}s off Blockscout. For
+          instant mints, paste a <b>WebSocket</b> RPC (<code>wss://…</code>) that
+          supports <code>eth_subscribe</code> — e.g. your Alchemy WebSocket URL
+          for {chainInfo?.label}. It subscribes directly to SeaDrop mint logs;
+          nothing is stored.
+        </p>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <input
+            style={{ flex: 1, minWidth: 260 }}
+            value={wssInput}
+            onChange={(e) => setWssInput(e.target.value)}
+            placeholder="wss://….g.alchemy.com/v2/YOUR_KEY"
+            onKeyDown={(e) => e.key === "Enter" && setWssUrl(wssInput.trim())}
+          />
+          {wsStatus === "off" ? (
+            <button className="secondary" onClick={() => setWssUrl(wssInput.trim())} disabled={!wssInput.trim()}>
+              connect
+            </button>
+          ) : (
+            <button
+              className="danger"
+              onClick={() => {
+                setWssUrl("");
+                setWssInput("");
+              }}
+            >
+              disconnect
+            </button>
+          )}
+        </div>
+        {wsStatus !== "off" ? (
+          <p
+            className={wsStatus === "live" ? "ok" : wsStatus === "error" ? "error" : "dim"}
+            style={{ marginBottom: 0, marginTop: 8 }}
+          >
+            {wsStatus === "live"
+              ? "● realtime — subscribed to SeaDrop mints"
+              : wsStatus === "connecting"
+                ? "connecting…"
+                : `WebSocket error: ${wsError ?? "failed"} — check the URL supports eth_subscribe`}
+          </p>
+        ) : null}
       </div>
 
       <div className="panel">
@@ -166,6 +278,7 @@ export default function LiveTab() {
                     <td className="dim">{i + 1}</td>
                     <td>
                       <span className="coll-cell">
+                        <IpfsImg uri={imgOf(r.collection)} size={30} alt="" />
                         <a
                           href={openSeaCollectionUrl(chainInfo!, r.collection)}
                           target="_blank"
@@ -205,10 +318,12 @@ export default function LiveTab() {
           <ul className="feed">
             {mints.slice(0, 60).map((e) => (
               <li key={e.id} className="feed-row">
-                <span className="ev-pill ev-mint">mint</span>
+                <IpfsImg uri={imgOf(e.collection)} size={34} alt="" />
                 <span className="feed-main">
-                  <b>{shortAddress(e.minter)}</b> minted{" "}
-                  <span className="qty">×{e.quantity}</span>{" "}
+                  <a href={openSeaProfileUrl(e.minter)} target="_blank" rel="noreferrer">
+                    <b>{shortAddress(e.minter)}</b>
+                  </a>{" "}
+                  minted <span className="qty">×{e.quantity}</span>{" "}
                   <a
                     href={openSeaCollectionUrl(chainInfo!, e.collection)}
                     target="_blank"

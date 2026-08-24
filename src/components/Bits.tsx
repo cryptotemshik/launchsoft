@@ -1,10 +1,12 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import {
   CHAINS_BY_ID,
   DEFAULT_CHAIN_ID,
   explorerAddressUrl,
   explorerTxUrl,
   ipfsGatewayUrl,
+  ipfsUrl,
+  IPFS_GATEWAYS,
 } from "../chains";
 import { useActiveChain } from "../signer";
 import { collectionOpenSeaUrl, setOpenSeaUrl } from "../lib/projects";
@@ -202,6 +204,59 @@ export function TrackedLink({
     >
       {children}
     </a>
+  );
+}
+
+/**
+ * An image that resolves an ipfs:// URI and falls back across gateways on
+ * error, so a single slow/rate-limited gateway doesn't leave a broken image.
+ * Renders a neutral placeholder while empty or once every gateway has failed.
+ */
+export function IpfsImg({
+  uri,
+  alt = "",
+  size = 34,
+  radius = 8,
+}: {
+  uri?: string | null;
+  alt?: string;
+  size?: number;
+  radius?: number;
+}) {
+  const [gw, setGw] = useState(0);
+  const [failed, setFailed] = useState(false);
+
+  // Reset the gateway walk whenever the source changes.
+  useEffect(() => {
+    setGw(0);
+    setFailed(false);
+  }, [uri]);
+
+  const box = {
+    width: size,
+    height: size,
+    borderRadius: radius,
+    flex: "none" as const,
+    objectFit: "cover" as const,
+    background: "var(--surface-hi)",
+    border: "1px solid var(--line)",
+  };
+
+  if (!uri || failed) {
+    return <div style={{ ...box, display: "inline-block" }} aria-hidden />;
+  }
+  const src = uri.startsWith("ipfs://") ? ipfsUrl(uri, gw) : uri;
+  return (
+    <img
+      src={src}
+      alt={alt}
+      loading="lazy"
+      style={box}
+      onError={() => {
+        if (uri.startsWith("ipfs://") && gw + 1 < IPFS_GATEWAYS.length) setGw((g) => g + 1);
+        else setFailed(true);
+      }}
+    />
   );
 }
 

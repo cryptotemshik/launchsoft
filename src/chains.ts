@@ -329,7 +329,36 @@ export function explorerTxUrl(info: ChainInfo, hash: string): string {
   return `${info.explorerUrl}/tx/${hash}`;
 }
 
-/** Pinata public gateway — chain-independent. */
+/**
+ * IPFS gateways in fallback order. A single gateway rate-limits and stalls, so
+ * images/metadata try these in turn (see `ipfsUrl` + the `IpfsImg` component).
+ */
+export const IPFS_GATEWAYS = [
+  "https://ipfs.io/ipfs/",
+  "https://gateway.pinata.cloud/ipfs/",
+  "https://cloudflare-ipfs.com/ipfs/",
+  "https://dweb.link/ipfs/",
+  "https://nftstorage.link/ipfs/",
+] as const;
+
+/** Strip the ipfs:// (or bare ipfs/) prefix to a raw path. */
+export function ipfsPath(uri: string): string {
+  return uri.replace(/^ipfs:\/\//, "").replace(/^ipfs\//, "");
+}
+
+/** Resolve an ipfs:// URI through the Nth gateway; pass http(s) URIs through. */
+export function ipfsUrl(uri: string, gateway = 0): string {
+  if (!uri.startsWith("ipfs://")) return uri;
+  const g = IPFS_GATEWAYS[gateway % IPFS_GATEWAYS.length];
+  return `${g}${ipfsPath(uri)}`;
+}
+
+/** Back-compat single-gateway helper (first gateway in the list). */
 export function ipfsGatewayUrl(ipfsUri: string): string {
-  return `https://gateway.pinata.cloud/ipfs/${ipfsUri.replace("ipfs://", "")}`;
+  return ipfsUrl(ipfsUri, 0);
+}
+
+/** A wallet's OpenSea profile page. */
+export function openSeaProfileUrl(address: string): string {
+  return `https://opensea.io/${address}`;
 }
