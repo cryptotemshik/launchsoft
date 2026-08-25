@@ -295,6 +295,17 @@ h1 .cursor {
   position: relative;
   display: inline-flex;
 }
+/* Snipe sits at the far right; its group inherits that placement. */
+.tab-group.snipe-group {
+  margin-left: auto;
+}
+.tab-group.snipe-group .tab-menu {
+  left: auto;
+  right: 0;
+}
+.tabs .tab-group.snipe-group button.tab-mint {
+  margin-left: 0;
+}
 .tab-menu {
   position: absolute;
   top: 100%;
@@ -1020,6 +1031,9 @@ tr.project-detail td {
   .tabs button.tab-mint {
     margin-left: 0;
     flex-basis: 100%;
+  }
+  .tab-group.snipe-group {
+    margin-left: 0;
   }
   /* No reliable hover on touch, so the Launch menu can't be a dropdown —
      flatten the group so Reveal/Status render as ordinary tabs alongside

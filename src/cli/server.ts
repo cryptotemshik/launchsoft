@@ -27,7 +27,19 @@
  */
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { timingSafeEqual, randomUUID } from "node:crypto";
-import { loadConfig, loadKeys } from "./config";
+import { writeFileSync } from "node:fs";
+import { createPublicClient, http as viemHttp, formatEther } from "viem";
+import { privateKeyToAccount } from "viem/accounts";
+import { getChainInfo } from "../chains";
+import { normalizePrivateKey } from "../lib/convert";
+import {
+  keysPath,
+  loadConfig,
+  loadKeyEntries,
+  loadKeys,
+  serialiseKeys,
+  type KeyEntry,
+} from "./config";
 import { runSnipe, type RunOptions, type RunResult } from "./runner";
 import { formatMintReport, sendTelegram, type MintedWallet } from "../lib/telegram";
 
@@ -161,6 +173,52 @@ function buildRequest(body: Record<string, unknown>): Omit<RunOptions, "keys"> {
   };
 }
 
+// ── Wallets ──────────────────────────────────────────────────────────────────
+/**
+ * Wallet management is deliberately write-only: keys go in, and only addresses
+ * come back. Even with the token, this API cannot be used to read out a key
+ * that is already on the box.
+ */
+function writeKeys(entries: KeyEntry[]) {
+  const cfg = loadConfig(CONFIG_PATH);
+  const abs = keysPath(CONFIG_PATH, cfg.keysFile);
+  // 0600: readable only by the user running the server.
+  writeFileSync(abs, serialiseKeys(entries), { mode: 0o600 });
+}
+
+/** Addresses, labels and balances — never keys. */
+async function walletsView() {
+  const cfg = loadConfig(CONFIG_PATH);
+  const entries = loadKeyEntries(CONFIG_PATH, cfg.keysFile);
+  const info = getChainInfo(cfg.chainId);
+  const addresses = entries.map((e) => ({
+    address: privateKeyToAccount(e.key).address,
+    label: e.label,
+  }));
+
+  let balances = new Map<string, string>();
+  if (info && addresses.length > 0) {
+    try {
+      const client = createPublicClient({
+        chain: info.chain,
+        transport: viemHttp(cfg.extraRpcs[0] ?? info.chain.rpcUrls.default.http[0]),
+      });
+      const got = await Promise.all(
+        addresses.map(async (a) => [a.address, await client.getBalance({ address: a.address })] as const),
+      );
+      balances = new Map(got.map(([a, b]) => [a, formatEther(b)]));
+    } catch {
+      // Balances are a nicety; the list itself must still render.
+    }
+  }
+
+  return {
+    chainId: cfg.chainId,
+    chain: info?.label,
+    wallets: addresses.map((a) => ({ ...a, balance: balances.get(a.address) ?? null })),
+  };
+}
+
 /** Send the run summary to Telegram, if configured. Never throws. */
 async function notify(job: Job) {
   let cfg;
@@ -286,6 +344,66 @@ const server = createServer(async (req, res) => {
         armLeadMs: ARM_LEAD_MS,
         jobs: jobs.map(jobView),
       });
+      return;
+    }
+
+    if (url.pathname === "/api/wallets" && req.method === "GET") {
+      json(res, 200, await walletsView());
+      return;
+    }
+
+    // Add wallets. Keys are accepted, stored, and never handed back.
+    if (url.pathname === "/api/wallets" && req.method === "POST") {
+      const body = await readBody(req);
+      const raw = typeof body.keys === "string" ? body.keys : "";
+      if (!raw.trim()) throw new Error("no keys supplied");
+
+      const cfg = loadConfig(CONFIG_PATH);
+      const existing = loadKeyEntries(CONFIG_PATH, cfg.keysFile);
+      const have = new Set(existing.map((e) => e.key));
+      const label = typeof body.label === "string" ? body.label.slice(0, 60) : undefined;
+
+      let added = 0;
+      const rejected: string[] = [];
+      for (const line of raw.split(/[\s,]+/)) {
+        const t = line.trim();
+        if (!t) continue;
+        let key: `0x${string}`;
+        try {
+          key = normalizePrivateKey(t);
+        } catch {
+          // Never echo the offending text back — it is a private key.
+          rejected.push("not a valid 64-hex private key");
+          continue;
+        }
+        if (have.has(key)) continue;
+        have.add(key);
+        existing.push({ key, label });
+        added += 1;
+      }
+      if (added > 0) writeKeys(existing);
+      log(`wallets: added ${added}${rejected.length ? `, rejected ${rejected.length}` : ""}`);
+      json(res, 200, { added, rejected: rejected.length, ...(await walletsView()) });
+      return;
+    }
+
+    if (url.pathname === "/api/wallets" && req.method === "DELETE") {
+      const address = (url.searchParams.get("address") ?? "").toLowerCase();
+      if (!/^0x[0-9a-f]{40}$/.test(address)) throw new Error("address must be a 0x address");
+      if (activeJobId) {
+        json(res, 409, { error: "a job is running — wait for it or abort first" });
+        return;
+      }
+      const cfg = loadConfig(CONFIG_PATH);
+      const entries = loadKeyEntries(CONFIG_PATH, cfg.keysFile);
+      const kept = entries.filter((e) => privateKeyToAccount(e.key).address.toLowerCase() !== address);
+      if (kept.length === entries.length) {
+        json(res, 404, { error: "no wallet with that address" });
+        return;
+      }
+      writeKeys(kept);
+      log(`wallets: removed ${address}`);
+      json(res, 200, await walletsView());
       return;
     }
 

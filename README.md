@@ -528,6 +528,20 @@ leave the server — the panel receives addresses and balances only.
 
 Under pm2: `pm2 start "npm run snipe:server" --name snipe-api && pm2 save`.
 
+### Managing the server's wallets from the browser
+
+**SNIPE → WALLETS** adds and removes the wallets the runner mints with, so
+`snipe.keys` never has to be edited over SSH. Paste keys, optionally label
+them, press upload; the list shows each wallet's address, label and balance.
+
+The API behind it is **write-only by design**: keys go up, and only addresses
+come back. Nothing in the server exposes a stored key, so a leaked token cannot
+be used to extract wallets already on the box (it could add or remove ones,
+which costs you nothing but the removal). Keys are written with mode `0600`,
+and the file keeps hand-written labels and comments.
+
+Both tabs share one connection — connect in either and the other is connected.
+
 ### Queueing drops ahead of time
 
 Load a collection in the Snipe tab, press **+ QUEUE THIS DROP**, then load the

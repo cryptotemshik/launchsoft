@@ -5,6 +5,7 @@ import DashboardTab from "./components/DashboardTab";
 import LaunchTab from "./components/LaunchTab";
 import LiveTab from "./components/LiveTab";
 import RevealTab from "./components/RevealTab";
+import ServerWalletsTab from "./components/ServerWalletsTab";
 import SnipeTab from "./components/SnipeTab";
 import StatusTab from "./components/StatusTab";
 import WalletsTab from "./components/WalletsTab";
@@ -15,6 +16,7 @@ import {
   CrosshairIcon,
   EyeIcon,
   GridIcon,
+  KeyIcon,
   PulseIcon,
   RocketIcon,
   TrendingIcon,
@@ -28,7 +30,8 @@ type Tab =
   | "status"
   | "live"
   | "wallets"
-  | "snipe";
+  | "snipe"
+  | "serverwallets";
 
 const TAB_ICON = {
   launch: RocketIcon,
@@ -38,6 +41,7 @@ const TAB_ICON = {
   wallets: WalletIcon,
   dashboard: GridIcon,
   snipe: CrosshairIcon,
+  serverwallets: KeyIcon,
 } as const;
 
 export default function App() {
@@ -113,13 +117,26 @@ export default function App() {
             </button>
           );
         })}
-        <button
-          className={`tab-mint ${tab === "snipe" ? "active" : ""}`}
-          onClick={() => setTab("snipe")}
-        >
-          <CrosshairIcon />
-          SNIPE
-        </button>
+        {/* Snipe is the entry point; the server's wallets belong with it. */}
+        <div className="tab-group snipe-group">
+          <button
+            className={`tab-mint ${tab === "snipe" || tab === "serverwallets" ? "active" : ""}`}
+            onClick={() => setTab("snipe")}
+          >
+            <CrosshairIcon />
+            SNIPE
+            <ChevronDownIcon className="tab-chevron" width={13} height={13} />
+          </button>
+          <div className="tab-menu">
+            <button
+              className={tab === "serverwallets" ? "active" : ""}
+              onClick={() => setTab("serverwallets")}
+            >
+              <KeyIcon />
+              WALLETS
+            </button>
+          </div>
+        </div>
       </div>
       {tab === "dashboard" ? <DashboardTab /> : null}
       {tab === "launch" ? <LaunchTab /> : null}
@@ -128,6 +145,7 @@ export default function App() {
       {tab === "live" ? <LiveTab /> : null}
       {tab === "wallets" ? <WalletsTab /> : null}
       {tab === "snipe" ? <SnipeTab /> : null}
+      {tab === "serverwallets" ? <ServerWalletsTab /> : null}
       <div className="footer">
         {info.label} · explorer:{" "}
         <a href={info.explorerUrl} target="_blank" rel="noreferrer">

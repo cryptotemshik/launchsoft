@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { formatCountdown, unixToLocalAndUtc } from "../lib/convert";
+import { useRunnerApi } from "../lib/runnerClient";
 
 /**
  * Control panel for a snipe runner living next to the sequencer.
@@ -67,9 +68,6 @@ interface StatusView {
   jobs: Job[];
 }
 
-const URL_KEY = "launchpad.runner.url";
-const TOKEN_KEY = "launchpad.runner.token";
-
 const STATUS_CLASS: Record<Job["status"], string> = {
   queued: "dim",
   armed: "warn",
@@ -91,11 +89,18 @@ export interface RemoteRunnerProps {
 }
 
 export default function RemoteRunner(props: RemoteRunnerProps) {
-  const [url, setUrl] = useState(() => localStorage.getItem(URL_KEY) ?? "");
-  const [token, setToken] = useState(
-    () => sessionStorage.getItem(TOKEN_KEY) ?? localStorage.getItem(TOKEN_KEY) ?? "",
-  );
-  const [rememberToken, setRememberToken] = useState(() => localStorage.getItem(TOKEN_KEY) !== null);
+  const api = useRunnerApi();
+  const {
+    url,
+    setUrl,
+    token,
+    setToken,
+    remember: rememberToken,
+    setRemember: setRememberToken,
+    base,
+    call,
+    save,
+  } = api;
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -104,34 +109,14 @@ export default function RemoteRunner(props: RemoteRunnerProps) {
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
   const pollRef = useRef<ReturnType<typeof setInterval>>();
 
-  const base = url.trim().replace(/\/+$/, "");
-
   useEffect(() => {
     const t = setInterval(() => setNow(Math.floor(Date.now() / 1000)), 1000);
     return () => clearInterval(t);
   }, []);
 
-  const call = useCallback(
-    async (path: string, init?: RequestInit) => {
-      const res = await fetch(`${base}${path}`, {
-        ...init,
-        headers: {
-          ...(init?.headers ?? {}),
-          authorization: `Bearer ${token.trim()}`,
-          ...(init?.body ? { "content-type": "application/json" } : {}),
-        },
-      });
-      const text = await res.text();
-      const body = text ? JSON.parse(text) : {};
-      if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`);
-      return body;
-    },
-    [base, token],
-  );
-
   const refresh = useCallback(async () => {
     try {
-      const s = (await call("/api/status")) as StatusView;
+      const s = (await call("/api/status")) as unknown as StatusView;
       setStatus(s);
       setConnected(true);
       setError(null);
@@ -152,12 +137,7 @@ export default function RemoteRunner(props: RemoteRunnerProps) {
     setBusy(true);
     setError(null);
     try {
-      localStorage.setItem(URL_KEY, base);
-      if (rememberToken) localStorage.setItem(TOKEN_KEY, token.trim());
-      else {
-        localStorage.removeItem(TOKEN_KEY);
-        sessionStorage.setItem(TOKEN_KEY, token.trim());
-      }
+      save();
       await refresh();
     } finally {
       setBusy(false);
