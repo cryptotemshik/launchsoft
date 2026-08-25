@@ -27,6 +27,7 @@ import {
   warmEndpoints,
   type RpcEndpoint,
 } from "../lib/rpcBlast";
+import { nodeSender } from "./nodeSender";
 import type { FundingGas } from "./funding";
 
 /** An ERC-721 transferFrom costs well under this; unused gas is refunded. */
@@ -219,9 +220,9 @@ export async function sweepNfts(
   );
   onLog(`signed ${prepared.length} transfer(s)`);
 
-  await warmEndpoints(endpoints);
+  await warmEndpoints(endpoints, prepared.length, nodeSender);
   const t0 = Date.now();
-  const fired = prepared.map((p) => ({ ...p, results: blastToAll(p.blast, endpoints).results }));
+  const fired = prepared.map((p) => ({ ...p, results: blastToAll(p.blast, endpoints, nodeSender).results }));
   onLog(`dispatched ${fired.length} transfer(s) in ${Date.now() - t0}ms`);
 
   const outcomes = await Promise.all(

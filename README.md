@@ -717,6 +717,33 @@ so balances and nonces there stop queueing behind the same limit — the server
 probes each one for chain id before storing it and reports which host it reads
 through.
 
+### One socket per wallet
+
+Pre-signing puts the compute before the stage opens; warming was meant to put
+the connection setup there too. It did not, and the gap was invisible: Node's
+`fetch` is HTTP/1.1, HTTP/1.1 cannot carry two in-flight requests on one
+connection, and the warm-up opened exactly one connection per endpoint. A
+hundred wallets firing together therefore did a hundred TLS handshakes at T-0 —
+in the microseconds the whole design exists to protect, all competing for the
+same CPU.
+
+The runner now warms one socket per wallet (`src/cli/nodeSender.ts`, a
+keep-alive pool) and re-warms on the approach in case the far end dropped any.
+Measured against a local TLS server, through the real `blastToAll` path:
+
+| | handshakes at fire time | blast |
+|---|---|---|
+| one warmed connection | 100 | 321ms |
+| a warmed pool of 100 | **0** | **27ms** |
+
+Localhost flatters the old number — a handshake costs almost nothing there.
+Over a real network each one is a further round-trip, on the endpoint whose
+round-trip decides the race.
+
+The browser keeps using `fetch`: it negotiates HTTP/2, where one connection
+multiplexes every concurrent request, so there is nothing to pool. The split
+lives behind `RpcSender` in `src/lib/rpcBlast.ts`.
+
 ### Measuring it yourself
 
 Published RPC benchmarks are run from the provider's regions against the

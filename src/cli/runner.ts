@@ -38,6 +38,7 @@ import {
   warmEndpoints,
   type RpcEndpoint,
 } from "../lib/rpcBlast";
+import { nodeSender, pooledSockets } from "./nodeSender";
 import { waitUntil } from "../lib/snipeTimer";
 
 export interface RunOptions {
@@ -371,15 +372,18 @@ export async function runSnipe(opts: RunOptions, hooks: RunHooks): Promise<RunRe
 
   // A cold HTTPS request spends most of its time on DNS+TCP+TLS; that cost has
   // no business being on the critical path.
-  await warmEndpoints(endpoints);
-  log("warmed     connections open");
+  // One socket per wallet, not one per endpoint: HTTP/1.1 cannot share a
+  // connection between two requests in flight, so anything less leaves most of
+  // the blast negotiating TLS at T-0.
+  await warmEndpoints(endpoints, prepared.length, nodeSender);
+  log(`warmed     ${pooledSockets()} connection(s) open for ${prepared.length} wallet(s)`);
 
   if (opts.timing === "wait" && startTime * 1000 > Date.now()) {
     log("waiting    holding until the stage opens…");
     const outcome = await waitUntil(startTime * 1000, {
       signal: hooks.signal,
       onApproach: () => {
-        void warmEndpoints(endpoints);
+        void warmEndpoints(endpoints, prepared.length, nodeSender);
         log("warming    re-opened connections (3s out)");
       },
     });
@@ -394,7 +398,7 @@ export async function runSnipe(opts: RunOptions, hooks: RunHooks): Promise<RunRe
   const fired = prepared.map(({ address, blast }) => ({
     address,
     txHash: blast.txHash,
-    results: blastToAll(blast, endpoints).results,
+    results: blastToAll(blast, endpoints, nodeSender).results,
   }));
   log(`FIRED      ${fired.length} transaction(s) dispatched in ${Date.now() - t0}ms`);
   for (const f of fired) log(`  ${f.address} → ${f.txHash}`);

@@ -71,8 +71,10 @@ describe("blastToAll", () => {
     const prepared = prepareBlast(raw as `0x${string}`);
     const fetchMock = vi
       .fn()
-      .mockResolvedValueOnce({ json: async () => ({ result: "0xabc" }) })
-      .mockResolvedValueOnce({ json: async () => ({ error: { message: "already known" } }) })
+      .mockResolvedValueOnce({ text: async () => JSON.stringify({ result: "0xabc" }) })
+      .mockResolvedValueOnce({
+        text: async () => JSON.stringify({ error: { message: "already known" } }),
+      })
       .mockRejectedValueOnce(new Error("network down"));
     vi.stubGlobal("fetch", fetchMock);
 

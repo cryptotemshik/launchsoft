@@ -31,6 +31,7 @@ import {
   warmEndpoints,
   type RpcEndpoint,
 } from "../lib/rpcBlast";
+import { nodeSender } from "./nodeSender";
 
 /** A plain ETH transfer costs 21000; the margin covers chain-specific extras. */
 export const TRANSFER_GAS = 30_000n;
@@ -105,9 +106,9 @@ async function fire(
   );
   onLog(`signed ${prepared.length} transfer(s)`);
 
-  await warmEndpoints(ctx.endpoints);
+  await warmEndpoints(ctx.endpoints, txs.length, nodeSender);
   const t0 = Date.now();
-  const fired = prepared.map((p) => ({ ...p, results: blastToAll(p.blast, ctx.endpoints).results }));
+  const fired = prepared.map((p) => ({ ...p, results: blastToAll(p.blast, ctx.endpoints, nodeSender).results }));
   onLog(`dispatched ${fired.length} transfer(s) in ${Date.now() - t0}ms`);
 
   return Promise.all(
