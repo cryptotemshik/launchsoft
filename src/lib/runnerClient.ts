@@ -50,12 +50,19 @@ export interface RunnerApi {
   call: (path: string, init?: RequestInit) => Promise<never | Record<string, unknown>>;
   /** Persist the current credentials. */
   save: () => void;
+  /**
+   * API version of the server that answered last, or null before the first
+   * successful call. Older servers than {@link API_VERSION} predate the field
+   * and report 1 — which is exactly the case worth warning about.
+   */
+  serverVersion: number | null;
 }
 
 export function useRunnerApi(): RunnerApi {
   const [url, setUrl] = useState(loadRunnerUrl);
   const [token, setToken] = useState(loadRunnerToken);
   const [remember, setRemember] = useState(tokenIsRemembered);
+  const [serverVersion, setServerVersion] = useState<number | null>(null);
 
   const base = url.trim().replace(/\/+$/, "");
 
@@ -71,6 +78,10 @@ export function useRunnerApi(): RunnerApi {
       });
       const text = await res.text();
       const body = text ? JSON.parse(text) : {};
+      // Read the version even off an error response — a stale server is most
+      // often noticed because a request it can't parse just failed.
+      if (typeof body.apiVersion === "number") setServerVersion(body.apiVersion);
+      else if (res.ok) setServerVersion(1);
       if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`);
       return body;
     },
@@ -82,5 +93,5 @@ export function useRunnerApi(): RunnerApi {
     [base, token, remember],
   );
 
-  return { url, setUrl, token, setToken, remember, setRemember, base, call, save };
+  return { url, setUrl, token, setToken, remember, setRemember, base, call, save, serverVersion };
 }

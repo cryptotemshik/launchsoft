@@ -17,12 +17,12 @@
 import {
   createPublicClient,
   formatEther,
-  http,
   parseGwei,
   type PublicClient,
 } from "viem";
 import { privateKeyToAccount, type PrivateKeyAccount } from "viem/accounts";
 import { getChainInfo } from "../chains";
+import { mapWithLimit, readTransport } from "../lib/rpcRead";
 import {
   blastToAll,
   isAlreadyKnown,
@@ -60,7 +60,10 @@ async function context(chainId: number, extraRpcs: string[], gas: FundingGas): P
   const info = getChainInfo(chainId);
   if (!info) throw new Error(`chain ${chainId} isn't in the registry`);
   const readUrl = extraRpcs[0] ?? info.chain.rpcUrls.default.http[0];
-  const client = createPublicClient({ chain: info.chain, transport: http(readUrl) }) as PublicClient;
+  const client = createPublicClient({
+    chain: info.chain,
+    transport: readTransport(readUrl),
+  }) as PublicClient;
   const endpoints = parseRpcEndpoints([
     ...(info.submitRpcs ?? []),
     ...info.chain.rpcUrls.default.http,
@@ -159,11 +162,12 @@ export async function disperse(
   // Balances decide who actually needs money, so an aborted run can be
   // repeated without double-funding anyone.
   const balances = new Map<string, bigint>();
-  await Promise.all(
-    opts.targets.map(async (t) =>
-      balances.set(t.toLowerCase(), await ctx.client.getBalance({ address: t })),
-    ),
+  const read = await mapWithLimit(
+    opts.targets,
+    (t) => ctx.client.getBalance({ address: t }),
+    { onRetry: (ms) => onLog(`endpoint is rate-limiting reads — waiting ${ms}ms`) },
   );
+  opts.targets.forEach((t, i) => balances.set(t.toLowerCase(), read[i]));
   const threshold = opts.skipIfAtLeastWei ?? 0n;
   const needy = opts.targets.filter(
     (t) => (balances.get(t.toLowerCase()) ?? 0n) < threshold || threshold === 0n,
@@ -262,9 +266,12 @@ export async function collect(
   const reserve = TRANSFER_GAS * ctx.maxFeePerGas;
   const min = opts.minWei ?? reserve * 2n;
 
-  const balances = await Promise.all(
-    accounts.map(async (a) => ({ a, bal: await ctx.client.getBalance({ address: a.address }) })),
+  const read = await mapWithLimit(
+    accounts,
+    (a) => ctx.client.getBalance({ address: a.address }),
+    { onRetry: (ms) => onLog(`endpoint is rate-limiting reads — waiting ${ms}ms`) },
   );
+  const balances = accounts.map((a, i) => ({ a, bal: read[i] }));
 
   const outcomes: TransferOutcome[] = [];
   const sendable: { from: PrivateKeyAccount; value: bigint }[] = [];
@@ -309,10 +316,8 @@ export async function collect(
   }
 
   // Independent senders → independent nonces, nothing to sequence.
-  const nonces = await Promise.all(
-    sendable.map((s) =>
-      ctx.client.getTransactionCount({ address: s.from.address, blockTag: "pending" }),
-    ),
+  const nonces = await mapWithLimit(sendable, (x) =>
+    ctx.client.getTransactionCount({ address: x.from.address, blockTag: "pending" }),
   );
   const sent = await fire(
     ctx,

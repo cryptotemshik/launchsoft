@@ -27,8 +27,9 @@
  */
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { timingSafeEqual, randomUUID } from "node:crypto";
-import { writeFileSync } from "node:fs";
-import { createPublicClient, http as viemHttp, formatEther, parseEther } from "viem";
+import { readFileSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { createPublicClient, formatEther, parseEther } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { collect, disperse } from "./funding";
 import { findHoldings, sweepNfts, type Holding } from "./nftSweep";
@@ -41,10 +42,12 @@ import {
   loadKeys,
   serialiseKeys,
   type KeyEntry,
+  type SnipeConfig,
 } from "./config";
 import { runSnipe, type RunOptions, type RunResult } from "./runner";
 import { formatMintReport, sendTelegram, type MintedWallet } from "../lib/telegram";
 import { API_VERSION } from "../lib/apiVersion";
+import { mapWithLimit, readTransport } from "../lib/rpcRead";
 
 const stamp = () => new Date().toISOString().slice(11, 23);
 const log = (msg: string) => console.log(`[${stamp()}] ${msg}`);
@@ -117,7 +120,13 @@ function cors(req: IncomingMessage, res: ServerResponse) {
 
 function json(res: ServerResponse, code: number, body: unknown) {
   res.writeHead(code, { "content-type": "application/json" });
-  res.end(JSON.stringify(body));
+  // Every response carries the version, so a panel learns the server is behind
+  // from whichever route it happens to call first rather than only from /ping.
+  const payload =
+    body && typeof body === "object" && !Array.isArray(body)
+      ? { apiVersion: API_VERSION, ...(body as Record<string, unknown>) }
+      : body;
+  res.end(JSON.stringify(payload));
 }
 
 async function readBody(req: IncomingMessage): Promise<Record<string, unknown>> {
@@ -201,6 +210,84 @@ function parseWalletFilter(body: Record<string, unknown>): string[] | undefined 
   return out.length > 0 ? out : undefined;
 }
 
+// ── Read endpoint ────────────────────────────────────────────────────────────
+/**
+ * Which endpoint state is read from. Broadcasting a mint goes to every endpoint
+ * at once, but reading a hundred balances has to pick one — and the public RPC
+ * meters requests per minute, so a paid endpoint pasted into the panel belongs
+ * here first.
+ */
+function readRpc(cfg: SnipeConfig, info: NonNullable<ReturnType<typeof getChainInfo>>): string {
+  return cfg.extraRpcs[0] ?? info.chain.rpcUrls.default.http[0];
+}
+
+/** Host only — the full URL usually carries a provider API key. */
+function rpcHost(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return "unknown";
+  }
+}
+
+/**
+ * Persist the endpoints the panel is using, so server-side reads (balances,
+ * funding, sweeps) go through the same paid endpoint the browser does instead
+ * of the rate-limited public one. Written back to the config file so it
+ * survives a restart.
+ */
+/**
+ * Ask an endpoint which chain it serves. A typo or a URL for the wrong network
+ * would otherwise be stored and then silently break every balance read, so it
+ * is checked before it is written rather than after it causes confusion.
+ */
+async function probeChainId(url: string): Promise<number> {
+  const abort = new AbortController();
+  const timer = setTimeout(() => abort.abort(), 4_000);
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_chainId", params: [] }),
+      signal: abort.signal,
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const body = (await res.json()) as { result?: string; error?: { message?: string } };
+    if (!body.result) throw new Error(body.error?.message ?? "no chain id in the reply");
+    return Number(BigInt(body.result));
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function saveExtraRpcs(urls: string[]): string[] {
+  const clean: string[] = [];
+  for (const u of urls) {
+    const t = u.trim();
+    if (!t) continue;
+    let parsed: URL;
+    try {
+      parsed = new URL(t);
+    } catch {
+      throw new Error(`"${t.slice(0, 40)}" is not a URL`);
+    }
+    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+      throw new Error("RPC endpoints must be http(s)");
+    }
+    if (!clean.includes(t)) clean.push(t);
+  }
+  if (clean.length > 8) throw new Error("that is more endpoints than is useful — keep it under eight");
+
+  const abs = resolve(CONFIG_PATH);
+  const raw = JSON.parse(readFileSync(abs, "utf8")) as Record<string, unknown>;
+  raw.extraRpcs = clean;
+  writeFileSync(abs, `${JSON.stringify(raw, null, 2)}\n`, { mode: 0o600 });
+  // Balances were read through the old endpoint; don't serve them as if they
+  // came from the new one.
+  balanceCache = null;
+  return clean;
+}
+
 // ── Wallets ──────────────────────────────────────────────────────────────────
 /**
  * Wallet management is deliberately write-only: keys go in, and only addresses
@@ -214,6 +301,14 @@ function writeKeys(entries: KeyEntry[]) {
   writeFileSync(abs, serialiseKeys(entries), { mode: 0o600 });
 }
 
+/**
+ * Balances are the expensive part of the wallet list, and two panels poll it
+ * every few seconds. Serving a few-second-old number costs nothing and keeps a
+ * hundred-wallet set from spending the endpoint's whole rate budget on a view.
+ */
+const BALANCE_TTL_MS = 10_000;
+let balanceCache: { at: number; values: Map<string, string> } | null = null;
+
 /** Addresses, labels and balances — never keys. */
 async function walletsView() {
   const cfg = loadConfig(CONFIG_PATH);
@@ -225,24 +320,46 @@ async function walletsView() {
   }));
 
   let balances = new Map<string, string>();
-  if (info && addresses.length > 0) {
+  const fresh = balanceCache && Date.now() - balanceCache.at < BALANCE_TTL_MS;
+  if (fresh && balanceCache) {
+    balances = balanceCache.values;
+  } else if (info && addresses.length > 0) {
     try {
       const client = createPublicClient({
         chain: info.chain,
-        transport: viemHttp(cfg.extraRpcs[0] ?? info.chain.rpcUrls.default.http[0]),
+        transport: readTransport(readRpc(cfg, info)),
       });
-      const got = await Promise.all(
-        addresses.map(async (a) => [a.address, await client.getBalance({ address: a.address })] as const),
-      );
-      balances = new Map(got.map(([a, b]) => [a, formatEther(b)]));
+      const got = await mapWithLimit(addresses, (a) => client.getBalance({ address: a.address }));
+      balances = new Map(addresses.map((a, i) => [a.address, formatEther(got[i])]));
+      balanceCache = { at: Date.now(), values: balances };
+    } catch (e) {
+      // Balances are a nicety; the list itself must still render. Say why once
+      // so a rate limit doesn't look like the wallets have no money.
+      log(`balances unavailable: ${e instanceof Error ? e.message.split("\n")[0] : e}`);
+      balances = balanceCache?.values ?? new Map();
+    }
+  }
+
+  if (balances.size === 0 && info && addresses.length > 0 && cfg.extraRpcs.length > 0) {
+    // The configured endpoint let us down; the chain's own RPC is slower and
+    // metered, but it is better than a list of dashes.
+    try {
+      const client = createPublicClient({
+        chain: info.chain,
+        transport: readTransport(info.chain.rpcUrls.default.http[0]),
+      });
+      const got = await mapWithLimit(addresses, (a) => client.getBalance({ address: a.address }));
+      balances = new Map(addresses.map((a, i) => [a.address, formatEther(got[i])]));
+      balanceCache = { at: Date.now(), values: balances };
     } catch {
-      // Balances are a nicety; the list itself must still render.
+      // Nothing more to try.
     }
   }
 
   return {
     chainId: cfg.chainId,
     chain: info?.label,
+    readRpc: info ? rpcHost(readRpc(cfg, info)) : null,
     wallets: addresses.map((a) => ({ ...a, balance: balances.get(a.address) ?? null })),
   };
 }
@@ -439,13 +556,48 @@ const server = createServer(async (req, res) => {
 
   try {
     if (url.pathname === "/api/status" && req.method === "GET") {
+      const cfg = loadConfig(CONFIG_PATH);
+      const info = getChainInfo(cfg.chainId);
       json(res, 200, {
         apiVersion: API_VERSION,
         running: activeJobId !== null,
         activeJobId,
         armLeadMs: ARM_LEAD_MS,
+        // Hosts only — the full URLs carry provider API keys.
+        rpcHosts: cfg.extraRpcs.map(rpcHost),
+        readRpc: info ? rpcHost(readRpc(cfg, info)) : null,
         jobs: jobs.map(jobView),
       });
+      return;
+    }
+
+    /**
+     * Store the endpoints the panel is using. Reads on the server (balances,
+     * funding, sweeps) then go through the same paid endpoint instead of the
+     * public one, which is what a hundred-wallet set needs to stay inside a
+     * rate limit.
+     */
+    if (url.pathname === "/api/rpcs" && req.method === "POST") {
+      const body = await readBody(req);
+      if (!Array.isArray(body.extraRpcs)) throw new Error("extraRpcs must be a list of URLs");
+      const wanted = (body.extraRpcs as unknown[]).filter((x): x is string => typeof x === "string");
+      const chainId = loadConfig(CONFIG_PATH).chainId;
+      for (const u of wanted) {
+        let got: number;
+        try {
+          got = await probeChainId(u.trim());
+        } catch (e) {
+          throw new Error(
+            `${rpcHost(u)} did not answer: ${e instanceof Error ? e.message : e}`,
+          );
+        }
+        if (got !== chainId) {
+          throw new Error(`${rpcHost(u)} serves chain ${got}, not ${chainId}`);
+        }
+      }
+      const saved = saveExtraRpcs(wanted);
+      log(`read/blast endpoints set to: ${saved.map(rpcHost).join(", ") || "(none)"}`);
+      json(res, 200, { rpcHosts: saved.map(rpcHost) });
       return;
     }
 

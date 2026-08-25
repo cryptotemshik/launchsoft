@@ -15,9 +15,10 @@
  * one wallet moving five tokens sends five transactions on sequential nonces,
  * different wallets are independent, and all of it goes out together.
  */
-import { createPublicClient, encodeFunctionData, http, parseGwei, type Hex, type PublicClient } from "viem";
+import { createPublicClient, encodeFunctionData, parseGwei, type Hex, type PublicClient } from "viem";
 import { privateKeyToAccount, type PrivateKeyAccount } from "viem/accounts";
 import { getChainInfo } from "../chains";
+import { mapWithLimit, readTransport } from "../lib/rpcRead";
 import {
   blastToAll,
   isAlreadyKnown,
@@ -133,7 +134,10 @@ export async function sweepNfts(
   if (!info) throw new Error(`chain ${opts.chainId} isn't in the registry`);
 
   const readUrl = opts.extraRpcs[0] ?? info.chain.rpcUrls.default.http[0];
-  const client = createPublicClient({ chain: info.chain, transport: http(readUrl) }) as PublicClient;
+  const client = createPublicClient({
+    chain: info.chain,
+    transport: readTransport(readUrl),
+  }) as PublicClient;
   const endpoints: RpcEndpoint[] = parseRpcEndpoints([
     ...(info.submitRpcs ?? []),
     ...info.chain.rpcUrls.default.http,
@@ -172,10 +176,8 @@ export async function sweepNfts(
 
   // One wallet moving several tokens needs sequential nonces; wallets are
   // independent of each other, so those run in parallel.
-  const startNonces = await Promise.all(
-    senders.map((s) =>
-      client.getTransactionCount({ address: s.account.address, blockTag: "pending" }),
-    ),
+  const startNonces = await mapWithLimit(senders, (s) =>
+    client.getTransactionCount({ address: s.account.address, blockTag: "pending" }),
   );
 
   interface Prepared {

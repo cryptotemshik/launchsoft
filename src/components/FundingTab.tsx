@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { useRunnerApi } from "../lib/runnerClient";
+import StaleServer from "./StaleServer";
 import { AddrLink, TxLink } from "./Bits";
 
 /**
@@ -80,7 +81,8 @@ interface SweepNftsResult {
 const eth = (wei?: string) => (wei ? Number(wei) / 1e18 : 0);
 
 export default function FundingTab() {
-  const { url, setUrl, token, setToken, remember, setRemember, base, call, save } = useRunnerApi();
+  const { url, setUrl, token, setToken, remember, setRemember, base, call, save, serverVersion } =
+    useRunnerApi();
 
   const [connected, setConnected] = useState(false);
   const [view, setView] = useState<WalletsView | null>(null);
@@ -276,6 +278,7 @@ export default function FundingTab() {
           ) : null}
         </div>
         {error ? <p className="error">{error}</p> : null}
+        <StaleServer version={serverVersion} />
       </div>
 
       {!connected ? (

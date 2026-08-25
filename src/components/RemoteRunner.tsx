@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { formatCountdown, unixToLocalAndUtc } from "../lib/convert";
 import { useRunnerApi } from "../lib/runnerClient";
-import { API_VERSION, UPDATE_HINT } from "../lib/apiVersion";
+import StaleServer from "./StaleServer";
 
 /**
  * Control panel for a snipe runner living next to the sequencer.
@@ -76,7 +76,20 @@ interface StatusView {
   running: boolean;
   activeJobId: string | null;
   armLeadMs: number;
+  /** Hosts of the endpoints stored on the server (never the keyed URLs). */
+  rpcHosts?: string[];
+  /** Host the server reads balances and nonces through. */
+  readRpc?: string | null;
   jobs: Job[];
+}
+
+/** Hosts only, so a comparison never involves a provider API key. */
+function hostOf(u: string): string {
+  try {
+    return new URL(u).host;
+  } catch {
+    return u;
+  }
 }
 
 const STATUS_CLASS: Record<Job["status"], string> = {
@@ -111,9 +124,11 @@ export default function RemoteRunner(props: RemoteRunnerProps) {
     base,
     call,
     save,
+    serverVersion,
   } = api;
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [rpcError, setRpcError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<StatusView | null>(null);
   const [openJob, setOpenJob] = useState<string | null>(null);
@@ -170,10 +185,34 @@ export default function RemoteRunner(props: RemoteRunnerProps) {
     try {
       save();
       await refresh();
+      await pushRpcs();
     } finally {
       setBusy(false);
     }
   }
+
+  /**
+   * Hand the server the endpoints typed into this page. Without it the box
+   * reads a hundred balances through the public RPC and gets rate-limited,
+   * while the paid endpoint the user pasted sits unused on the browser side.
+   */
+  const pushRpcs = useCallback(async () => {
+    if (props.extraRpcs.length === 0) return;
+    try {
+      await call("/api/rpcs", {
+        method: "POST",
+        body: JSON.stringify({ extraRpcs: props.extraRpcs }),
+      });
+      await refresh();
+      setRpcError(null);
+    } catch (e) {
+      // An older server has no such route at all — the stale-server notice
+      // covers that. A rejection with a message means the endpoint itself was
+      // refused, and the user needs to see why.
+      const msg = e instanceof Error ? e.message : String(e);
+      setRpcError(/HTTP 404/.test(msg) ? null : msg);
+    }
+  }, [call, props.extraRpcs, refresh]);
 
   async function enqueue(dryRun: boolean) {
     if (!props.collection) {
@@ -232,6 +271,10 @@ export default function RemoteRunner(props: RemoteRunnerProps) {
 
   const jobs = status?.jobs ?? [];
   const pending = jobs.filter((j) => j.status === "queued" || j.status === "armed");
+  // Compared by host: the stored URLs are never sent back with their keys.
+  const rpcsDiffer =
+    props.extraRpcs.length > 0 &&
+    JSON.stringify(props.extraRpcs.map(hostOf)) !== JSON.stringify(status?.rpcHosts ?? []);
 
   return (
     <div className="panel">
@@ -290,13 +333,33 @@ export default function RemoteRunner(props: RemoteRunnerProps) {
       </div>
       {error ? <p className="error">{error}</p> : null}
 
-      {connected && (status?.apiVersion ?? 0) < API_VERSION ? (
+      <StaleServer version={serverVersion} />
+
+      {rpcError ? (
         <p className="warn" style={{ marginBottom: 0 }}>
-          <b>Your server is running older code than this page.</b> Newer features
-          send requests it can&apos;t parse, which shows up as odd errors. Update
-          it over SSH:
-          <br />
-          <code>{UPDATE_HINT}</code>
+          The server would not take an endpoint from this page: {rpcError}. It
+          keeps reading through the one it already had — fix the URL above and
+          press refresh.
+        </p>
+      ) : null}
+
+      {connected && status?.readRpc ? (
+        <p className="hint dim" style={{ marginBottom: 0 }}>
+          The server reads balances and nonces through <b>{status.readRpc}</b>.
+          {rpcsDiffer ? (
+            <>
+              {" "}
+              The endpoints on this page differ from the ones stored there.{" "}
+              <button
+                className="secondary"
+                style={{ padding: "2px 10px", fontSize: 11 }}
+                disabled={busy}
+                onClick={() => void pushRpcs()}
+              >
+                send these to the server
+              </button>
+            </>
+          ) : null}
         </p>
       ) : null}
 

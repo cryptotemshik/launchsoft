@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { useRunnerApi } from "../lib/runnerClient";
+import StaleServer from "./StaleServer";
 import { AddrLink } from "./Bits";
 
 /**
@@ -27,7 +28,7 @@ interface WalletsView {
 
 export default function ServerWalletsTab() {
   const api = useRunnerApi();
-  const { url, setUrl, token, setToken, remember, setRemember, base, call, save } = api;
+  const { url, setUrl, token, setToken, remember, setRemember, base, call, save, serverVersion } = api;
 
   const [connected, setConnected] = useState(false);
   const [view, setView] = useState<WalletsView | null>(null);
@@ -98,13 +99,28 @@ export default function ServerWalletsTab() {
     setBusy(true);
     setError(null);
     try {
-      const v = (await call("/api/wallets", {
-        method: "DELETE",
-        body: JSON.stringify({ addresses }),
-      })) as unknown as WalletsView & { removed: number };
-      setView(v);
+      let v: (WalletsView & { removed: number }) | null = null;
+      if (serverVersion !== null && serverVersion < 2) {
+        // An old server only understands one address in the query string. Go
+        // one at a time so the button still works before the box is updated;
+        // the notice above tells the user why this is slow.
+        let removed = 0;
+        for (const a of addresses) {
+          v = (await call(`/api/wallets?address=${a}`, {
+            method: "DELETE",
+          })) as unknown as WalletsView & { removed: number };
+          removed += v.removed ?? 0;
+        }
+        v = v ? { ...v, removed } : null;
+      } else {
+        v = (await call("/api/wallets", {
+          method: "DELETE",
+          body: JSON.stringify({ addresses }),
+        })) as unknown as WalletsView & { removed: number };
+      }
+      if (v) setView(v);
       setSelected(new Set());
-      setNotice(`Removed ${v.removed} wallet${v.removed === 1 ? "" : "s"}`);
+      setNotice(`Removed ${v?.removed ?? 0} wallet${v?.removed === 1 ? "" : "s"}`);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -179,6 +195,7 @@ export default function ServerWalletsTab() {
           ) : null}
         </div>
         {error ? <p className="error">{error}</p> : null}
+        <StaleServer version={serverVersion} />
         <p className="hint dim" style={{ marginBottom: 0 }}>
           Same server and token as the Snipe tab — connect in either and both
           are connected.
