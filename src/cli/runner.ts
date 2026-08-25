@@ -17,7 +17,6 @@ import {
   encodeFunctionData,
   formatEther,
   formatGwei,
-  http,
   parseGwei,
   zeroAddress,
   type Hex,
@@ -39,6 +38,7 @@ import {
   type RpcEndpoint,
 } from "../lib/rpcBlast";
 import { nodeSender, pooledSockets } from "./nodeSender";
+import { mapWithLimit, readTransport } from "../lib/rpcRead";
 import { waitUntil } from "../lib/snipeTimer";
 
 export interface RunOptions {
@@ -194,7 +194,14 @@ export async function runSnipe(opts: RunOptions, hooks: RunHooks): Promise<RunRe
 
   // Reads go to a real RPC — never to a sequencer, which is send-only.
   const readUrl = opts.extraRpcs[0] ?? info.chain.rpcUrls.default.http[0];
-  const client = createPublicClient({ chain: info.chain, transport: http(readUrl) }) as PublicClient;
+  // Batched and 429-aware: arming a hundred wallets is a hundred balance reads
+  // and a hundred nonce reads, and a provider's free tier meters per second.
+  // An unthrottled burst here fails the arm, which loses the drop — two minutes
+  // before it opens, with nobody watching.
+  const client = createPublicClient({
+    chain: info.chain,
+    transport: readTransport(readUrl),
+  }) as PublicClient;
 
   // Broadcast targets: sequencer first (shortest path into the ordering
   // queue), then the public RPC, then anything the caller added.
@@ -279,9 +286,10 @@ export async function runSnipe(opts: RunOptions, hooks: RunHooks): Promise<RunRe
   // ── Balances ────────────────────────────────────────────────────────────
   const needed = gasLimit * maxFeePerGas + price * BigInt(quantity);
   const balances = new Map<string, bigint>();
-  await Promise.all(
-    accounts.map(async (a) => balances.set(a.address.toLowerCase(), await client.getBalance({ address: a.address }))),
-  );
+  const read = await mapWithLimit(accounts, (a) => client.getBalance({ address: a.address }), {
+    onRetry: (ms) => log(`endpoint is rate-limiting reads — waiting ${ms}ms`),
+  });
+  accounts.forEach((a, i) => balances.set(a.address.toLowerCase(), read[i]));
 
   const wallets: WalletPlan[] = accounts.map((a) => {
     const isFiring = firing.some((f) => f.address === a.address);
@@ -330,8 +338,10 @@ export async function runSnipe(opts: RunOptions, hooks: RunHooks): Promise<RunRe
   if (now > endTime) throw new Error("this stage has already closed");
 
   // ── Pre-sign, so the fire moment is pure network ────────────────────────
-  const nonces = await Promise.all(
-    firing.map((a) => client.getTransactionCount({ address: a.address, blockTag: "pending" })),
+  const nonces = await mapWithLimit(
+    firing,
+    (a) => client.getTransactionCount({ address: a.address, blockTag: "pending" }),
+    { onRetry: (ms) => log(`endpoint is rate-limiting nonce reads — waiting ${ms}ms`) },
   );
   const prepared = await Promise.all(
     firing.map(async (a, i) => {

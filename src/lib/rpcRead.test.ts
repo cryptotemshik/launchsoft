@@ -1,5 +1,8 @@
-import { describe, expect, it, vi } from "vitest";
-import { isRateLimit, mapWithLimit } from "./rpcRead";
+import { createServer, type Server } from "node:http";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createPublicClient, http } from "viem";
+import { isRateLimit, mapWithLimit, readTransport } from "./rpcRead";
+import { getChainInfo } from "../chains";
 
 describe("isRateLimit", () => {
   it("recognises the message Robinhood Chain's RPC returns", () => {
@@ -108,4 +111,94 @@ describe("mapWithLimit", () => {
   it("handles an empty list without spawning workers", async () => {
     expect(await mapWithLimit([], async () => 1)).toEqual([]);
   });
+});
+
+
+/**
+ * The case this exists for: arming a hundred wallets against a provider that
+ * meters per second. Alchemy's free tier allows 25 requests a second, and a
+ * hundred unbatched nonce reads fired together simply lose — two minutes
+ * before a drop opens, with nobody watching.
+ */
+describe("reading a hundred wallets through a metered endpoint", () => {
+  let server: Server;
+  let url: string;
+  let windowStart = 0;
+  let usedThisSecond = 0;
+  let requests = 0;
+  let refusals = 0;
+
+  const LIMIT_PER_SECOND = 25;
+
+  beforeEach(async () => {
+    windowStart = Date.now();
+    usedThisSecond = 0;
+    requests = 0;
+    refusals = 0;
+    server = createServer((req, res) => {
+      let body = "";
+      req.on("data", (c) => (body += c));
+      req.on("end", () => {
+        requests += 1;
+        const calls = ([] as unknown[]).concat(JSON.parse(body) as unknown);
+        if (Date.now() - windowStart >= 1000) {
+          windowStart = Date.now();
+          usedThisSecond = 0;
+        }
+        if (usedThisSecond + calls.length > LIMIT_PER_SECOND) {
+          refusals += 1;
+          res.writeHead(429, { "content-type": "application/json" });
+          res.end('{"jsonrpc":"2.0","error":{"code":429,"message":"Too Many Requests"}}');
+          return;
+        }
+        usedThisSecond += calls.length;
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(
+          JSON.stringify(
+            calls.map((c) => ({ jsonrpc: "2.0", id: (c as { id: number }).id, result: "0x5" })),
+          ),
+        );
+      });
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const addr = server.address();
+    if (typeof addr === "string" || addr === null) throw new Error("no port");
+    url = `http://127.0.0.1:${addr.port}`;
+  });
+
+  afterEach(async () => {
+    await new Promise<void>((r) => server.close(() => r()));
+  });
+
+  const chain = getChainInfo(4663)!.chain;
+  const wallets = Array.from(
+    { length: 100 },
+    (_, i) => ("0x" + (i + 1).toString(16).padStart(40, "0")) as `0x${string}`,
+  );
+
+  it("gets every nonce despite the limit, by batching and backing off", async () => {
+    const client = createPublicClient({ chain, transport: readTransport(url) });
+    const nonces = await mapWithLimit(wallets, (a) =>
+      client.getTransactionCount({ address: a, blockTag: "pending" }),
+    );
+
+    expect(nonces).toHaveLength(100);
+    expect(nonces.every((n) => n === 5)).toBe(true);
+    // Batched: a hundred calls must not cost a hundred requests.
+    expect(requests).toBeLessThan(40);
+    // And the endpoint really did push back — otherwise this proves nothing.
+    expect(refusals).toBeGreaterThan(0);
+  }, 30_000);
+
+  it("shows why: unbatched and unthrottled, the same read loses wallets", async () => {
+    const naive = createPublicClient({ chain, transport: http(url, { retryCount: 0 }) });
+    const settled = await Promise.allSettled(
+      wallets.map((a) => naive.getTransactionCount({ address: a, blockTag: "pending" })),
+    );
+    const got = settled.filter((r) => r.status === "fulfilled").length;
+
+    expect(requests).toBe(100);
+    expect(refusals).toBeGreaterThan(0);
+    expect(got).toBeLessThan(100);
+  }, 30_000);
 });
