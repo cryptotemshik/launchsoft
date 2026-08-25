@@ -323,6 +323,35 @@ Collection logos and pre-reveal art resolve through a **fallback chain of IPFS
 gateways** (ipfs.io → Pinata → Cloudflare → dweb.link → nft.storage), so a
 single slow or rate-limited gateway no longer leaves a broken image.
 
+## Sniped mints — cost & profit
+
+The Dashboard's top panel answers "did this drop make money", for drops you
+minted from rather than launched. Both halves come from the chain; no
+marketplace API is involved, so there is no key to hold and nothing to break
+when one changes.
+
+**Cost** is written down as it happens. Gas is only in a receipt nobody will
+fetch again, so each run appends what every wallet spent — gas and mint price,
+including the wallets that reverted, since that gas was spent too — to a
+JSONL ledger beside the config.
+
+**Revenue** is inferred, because a sale is not a distinct on-chain event. It is
+its two halves happening together: a token leaves one of your wallets, and that
+wallet's balance rises in the same block. The rise is the proceeds, split
+evenly when several tokens left in one transaction. A transfer to another of
+your own wallets is not a sale — consolidating before listing must not read as
+income.
+
+Where it is approximate, it says so rather than guessing:
+
+- Pricing needs the balance at a historical block, which only an **archive**
+  node keeps. Robinhood Chain's public RPC answers `metadata is not found`, so
+  every sale comes back unpriced and the panel says the total is a floor, not a
+  number. Point the server at Alchemy (Snipe tab → Your RPC) and it prices.
+- A token given away is a sale worth nothing, and shows as one.
+- A wallet doing something else in the same block mixes into the delta, so each
+  sale carries its block and transaction for checking.
+
 ## Tracker tab
 
 Watch any set of wallets and get alerted when they **mint**, **buy**, or

@@ -94,6 +94,11 @@ export interface WalletOutcome {
   detail?: string;
   /** Token ids this wallet actually received, decoded from the receipt. */
   tokenIds?: string[];
+  /** What the transaction cost, so profit can be worked out later. */
+  gasWei?: string;
+  /** Mint price paid, in wei. Zero on a free drop. */
+  valueWei?: string;
+  blockNumber?: string;
 }
 
 /** ERC-721 Transfer(address,address,uint256). */
@@ -437,11 +442,23 @@ export async function runSnipe(opts: RunOptions, hooks: RunHooks): Promise<RunRe
       }
       const ok = receipt.status === "success";
       const ids = ok ? mintedIds(receipt.logs, opts.collection, address) : [];
+      // Gas is charged whether the mint succeeded or reverted, so it counts
+      // towards the cost either way — a run that reverted on twenty wallets
+      // still spent twenty wallets' worth of gas.
+      const gasWei = receipt.gasUsed * (receipt.effectiveGasPrice ?? maxFeePerGas);
       log(
         `${ok ? "MINED     " : "REVERTED  "} ${address} — block ${receipt.blockNumber}, gas ${receipt.gasUsed}` +
           (ids.length ? ` — tokens ${ids.join(", ")}` : ""),
       );
-      outcomes.push({ address, txHash, status: ok ? "mined" : "reverted", tokenIds: ids });
+      outcomes.push({
+        address,
+        txHash,
+        status: ok ? "mined" : "reverted",
+        tokenIds: ids,
+        gasWei: gasWei.toString(),
+        valueWei: ok ? (price * BigInt(quantity)).toString() : "0",
+        blockNumber: receipt.blockNumber.toString(),
+      });
     }),
   );
 

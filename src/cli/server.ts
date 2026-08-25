@@ -36,7 +36,9 @@ import { createPublicClient, formatEther, parseEther } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { collect, disperse } from "./funding";
 import { scanWallets, walletTokenCounts } from "./blockscout";
-import { holdingsFromLogs } from "./holdings";
+import { holdingsFromLogs, readLedger } from "./holdings";
+import { costByCollection, loadMints, recordMint } from "./ledger";
+import { priceTransfers, summarise } from "./profit";
 import { loadCollections, rememberCollection } from "./collections";
 import { sweepNfts, type Holding } from "./nftSweep";
 import { getChainInfo } from "../chains";
@@ -648,6 +650,22 @@ async function execute(job: Job) {
         address: job.request.collection,
         name: result.plan.name,
       });
+      // Gas spent is only in a receipt nobody will fetch again; write it down
+      // now or the profit figure can never be worked out.
+      recordMint(CONFIG_PATH, {
+        at: Date.now(),
+        collection: job.request.collection,
+        collectionName: result.plan.name,
+        chainId: result.plan.chainId,
+        stage: result.plan.stage,
+        wallets: (result.outcomes ?? []).map((o) => ({
+          address: o.address,
+          tokenIds: o.tokenIds ?? [],
+          gasWei: o.gasWei ?? "0",
+          valueWei: o.valueWei ?? "0",
+          status: o.status,
+        })),
+      });
     }
     // The abort route may have fired while this was running; the signal is the
     // authority, since `status` was narrowed to "armed" above.
@@ -1000,6 +1018,102 @@ const server = createServer(async (req, res) => {
     }
 
     // ── NFTs: see what the wallet set holds, and gather it onto one wallet ──
+    /**
+     * What each drop cost and what it has made, from the chain alone.
+     *
+     * Cost comes from the ledger the runner writes as it mints; revenue from
+     * pairing every departure of a token with the seller's balance rise in
+     * that block. No marketplace API, so nothing to key or to break.
+     */
+    if (url.pathname === "/api/profit" && req.method === "GET") {
+      const cfg = loadConfig(CONFIG_PATH);
+      const info = getChainInfo(cfg.chainId);
+      if (!info) throw new Error(`chain ${cfg.chainId} isn't in the registry`);
+
+      const started = Date.now();
+      const addresses = loadKeyEntries(CONFIG_PATH, cfg.keysFile).map(
+        (e) => privateKeyToAccount(e.key).address,
+      );
+      const costs = costByCollection(loadMints(CONFIG_PATH));
+      const known = loadCollections(CONFIG_PATH);
+
+      // Every collection we have either paid for or been told about.
+      const targets = new Map<string, { address: `0x${string}`; name?: string; fromBlock: bigint }>();
+      for (const c of known) {
+        targets.set(c.address.toLowerCase(), {
+          address: c.address,
+          name: c.name,
+          fromBlock: c.fromBlock === undefined ? 0n : BigInt(c.fromBlock),
+        });
+      }
+      for (const [key, c] of costs) {
+        if (!targets.has(key)) {
+          targets.set(key, { address: c.collection, name: c.collectionName, fromBlock: 0n });
+        }
+      }
+
+      const client = createPublicClient({
+        chain: info.chain,
+        transport: readTransport(readRpc(cfg, info)),
+      });
+
+      const reports = [];
+      for (const t of targets.values()) {
+        const cost = costs.get(t.address.toLowerCase());
+        try {
+          const ledger = await readLedger(client as never, t.address, addresses, t.fromBlock);
+          const sales = await priceTransfers(client as never, ledger.sent, addresses);
+          const report = summarise(
+            t.address,
+            {
+              gasWei: cost?.gasWei ?? 0n,
+              priceWei: cost?.priceWei ?? 0n,
+              tokens: cost?.tokens ?? 0,
+              wallets: cost?.wallets ?? 0,
+            },
+            sales,
+            ledger.held.reduce((n, h) => n + h.tokenIds.length, 0),
+            t.name ?? cost?.collectionName,
+          );
+          reports.push({
+            ...report,
+            cost: {
+              gasWei: report.cost.gasWei.toString(),
+              priceWei: report.cost.priceWei.toString(),
+              tokens: report.cost.tokens,
+              wallets: report.cost.wallets,
+            },
+            revenueWei: report.revenueWei.toString(),
+            netWei: report.netWei.toString(),
+            sales: report.sales.map((x) => ({
+              ...x,
+              blockNumber: x.blockNumber.toString(),
+              proceedsWei: x.proceedsWei.toString(),
+            })),
+            unpricedSales: report.unpricedSales,
+            runs: cost?.runs ?? 0,
+            lastAt: cost?.lastAt,
+          });
+        } catch (e) {
+          reports.push({
+            collection: t.address,
+            collectionName: t.name,
+            error: e instanceof Error ? e.message.split("\n")[0] : String(e),
+          });
+        }
+      }
+
+      json(res, 200, {
+        chain: info.label,
+        explorerUrl: info.explorerUrl,
+        openSeaSlug: info.openSeaSlug,
+        wallets: addresses.length,
+        collections: reports,
+        tookMs: Date.now() - started,
+      });
+      return;
+    }
+
     if (url.pathname === "/api/nfts" && req.method === "GET") {
       const cfg = loadConfig(CONFIG_PATH);
       const info = getChainInfo(cfg.chainId);

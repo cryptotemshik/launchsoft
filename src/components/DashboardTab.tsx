@@ -24,6 +24,7 @@ import { buildCumulativeSeries, dedupeByReceiver } from "../lib/series";
 import { shortAddress } from "./ConnectBar";
 import { CopyButton } from "./Bits";
 import { CollectionDetail, ProfitBlock } from "./CollectionDetail";
+import MintProfitPanel from "./MintProfitPanel";
 import ProfitChart from "./ProfitChart";
 
 const REFRESH_MS = 30_000;
@@ -187,6 +188,8 @@ export default function DashboardTab() {
 
   return (
     <div>
+      <MintProfitPanel />
+
       <div className="panel">
         <h2>Total profit — all projects</h2>
         <div

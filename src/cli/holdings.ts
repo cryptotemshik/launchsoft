@@ -34,6 +34,21 @@ export interface WalletHolding {
   tokenIds: string[];
 }
 
+/** A token that left one of our wallets — the visible half of a sale. */
+export interface OutgoingTransfer {
+  wallet: `0x${string}`;
+  tokenId: string;
+  blockNumber: bigint;
+  txHash: string;
+  to: `0x${string}`;
+}
+
+export interface LedgerView {
+  held: WalletHolding[];
+  /** Every departure, in order. Pricing them is profit.ts's job. */
+  sent: OutgoingTransfer[];
+}
+
 /**
  * Providers cap how many blocks one `eth_getLogs` may cover, and say so in
  * different words. Rather than guess each provider's limit, ask for
@@ -54,6 +69,7 @@ function looksLikeRangeLimit(e: unknown): boolean {
 type TransferLog = {
   blockNumber: bigint;
   logIndex: number;
+  transactionHash?: string;
   args: { from?: `0x${string}`; to?: `0x${string}`; tokenId?: bigint };
 };
 
@@ -97,7 +113,23 @@ export async function holdingsFromLogs(
   wallets: readonly `0x${string}`[],
   fromBlock = 0n,
 ): Promise<WalletHolding[]> {
-  if (wallets.length === 0) return [];
+  return (await readLedger(client, collection, wallets, fromBlock)).held;
+}
+
+/**
+ * Both halves in one pass: what is still held, and what has left.
+ *
+ * The two share their reads — the same two log queries answer both — so
+ * anything wanting profit as well as holdings should ask for this rather than
+ * paying for the logs twice.
+ */
+export async function readLedger(
+  client: PublicClient,
+  collection: `0x${string}`,
+  wallets: readonly `0x${string}`[],
+  fromBlock = 0n,
+): Promise<LedgerView> {
+  if (wallets.length === 0) return { held: [], sent: [] };
   const toBlock = await client.getBlockNumber();
 
   const [incoming, outgoing] = await Promise.all([
@@ -124,9 +156,22 @@ export async function holdingsFromLogs(
     byWallet.set(owner, [...(byWallet.get(owner) ?? []), tokenId]);
   }
 
-  return [...byWallet.entries()].map(([wallet, tokenIds]) => ({
-    wallet: getAddress(wallet),
-    // Numeric order, so a list of ids reads the way a person would write it.
-    tokenIds: tokenIds.sort((a, b) => (BigInt(a) < BigInt(b) ? -1 : 1)),
-  }));
+  const sent = outgoing
+    .filter((l) => l.args.tokenId !== undefined && l.args.from && l.args.to)
+    .map((l) => ({
+      wallet: getAddress(l.args.from!),
+      tokenId: l.args.tokenId!.toString(),
+      blockNumber: l.blockNumber,
+      txHash: l.transactionHash ?? "",
+      to: getAddress(l.args.to!),
+    }));
+
+  return {
+    held: [...byWallet.entries()].map(([wallet, tokenIds]) => ({
+      wallet: getAddress(wallet),
+      // Numeric order, so a list of ids reads the way a person would write it.
+      tokenIds: tokenIds.sort((a, b) => (BigInt(a) < BigInt(b) ? -1 : 1)),
+    })),
+    sent,
+  };
 }
