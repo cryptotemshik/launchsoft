@@ -53,14 +53,59 @@ const STATUS_ICON: Record<string, string> = {
 };
 
 /**
- * A run summary as Telegram HTML: the headline numbers first, then one line
- * per wallet with its token links, so the whole result is readable on a phone
- * without opening anything.
+ * Pack lines into as many messages as they need.
+ *
+ * Truncating is the wrong answer for a failure list: the wallets that got cut
+ * are exactly the ones someone needs to look at. So a long section becomes
+ * several messages, each carrying the header again with its part number, and
+ * nothing is dropped. A single line longer than the limit is trimmed — that
+ * can only be one over-long error string, and losing part of one reason is
+ * better than losing the wallets after it.
  */
-export function formatMintReport(r: MintReport): string {
+export function packMessages(header: string, lines: readonly string[]): string[] {
+  if (lines.length === 0) return [];
+  const out: string[] = [];
+  let current: string[] = [];
+  let length = 0;
+
+  const flush = () => {
+    if (current.length === 0) return;
+    out.push([header, "", ...current].join("\n"));
+    current = [];
+    length = 0;
+  };
+
+  for (const raw of lines) {
+    const line = raw.length > MAX_LEN - 200 ? `${raw.slice(0, MAX_LEN - 200)}…` : raw;
+    if (length + line.length + 1 > MAX_LEN - header.length - 32) flush();
+    current.push(line);
+    length += line.length + 1;
+  }
+  flush();
+
+  return out.length === 1
+    ? out
+    : out.map((m, i) => m.replace(header, `${header} (${i + 1}/${out.length})`));
+}
+
+const shortAddr = (a: string) => `${a.slice(0, 8)}…${a.slice(-4)}`;
+
+/**
+ * A finished run as Telegram messages: an overview, then the wallets that
+ * minted with their token ids, then every wallet that did not with its reason.
+ *
+ * Three messages rather than one because they answer different questions and
+ * get read at different times. The overview is the glance from a lock screen;
+ * the second says which wallets to go and list from, each linked to its
+ * OpenSea profile; the third is the post-mortem, and it lists **every** failed
+ * wallet — a partial list of failures is the one thing that makes a report
+ * untrustworthy.
+ */
+export function formatMintReport(r: MintReport): string[] {
   const minted = r.wallets.filter((w) => w.status === "mined");
   const totalNfts = minted.reduce((n, w) => n + w.quantity, 0);
   const failed = r.wallets.filter((w) => w.status !== "mined" && w.status !== "skipped");
+  const skipped = r.wallets.filter((w) => w.status === "skipped");
 
   const head = r.dryRun
     ? "🧪 <b>DRY RUN</b> (nothing broadcast)"
@@ -68,37 +113,47 @@ export function formatMintReport(r: MintReport): string {
       ? "✅ <b>MINT COMPLETE</b>"
       : "⚠️ <b>MINT FAILED</b>";
 
-  const lines: string[] = [
+  const overview = [
     head,
-    `<a href="${r.collectionUrl}">${escapeHtml(r.collectionName)}</a> · ${escapeHtml(r.chainLabel)} · ${escapeHtml(r.stage)} stage`,
+    `<a href="${r.collectionUrl}">${escapeHtml(r.collectionName)}</a>`,
+    `${escapeHtml(r.chainLabel)} · ${escapeHtml(r.stage)} stage`,
     "",
-    `<b>${totalNfts}</b> NFT${totalNfts === 1 ? "" : "s"} from <b>${minted.length}</b> wallet${minted.length === 1 ? "" : "s"}` +
-      (failed.length ? ` · ${failed.length} failed` : ""),
-    "",
-  ];
+    `<b>${totalNfts}</b> NFT${totalNfts === 1 ? "" : "s"} from <b>${minted.length}</b> wallet${minted.length === 1 ? "" : "s"}`,
+    failed.length ? `❌ <b>${failed.length}</b> wallet${failed.length === 1 ? "" : "s"} failed` : "",
+    skipped.length ? `⚪ ${skipped.length} skipped (not eligible)` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
 
-  for (const w of r.wallets) {
-    const icon = STATUS_ICON[w.status] ?? "•";
-    const short = `${w.address.slice(0, 8)}…${w.address.slice(-4)}`;
-    let line = `${icon} <a href="${r.profileUrl(w.address)}">${short}</a>`;
-    if (w.status === "mined") {
-      line += ` — ${w.quantity} NFT${w.quantity === 1 ? "" : "s"}`;
-      if (w.tokenIds.length > 0) {
-        // Cap the token links so a 50-mint run doesn't blow the length limit.
-        const shown = w.tokenIds.slice(0, 8);
-        const links = shown.map((id) => `<a href="${r.itemUrl(id)}">#${id}</a>`).join(" ");
-        line += `\n   ${links}${w.tokenIds.length > shown.length ? ` +${w.tokenIds.length - shown.length} more` : ""}`;
-      }
-    } else {
-      line += ` — ${escapeHtml(w.status)}${w.detail ? `: ${escapeHtml(w.detail.slice(0, 120))}` : ""}`;
-    }
-    if (w.txHash) line += `\n   <a href="${r.explorerTxUrl(w.txHash)}">tx</a>`;
-    lines.push(line);
+  const messages = [overview];
+
+  if (minted.length > 0) {
+    const lines = minted.map((w) => {
+      const links = w.tokenIds.map((id) => `<a href="${r.itemUrl(id)}">#${id}</a>`).join(" ");
+      const tx = w.txHash ? ` · <a href="${r.explorerTxUrl(w.txHash)}">tx</a>` : "";
+      return (
+        `✅ <a href="${r.profileUrl(w.address)}">${shortAddr(w.address)}</a>` +
+        ` — ${w.quantity} NFT${w.quantity === 1 ? "" : "s"}${tx}` +
+        (links ? `\n   ${links}` : "")
+      );
+    });
+    messages.push(...packMessages(`💎 <b>Minted — ${minted.length} wallet${minted.length === 1 ? "" : "s"}</b>`, lines));
   }
 
-  let out = lines.join("\n");
-  if (out.length > MAX_LEN) out = `${out.slice(0, MAX_LEN)}\n…(truncated)`;
-  return out;
+  if (failed.length > 0) {
+    const lines = failed.map((w) => {
+      const icon = STATUS_ICON[w.status] ?? "•";
+      const tx = w.txHash ? ` · <a href="${r.explorerTxUrl(w.txHash)}">tx</a>` : "";
+      const why = w.detail ? `: ${escapeHtml(w.detail.slice(0, 160))}` : "";
+      return (
+        `${icon} <a href="${r.profileUrl(w.address)}">${shortAddr(w.address)}</a>` +
+        ` — ${escapeHtml(w.status)}${why}${tx}`
+      );
+    });
+    messages.push(...packMessages(`❌ <b>Failed — ${failed.length} wallet${failed.length === 1 ? "" : "s"}</b>`, lines));
+  }
+
+  return messages;
 }
 
 /** Post a message. Returns false instead of throwing — see the file header. */

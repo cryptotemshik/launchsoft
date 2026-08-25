@@ -20,6 +20,12 @@ import { privateKeyToAccount, type PrivateKeyAccount } from "viem/accounts";
 import { getChainInfo } from "../chains";
 import { mapWithLimit, readTransport } from "../lib/rpcRead";
 import {
+  getJsonRetrying,
+  scanWallets,
+  walletTokenCounts,
+  type ScanFailure,
+} from "./blockscout";
+import {
   blastToAll,
   isAlreadyKnown,
   parseRpcEndpoints,
@@ -55,8 +61,12 @@ export interface Holding {
 }
 
 /**
- * What a wallet holds, from the chain's Blockscout index. Paginated; capped so
- * a wallet holding thousands can't stall the whole sweep.
+ * Every token a wallet holds, with ids, from the chain's Blockscout index.
+ * Paginated; capped so a wallet holding thousands can't stall the whole sweep.
+ *
+ * This is the expensive call — 11.8KB for a wallet holding thirteen tokens,
+ * most of it base64 images nobody reads here. `scanHoldings` uses the cheap
+ * count endpoint first and only comes here for wallets that hold something.
  */
 export async function findHoldings(
   api: string,
@@ -67,12 +77,11 @@ export async function findHoldings(
   const byCollection = new Map<string, Holding>();
   let query = "type=ERC-721";
   for (let page = 0; page < maxPages; page++) {
-    const res = await fetch(`${api}/addresses/${wallet}/nft?${query}`);
-    if (!res.ok) break;
-    const data = (await res.json()) as {
+    const data = await getJsonRetrying<{
       items?: { id?: string; token?: { address_hash?: string; name?: string } }[];
       next_page_params?: Record<string, string | number> | null;
-    };
+    }>(`${api}/addresses/${wallet}/nft?${query}`);
+
     for (const item of data.items ?? []) {
       const addr = item.token?.address_hash?.toLowerCase();
       if (!addr || !item.id) continue;
@@ -99,6 +108,59 @@ export async function findHoldings(
       ).toString();
   }
   return [...byCollection.values()];
+}
+
+export interface ScanResult {
+  holdings: Holding[];
+  /** Wallets the index would not answer for — NOT wallets holding nothing. */
+  failed: ScanFailure[];
+  /** Wallets checked, and how many of them turned out to hold anything. */
+  checked: number;
+  withTokens: number;
+}
+
+/**
+ * What a whole wallet set holds.
+ *
+ * Two phases, because the index is slow and most wallets are empty. First the
+ * cheap per-collection counts for every wallet; then the expensive call for
+ * ids, only where the counts say there is something to fetch. On a hundred
+ * wallets where forty-five hold tokens, that is fifty-five heavy requests not
+ * made.
+ *
+ * A wallet the index refuses is reported in `failed`, never as an empty
+ * wallet: reporting "nothing here" for a wallet full of tokens is how a sweep
+ * silently leaves them behind.
+ */
+export async function scanHoldings(
+  api: string,
+  wallets: readonly `0x${string}`[],
+  opts: {
+    collection?: `0x${string}`;
+    onProgress?: (done: number, total: number, phase: "counting" | "listing") => void;
+  } = {},
+): Promise<ScanResult> {
+  const counts = await scanWallets(wallets, (w) => walletTokenCounts(api, w), {
+    onProgress: (d, t) => opts.onProgress?.(d, t, "counting"),
+  });
+
+  const wanted = opts.collection?.toLowerCase();
+  const holders = wallets.filter((w) => {
+    const c = counts.results.get(w.toLowerCase());
+    if (!c) return false;
+    return wanted ? c.some((x) => x.collection === wanted) : c.length > 0;
+  });
+
+  const listed = await scanWallets(holders, (w) => findHoldings(api, w, opts.collection), {
+    onProgress: (d, t) => opts.onProgress?.(d, t, "listing"),
+  });
+
+  return {
+    holdings: [...listed.results.values()].flat(),
+    failed: [...counts.failed, ...listed.failed],
+    checked: wallets.length,
+    withTokens: holders.length,
+  };
 }
 
 export interface NftTransferOutcome {

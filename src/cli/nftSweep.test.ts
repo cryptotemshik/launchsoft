@@ -92,8 +92,12 @@ describe("findHoldings", () => {
     expect(out[0].tokenIds).toEqual(["9"]);
   });
 
-  it("returns nothing when the explorer errors", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false }) as unknown as Response));
-    expect(await findHoldings(API, WALLET)).toEqual([]);
+  it("raises when the explorer errors, rather than calling the wallet empty", async () => {
+    // This used to return [], which is how a sweep came to report success while
+    // leaving tokens behind: a refused request and an empty wallet looked the
+    // same. 404 is chosen because it is the one status not worth retrying, so
+    // the test doesn't sit through the backoff.
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 404 }) as unknown as Response));
+    await expect(findHoldings(API, WALLET)).rejects.toThrow(/404/);
   });
 });

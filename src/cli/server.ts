@@ -35,7 +35,10 @@ import { promisify } from "node:util";
 import { createPublicClient, formatEther, parseEther } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { collect, disperse } from "./funding";
-import { findHoldings, sweepNfts, type Holding } from "./nftSweep";
+import { scanWallets, walletTokenCounts } from "./blockscout";
+import { holdingsFromLogs } from "./holdings";
+import { loadCollections, rememberCollection } from "./collections";
+import { sweepNfts, type Holding } from "./nftSweep";
 import { getChainInfo } from "../chains";
 import { normalizePrivateKey } from "../lib/convert";
 import {
@@ -580,7 +583,7 @@ async function notify(job: Job) {
   }));
 
   const slug = plan.openSeaSlug;
-  const html = formatMintReport({
+  const parts = formatMintReport({
     collectionName: plan.name,
     collection: plan.collection,
     chainLabel: plan.chain,
@@ -593,8 +596,15 @@ async function notify(job: Job) {
     wallets,
   });
 
-  const r = await sendTelegram(cfg.telegram, html);
-  log(r.ok ? `telegram sent for job ${job.id}` : `telegram failed: ${r.error}`);
+  // In order, and one at a time: Telegram shows them in the order they arrive,
+  // and the overview is only useful if it arrives first.
+  let sent = 0;
+  for (const part of parts) {
+    const r = await sendTelegram(cfg.telegram, part);
+    if (r.ok) sent += 1;
+    else log(`telegram failed: ${r.error}`);
+  }
+  log(`telegram: ${sent}/${parts.length} message(s) sent for job ${job.id}`);
 }
 
 /** Run one job to completion, then notify. Only ever called by the scheduler. */
@@ -631,6 +641,14 @@ async function execute(job: Job) {
     );
     job.result = result;
     job.startTime = result.plan.startTime;
+    // Remember what was minted, so a later "what do my wallets hold" needs no
+    // index: reading Transfer logs is fast but has to be told which contract.
+    if (!job.request.dryRun) {
+      rememberCollection(CONFIG_PATH, {
+        address: job.request.collection,
+        name: result.plan.name,
+      });
+    }
     // The abort route may have fired while this was running; the signal is the
     // authority, since `status` was narrowed to "armed" above.
     job.status = abort.signal.aborted ? "aborted" : "done";
@@ -774,6 +792,49 @@ async function announceTunnel(): Promise<void> {
     cfg.telegram,
     `<b>Server address ${what}</b>\n<code>${url}</code>\n\nPaste it into the panel's <b>server URL</b> field. Your token has not changed.`,
   ).catch(() => undefined);
+}
+
+/**
+ * Which collections a scan should look at.
+ *
+ * Reading holdings from logs needs a contract address, so the question "what
+ * do my wallets hold" becomes "what do they hold of these". The answer is
+ * almost always the collections this server has minted, which it remembers, so
+ * no index is involved. An explicit one always wins; `deep` falls back to the
+ * index to discover collections nobody told us about.
+ */
+async function collectionsToScan(
+  cfg: SnipeConfig,
+  only: `0x${string}` | undefined,
+  deep: boolean,
+  addresses: readonly `0x${string}`[],
+  blockscoutApi: string | undefined,
+): Promise<{ address: `0x${string}`; name?: string; fromBlock: bigint }[]> {
+  if (only) return [{ address: only, fromBlock: 0n }];
+
+  const known = loadCollections(CONFIG_PATH).map((c) => ({
+    address: c.address,
+    name: c.name,
+    fromBlock: c.fromBlock === undefined ? 0n : BigInt(c.fromBlock),
+  }));
+  if (/^0x[0-9a-fA-F]{40}$/.test(cfg.collection ?? "")) {
+    const addr = cfg.collection.toLowerCase();
+    if (!known.some((k) => k.address.toLowerCase() === addr)) {
+      known.push({ address: cfg.collection, name: undefined, fromBlock: 0n });
+    }
+  }
+  if (!deep || !blockscoutApi) return known;
+
+  // Discovery: the index is the only thing that can name a collection nobody
+  // told us about, so it is used for that and nothing else.
+  const found = await scanWallets(addresses, (w) => walletTokenCounts(blockscoutApi, w));
+  for (const counts of found.results.values()) {
+    for (const c of counts) {
+      if (known.some((k) => k.address.toLowerCase() === c.collection.toLowerCase())) continue;
+      known.push({ address: c.collection, name: c.collectionName, fromBlock: 0n });
+    }
+  }
+  return known;
 }
 
 const server = createServer(async (req, res) => {
@@ -942,29 +1003,81 @@ const server = createServer(async (req, res) => {
     if (url.pathname === "/api/nfts" && req.method === "GET") {
       const cfg = loadConfig(CONFIG_PATH);
       const info = getChainInfo(cfg.chainId);
-      if (!info?.blockscoutApi) {
-        throw new Error(
-          `${info?.label ?? "this chain"} has no Blockscout API in the registry, so holdings ` +
-            `can't be listed. A sweep straight after a mint still works — it uses the token ids ` +
-            `from the receipt.`,
-        );
-      }
-      const only = url.searchParams.get("collection");
+      if (!info) throw new Error(`chain ${cfg.chainId} isn't in the registry`);
+
+      const onlyRaw = url.searchParams.get("collection");
+      const only =
+        onlyRaw && /^0x[0-9a-fA-F]{40}$/.test(onlyRaw) ? (onlyRaw as `0x${string}`) : undefined;
+      const deep = url.searchParams.get("deep") === "1";
+
       const entries = loadKeyEntries(CONFIG_PATH, cfg.keysFile);
-      const found = await Promise.all(
-        entries.map((e) =>
-          findHoldings(
-            info.blockscoutApi!,
-            privateKeyToAccount(e.key).address,
-            only && /^0x[0-9a-fA-F]{40}$/.test(only) ? (only as `0x${string}`) : undefined,
-          ).catch(() => [] as Holding[]),
-        ),
+      const addresses = entries.map((e) => privateKeyToAccount(e.key).address);
+      const started = Date.now();
+
+      const targets = await collectionsToScan(cfg, only, deep, addresses, info.blockscoutApi);
+      if (targets.length === 0) {
+        json(res, 200, {
+          chain: info.label,
+          totalTokens: 0,
+          holdings: [],
+          collections: [],
+          checked: addresses.length,
+          note:
+            "No collection to look at yet. Holdings are read from Transfer logs, which need a " +
+            "contract address — queue a mint and this server remembers it, name one in the " +
+            "collection box, or add ?deep=1 to discover them through the explorer (slow).",
+          tookMs: Date.now() - started,
+        });
+        return;
+      }
+
+      const client = createPublicClient({
+        chain: info.chain,
+        transport: readTransport(readRpc(cfg, info)),
+      });
+
+      const holdings: Holding[] = [];
+      const unreadable: { collection: string; reason: string }[] = [];
+      for (const target of targets) {
+        try {
+          const held = await holdingsFromLogs(
+            client as never,
+            target.address,
+            addresses,
+            target.fromBlock,
+          );
+          for (const h of held) {
+            holdings.push({
+              wallet: h.wallet,
+              collection: target.address,
+              collectionName: target.name,
+              tokenIds: h.tokenIds,
+            });
+          }
+        } catch (e) {
+          unreadable.push({
+            collection: target.address,
+            reason: e instanceof Error ? e.message.split("\n")[0] : String(e),
+          });
+        }
+      }
+
+      const tookMs = Date.now() - started;
+      log(
+        `nft scan: ${addresses.length} wallets × ${targets.length} collection(s) → ` +
+          `${holdings.reduce((n, h) => n + h.tokenIds.length, 0)} tokens in ${tookMs}ms`,
       );
-      const holdings = found.flat();
+
       json(res, 200, {
         chain: info.label,
         totalTokens: holdings.reduce((n, h) => n + h.tokenIds.length, 0),
         holdings,
+        collections: targets.map((t) => ({ address: t.address, name: t.name })),
+        checked: addresses.length,
+        withTokens: new Set(holdings.map((h) => h.wallet.toLowerCase())).size,
+        // Named, never counted away as an empty wallet.
+        failed: unreadable,
+        tookMs,
       });
       return;
     }
@@ -984,24 +1097,67 @@ const server = createServer(async (req, res) => {
 
       const cfg = loadConfig(CONFIG_PATH);
       const info = getChainInfo(cfg.chainId);
-      if (!info?.blockscoutApi) throw new Error("this chain has no Blockscout API to read holdings from");
+      if (!info) throw new Error(`chain ${cfg.chainId} isn't in the registry`);
       const entries = loadKeyEntries(CONFIG_PATH, cfg.keysFile);
+      const addresses = entries.map((e) => privateKeyToAccount(e.key).address);
 
-      const perWallet = await Promise.all(
-        entries.map(async (e) => {
-          const address = privateKeyToAccount(e.key).address;
-          const held = await findHoldings(info.blockscoutApi!, address, only).catch(() => []);
-          return {
-            key: e.key,
-            items: held.flatMap((h) =>
-              // Never move a token to the wallet it already sits on.
-              address.toLowerCase() === to.toLowerCase()
-                ? []
-                : h.tokenIds.map((tokenId) => ({ collection: h.collection, tokenId })),
-            ),
-          };
-        }),
-      );
+      // Read from Transfer logs, same as the scan: two RPC calls per
+      // collection for the whole wallet set, and no index to refuse part of a
+      // burst and leave tokens behind while reporting success.
+      const targets = await collectionsToScan(cfg, only, false, addresses, info.blockscoutApi);
+      if (targets.length === 0) {
+        throw new Error(
+          "no collection to sweep — name one, or queue a mint first so the server knows which " +
+            "contract to read",
+        );
+      }
+      const client = createPublicClient({
+        chain: info.chain,
+        transport: readTransport(readRpc(cfg, info)),
+      });
+
+      const byWallet = new Map<string, Holding[]>();
+      const unreadable: { collection: string; reason: string }[] = [];
+      for (const target of targets) {
+        try {
+          const held = await holdingsFromLogs(
+            client as never,
+            target.address,
+            addresses,
+            target.fromBlock,
+          );
+          for (const h of held) {
+            const list = byWallet.get(h.wallet.toLowerCase()) ?? [];
+            list.push({
+              wallet: h.wallet,
+              collection: target.address,
+              collectionName: target.name,
+              tokenIds: h.tokenIds,
+            });
+            byWallet.set(h.wallet.toLowerCase(), list);
+          }
+        } catch (e) {
+          unreadable.push({
+            collection: target.address,
+            reason: e instanceof Error ? e.message.split("\n")[0] : String(e),
+          });
+          log(`sweep: couldn't read ${target.address} — its tokens stay put`);
+        }
+      }
+
+      const perWallet = entries.map((e) => {
+        const address = privateKeyToAccount(e.key).address;
+        const held = byWallet.get(address.toLowerCase()) ?? [];
+        return {
+          key: e.key,
+          items: held.flatMap((h) =>
+            // Never move a token to the wallet it already sits on.
+            address.toLowerCase() === to.toLowerCase()
+              ? []
+              : h.tokenIds.map((tokenId) => ({ collection: h.collection, tokenId })),
+          ),
+        };
+      });
 
       const result = await sweepNfts(
         {
@@ -1014,7 +1170,7 @@ const server = createServer(async (req, res) => {
         },
         (line) => log(`nft-sweep: ${line}`),
       );
-      json(res, 200, result);
+      json(res, 200, { ...result, unreadable });
       return;
     }
 
