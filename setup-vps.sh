@@ -160,6 +160,10 @@ chmod 600 snipe.env
 bold "6/6  Starting the runner and the tunnel"
 set -a; . ./snipe.env; set +a
 pm2 delete snipe-api tunnel >/dev/null 2>&1 || true
+# pm2's log file outlives the process, so it still holds every dead tunnel
+# address this box has had. Clearing it is what makes the URL printed below
+# certainly the current one rather than possibly a stale one.
+pm2 flush tunnel >/dev/null 2>&1 || true
 pm2 start npm --name snipe-api -- run snipe:server >/dev/null
 pm2 start cloudflared --name tunnel -- tunnel --url "http://127.0.0.1:${PORT}" >/dev/null
 pm2 save >/dev/null 2>&1
@@ -183,7 +187,10 @@ printf '  waiting for the tunnel to come up'
 TUNNEL_URL=""
 for _ in $(seq 1 30); do
   sleep 2; printf '.'
+  # Everything after the last "created!" banner, so a log that somehow still
+  # holds an older address cannot win over the one just issued.
   TUNNEL_URL=$(pm2 logs tunnel --lines 200 --nostream 2>/dev/null \
+    | awk '/quick Tunnel has been created/ {found=1; out=""} found' \
     | grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' | tail -1 || true)
   [ -n "$TUNNEL_URL" ] && break
 done
@@ -204,5 +211,6 @@ fi
 printf '  token      : \033[32m%s\033[0m\n' "$SNIPE_TOKEN"
 printf '\n\033[1mThen:\033[0m  WALLETS tab → upload your keys · FUNDING tab → send 0.001 ETH each\n'
 printf '\033[1mNote:\033[0m  the tunnel URL changes if the tunnel restarts — re-read it with\n'
-printf '        pm2 logs tunnel --lines 50 --nostream | grep trycloudflare\n'
+printf '        pm2 flush tunnel && pm2 restart tunnel && sleep 25 \\\n'
+printf '          && pm2 logs tunnel --lines 60 --nostream | grep trycloudflare\n'
 printf '\n'

@@ -20,16 +20,39 @@ const run = promisify(execFile);
 const TUNNEL_RE = /https:\/\/[a-z0-9-]+\.trycloudflare\.com/gi;
 
 /**
- * The most recently printed tunnel URL in a log, or null.
+ * cloudflared says this immediately before printing a freshly issued address.
+ * Anchoring on it is what makes the answer trustworthy: pm2's log file
+ * accumulates across restarts, so it still holds every dead address the box
+ * has ever had, and simply taking the last URL in the file returns a stale one
+ * whenever the new banner has not been written yet — which is exactly the
+ * moment anyone asks.
+ */
+const NEW_TUNNEL_RE = /(?:Requesting new quick Tunnel|quick Tunnel has been created)/gi;
+
+/**
+ * The address the *current* cloudflared is serving, or null.
  *
- * Last, not first: the log accumulates across restarts, and every earlier URL
- * in it is dead. Taking the first match would hand back an address that is
- * guaranteed not to work.
+ * Looks only after the last "new tunnel" banner in the log. Falls back to the
+ * last URL in the file when there is no banner at all — better than nothing,
+ * and the caller can still check it.
  */
 export function extractTunnelUrl(log: string): string | null {
-  const found = log.match(TUNNEL_RE);
-  if (!found || found.length === 0) return null;
-  return found[found.length - 1].toLowerCase();
+  let searchFrom = 0;
+  const banners = [...log.matchAll(NEW_TUNNEL_RE)];
+  if (banners.length > 0) {
+    const last = banners[banners.length - 1];
+    searchFrom = (last.index ?? 0) + last[0].length;
+  }
+
+  const after = log.slice(searchFrom).match(TUNNEL_RE);
+  if (after && after.length > 0) return after[after.length - 1].toLowerCase();
+
+  // A banner with no URL after it means cloudflared is still negotiating: the
+  // address it had before that banner is already dead, so say we don't know.
+  if (banners.length > 0) return null;
+
+  const anywhere = log.match(TUNNEL_RE);
+  return anywhere && anywhere.length > 0 ? anywhere[anywhere.length - 1].toLowerCase() : null;
 }
 
 /**

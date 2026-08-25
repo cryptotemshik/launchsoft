@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { extractTunnelUrl } from "./tunnelUrl";
 
+const REQUESTING = "2026-08-25T12:00:00Z INF Requesting new quick Tunnel on trycloudflare.com...";
+
 const banner = (host: string) => `
 2026-08-25T12:00:00Z INF +--------------------------------------------------------+
 2026-08-25T12:00:00Z INF |  Your quick Tunnel has been created! Visit it at:       |
@@ -18,6 +20,20 @@ describe("extractTunnelUrl", () => {
   it("takes the LAST url — every earlier one in the log is already dead", () => {
     const log = banner("first-old-address") + banner("second-current-address");
     expect(extractTunnelUrl(log)).toBe("https://second-current-address.trycloudflare.com");
+  });
+
+  it("ignores an address printed before the newest request for one", () => {
+    // pm2's log file survives a restart, so it still holds every dead address
+    // this box has ever had. Reading the file top to bottom finds those first.
+    const log = [banner("dead-from-yesterday"), REQUESTING, banner("issued-just-now")].join("\n");
+    expect(extractTunnelUrl(log)).toBe("https://issued-just-now.trycloudflare.com");
+  });
+
+  it("says it does not know while a new tunnel is still being negotiated", () => {
+    // The old address is already dead and the new one has not been printed:
+    // answering with the old one would send someone to a URL that cannot work.
+    const log = [banner("dead-from-yesterday"), REQUESTING].join("\n");
+    expect(extractTunnelUrl(log)).toBeNull();
   });
 
   it("is null when the log has no tunnel banner yet", () => {
