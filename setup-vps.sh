@@ -165,6 +165,20 @@ pm2 start cloudflared --name tunnel -- tunnel --url "http://127.0.0.1:${PORT}" >
 pm2 save >/dev/null 2>&1
 ok "both services started under pm2"
 
+# Survive a reboot. Without this pm2 comes back empty and both services stay
+# down — which, on a box reachable only through its own outbound tunnel, means
+# no way in at all except the cloud provider's console.
+if ! systemctl list-unit-files 2>/dev/null | grep -q '^pm2-'; then
+  if sudo env PATH="$PATH" pm2 startup systemd -u "$USER" --hp "$HOME" >/dev/null 2>&1; then
+    pm2 save >/dev/null 2>&1
+    ok "pm2 will start both services on boot"
+  else
+    warn "couldn't enable pm2 on boot — run 'pm2 startup' and paste the command it prints"
+  fi
+else
+  ok "pm2 already starts on boot"
+fi
+
 printf '  waiting for the tunnel to come up'
 TUNNEL_URL=""
 for _ in $(seq 1 30); do
@@ -191,4 +205,4 @@ printf '  token      : \033[32m%s\033[0m\n' "$SNIPE_TOKEN"
 printf '\n\033[1mThen:\033[0m  WALLETS tab → upload your keys · FUNDING tab → send 0.001 ETH each\n'
 printf '\033[1mNote:\033[0m  the tunnel URL changes if the tunnel restarts — re-read it with\n'
 printf '        pm2 logs tunnel --lines 50 --nostream | grep trycloudflare\n'
-printf '\nRun \033[1mpm2 startup\033[0m and paste the command it prints, so this survives a reboot.\n\n'
+printf '\n'
