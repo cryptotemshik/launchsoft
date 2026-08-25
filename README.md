@@ -553,6 +553,20 @@ Three things keep that from being a mystery:
   `SNIPE_AUTO_UPDATE=0` to turn it off, `SNIPE_AUTO_UPDATE_MS` to change the
   interval.
 
+An update also refuses to run when the box has less than ~420MB of memory
+free, and the typecheck is capped at a 320MB heap (`SNIPE_MIN_FREE_MB`,
+`SNIPE_TSC_HEAP_MB`). This is not theoretical: on a 1GB instance an
+unconstrained `tsc` triggered the OOM killer, which took the Cloudflare tunnel
+with it and left the machine unreachable from the panel. A step that verifies
+an update must never be able to cost more than the update itself. `setup-vps.sh`
+adds 2GB of swap on any box under 2GB of RAM for the same reason.
+
+Whenever cloudflared restarts, a quick tunnel gets a **new random hostname**
+and prints it once. The server reads it out of the tunnel's log on startup,
+reports it at `/api/status`, and — when Telegram is configured — messages the
+new address, since otherwise recovering it needs a terminal on the box, which
+is exactly what someone holding only a phone does not have.
+
 Both paths refuse to restart at a bad moment — while a job is running, while
 one is armed, or within `ARM_LEAD_MS + 10 min` of a queued drop opening — and
 both typecheck the pulled code before restarting. If it doesn't compile the

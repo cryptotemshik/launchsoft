@@ -47,6 +47,25 @@ ok "git $(git --version | awk '{print $3}')"
 command -v pm2 >/dev/null 2>&1 || sudo npm i -g pm2 >/dev/null 2>&1
 ok "pm2 ready"
 
+# ── 1b. Swap ────────────────────────────────────────────────────────────────
+# A 1GB instance runs node, cloudflared and — during a self-update — a
+# typechecker. Without swap the kernel resolves that by killing something, and
+# it once picked the tunnel, leaving the box unreachable from the panel. 2GB of
+# swap on disk costs nothing and removes the whole failure mode.
+TOTAL_MB=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo 2>/dev/null || echo 0)
+SWAP_MB=$(awk '/SwapTotal/ {print int($2/1024)}' /proc/meminfo 2>/dev/null || echo 0)
+if [ "$TOTAL_MB" -lt 2048 ] && [ "$SWAP_MB" -lt 512 ] && [ ! -f /swapfile ]; then
+  bold "1b/6  Adding 2GB of swap (this box has ${TOTAL_MB}MB of RAM)"
+  sudo fallocate -l 2G /swapfile 2>/dev/null || sudo dd if=/dev/zero of=/swapfile bs=1M count=2048 status=none
+  sudo chmod 600 /swapfile
+  sudo mkswap /swapfile >/dev/null
+  sudo swapon /swapfile
+  grep -q '^/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab >/dev/null
+  ok "swap on, and it survives a reboot"
+else
+  ok "memory fine (${TOTAL_MB}MB RAM, ${SWAP_MB}MB swap)"
+fi
+
 # ── 2. cloudflared ──────────────────────────────────────────────────────────
 bold "2/6  Installing cloudflared (the tunnel — no inbound port is opened)"
 if command -v cloudflared >/dev/null 2>&1; then

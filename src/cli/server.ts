@@ -30,6 +30,7 @@ import { timingSafeEqual, randomUUID } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { execFile } from "node:child_process";
+import * as os from "node:os";
 import { promisify } from "node:util";
 import { createPublicClient, formatEther, parseEther } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
@@ -50,6 +51,7 @@ import { runSnipe, type RunOptions, type RunResult } from "./runner";
 import { formatMintReport, sendTelegram, type MintedWallet } from "../lib/telegram";
 import { API_VERSION } from "../lib/apiVersion";
 import { mapWithLimit, readTransport } from "../lib/rpcRead";
+import { currentTunnelUrl } from "./tunnelUrl";
 
 const stamp = () => new Date().toISOString().slice(11, 23);
 const log = (msg: string) => console.log(`[${stamp()}] ${msg}`);
@@ -106,6 +108,9 @@ interface Job {
   /** Set when the post-run NFT sweep ran. */
   consolidated?: { to: string; moved: number; total: number };
 }
+
+/** Where the box is reachable, once the tunnel log has been read. */
+let tunnelUrl: string | null = null;
 
 const jobs: Job[] = [];
 /** At most one job may be armed/firing — see the nonce note in the header. */
@@ -235,6 +240,22 @@ function parseWalletFilter(body: Record<string, unknown>): string[] | undefined 
  */
 const run = promisify(execFile);
 
+/** Heap ceiling for the update's typecheck, so it cannot starve the box. */
+const TSC_HEAP_MB = Number(process.env.SNIPE_TSC_HEAP_MB ?? 320);
+/** Below this much free memory, an update is refused rather than risked. */
+const MIN_FREE_MB = Number(process.env.SNIPE_MIN_FREE_MB ?? 420);
+
+/** Memory actually available for a new process, in MB. */
+function freeMemoryMb(): number {
+  // freemem() alone reads far too low on Linux, where the page cache counts as
+  // used; availableMemory() is the number the kernel itself reports as usable.
+  const bytes =
+    typeof (os as { availableMemory?: () => number }).availableMemory === "function"
+      ? (os as unknown as { availableMemory: () => number }).availableMemory()
+      : os.freemem();
+  return Math.round(bytes / 1024 / 1024);
+}
+
 async function gitHead(dir: string): Promise<string> {
   const { stdout } = await run("git", ["rev-parse", "--short", "HEAD"], { cwd: dir });
   return stdout.trim();
@@ -281,6 +302,14 @@ async function selfUpdate(): Promise<UpdateResult> {
     return { before, after, changed: false, detail: "already up to date", restarting: false };
   }
 
+  if (freeMemoryMb() < MIN_FREE_MB) {
+    await run("git", ["reset", "--hard", before], { cwd: dir }).catch(() => {});
+    throw new Error(
+      `only ${freeMemoryMb()}MB of memory free — too little to verify an update safely, ` +
+        `so ${after} was rolled back to ${before}. Add swap or a bigger instance.`,
+    );
+  }
+
   // Dependencies only need reinstalling when the lockfile actually moved.
   const { stdout: touched } = await run("git", ["diff", "--name-only", before, after], { cwd: dir });
   if (touched.split("\n").some((f) => f.trim() === "package-lock.json")) {
@@ -291,8 +320,18 @@ async function selfUpdate(): Promise<UpdateResult> {
   // Restarting into code that doesn't compile leaves pm2 in a crash loop with
   // nothing serving, which on an unattended box means the next drop is simply
   // missed. Check first, and put the checkout back if it fails.
+  //
+  // The check is capped and guarded because it is not free: tsc wants a few
+  // hundred MB, and on a 1GB box the kernel's OOM killer resolves that by
+  // killing something — which once took the Cloudflare tunnel with it and left
+  // the machine unreachable. A verification step must never be able to cost
+  // more than the thing it verifies.
   try {
-    await run("npx", ["tsc", "--noEmit"], { cwd: dir, timeout: 300_000 });
+    await run("npx", ["tsc", "--noEmit"], {
+      cwd: dir,
+      timeout: 300_000,
+      env: { ...process.env, NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} --max-old-space-size=${TSC_HEAP_MB}`.trim() },
+    });
   } catch (e) {
     const err = e as { stdout?: string; stderr?: string };
     const first = `${err.stdout ?? ""}${err.stderr ?? ""}`.split("\n").find((l) => l.includes("error"));
@@ -687,6 +726,56 @@ function tick() {
 }
 setInterval(tick, 1000);
 
+/**
+ * Find the address this box is reachable at and, if it has changed, say so in
+ * Telegram.
+ *
+ * A quick tunnel gets a new random hostname every time cloudflared starts, and
+ * prints it once. Without this, a tunnel restart silently cuts the panel off
+ * and the new address is recoverable only from a terminal on the box — which
+ * is exactly what someone with only a phone does not have. The last announced
+ * URL is kept next to the config so a plain server restart stays quiet.
+ */
+const TUNNEL_STATE = () => `${resolve(CONFIG_PATH)}.tunnel`;
+
+async function announceTunnel(): Promise<void> {
+  const url = await currentTunnelUrl();
+  tunnelUrl = url;
+  if (!url) {
+    log("tunnel URL unknown (no pm2 'tunnel' process, or it hasn't printed one)");
+    return;
+  }
+  log(`tunnel     ${url}`);
+
+  let previous: string | null = null;
+  try {
+    previous = readFileSync(TUNNEL_STATE(), "utf8").trim() || null;
+  } catch {
+    // First run — there is nothing to compare against, so announce it.
+  }
+  if (previous === url) return;
+
+  try {
+    writeFileSync(TUNNEL_STATE(), `${url}\n`, { mode: 0o600 });
+  } catch {
+    // Not being able to remember it only means we announce again next time.
+  }
+
+  const cfg = (() => {
+    try {
+      return loadConfig(CONFIG_PATH);
+    } catch {
+      return null;
+    }
+  })();
+  if (!cfg?.telegram) return;
+  const what = previous ? "changed" : "is";
+  await sendTelegram(
+    cfg.telegram,
+    `<b>Server address ${what}</b>\n<code>${url}</code>\n\nPaste it into the panel's <b>server URL</b> field. Your token has not changed.`,
+  ).catch(() => undefined);
+}
+
 const server = createServer(async (req, res) => {
   cors(req, res);
   if (req.method === "OPTIONS") {
@@ -719,6 +808,7 @@ const server = createServer(async (req, res) => {
         armLeadMs: ARM_LEAD_MS,
         autoUpdate: AUTO_UPDATE ? AUTO_UPDATE_MS : null,
         // Hosts only — the full URLs carry provider API keys.
+        tunnelUrl,
         rpcHosts: cfg.extraRpcs.map(rpcHost),
         readRpc: info ? rpcHost(readRpc(cfg, info)) : null,
         jobs: jobs.map(jobView),
@@ -1136,4 +1226,5 @@ server.listen(PORT, HOST, () => {
     log("WARNING binding to a public interface — prefer 127.0.0.1 behind a Cloudflare Tunnel");
   }
   startAutoUpdate();
+  void announceTunnel();
 });
