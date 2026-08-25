@@ -4,6 +4,8 @@ import { useSigner } from "../signer";
 import { parseEventLogs, zeroHash } from "viem";
 import { DEFAULT_DROP_DAYS, launchFactoryFor } from "../config";
 import { openSeaCollectionUrl } from "../chains";
+import { useCustomRpcs } from "../lib/customRpc";
+import { makeReadClient, primaryReadHost } from "../lib/readClient";
 import {
   erc721SeaDropAbi,
   erc721SeaDropBytecode,
@@ -206,8 +208,17 @@ type Phase = "form" | "confirm" | "running" | "done";
 export default function LaunchTab() {
   const { address, txAccount, isConnected, walletClient, wrongNetwork, chainInfo } =
     useSigner();
-  const publicClient = usePublicClient({ chainId: chainInfo?.id });
+  const wagmiClient = usePublicClient({ chainId: chainInfo?.id });
   const factory = launchFactoryFor(chainInfo?.id);
+
+  // Same endpoint the snipe tab uses — one setting, editable from either. A
+  // launch is a dozen reads and half a dozen receipt waits, all of which sat
+  // behind the public RPC's rate limit before this.
+  const { text: rpcText, setText: setRpcText, urls: customRpcs } = useCustomRpcs();
+  const publicClient = useMemo(() => {
+    if (!chainInfo || customRpcs.length === 0) return wagmiClient;
+    return makeReadClient(chainInfo.chain, customRpcs) as unknown as typeof wagmiClient;
+  }, [chainInfo, customRpcs, wagmiClient]);
 
   const saved = useMemo(loadLaunchState, []);
   const [form, setForm] = useState<LaunchFormValues>(() => ({
@@ -748,6 +759,25 @@ export default function LaunchTab() {
           </button>
         </div>
       ) : null}
+
+      <div className="panel">
+        <h2>Your RPC</h2>
+        <p className="dim" style={{ marginTop: 0 }}>
+          Every read and receipt wait on this page goes through the first
+          endpoint here, with {chainInfo.label}&apos;s public RPC only as the
+          backstop behind it. Shared with the Snipe tab — set it in either.
+        </p>
+        <textarea
+          rows={2}
+          value={rpcText}
+          onChange={(e) => setRpcText(e.target.value)}
+          placeholder="https://….g.alchemy.com/v2/YOUR_KEY"
+        />
+        <p className="dim hint" style={{ marginBottom: 0 }}>
+          reads go to <b>{primaryReadHost(chainInfo.chain, customRpcs)}</b>
+          {customRpcs.length === 0 ? " (the public RPC — paste yours above)" : ""}.
+        </p>
+      </div>
 
       <div className="panel">
         <h2>Start from an existing collection (optional)</h2>

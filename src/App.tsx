@@ -3,7 +3,6 @@ import Landing from "./components/Landing";
 import ConnectBar from "./components/ConnectBar";
 import DashboardTab from "./components/DashboardTab";
 import LaunchTab from "./components/LaunchTab";
-import LiveTab from "./components/LiveTab";
 import RevealTab from "./components/RevealTab";
 import FundingTab from "./components/FundingTab";
 import ServerWalletsTab from "./components/ServerWalletsTab";
@@ -21,7 +20,6 @@ import {
   KeyIcon,
   PulseIcon,
   RocketIcon,
-  TrendingIcon,
   WalletIcon,
 } from "./components/icons";
 
@@ -30,7 +28,6 @@ type Tab =
   | "launch"
   | "reveal"
   | "status"
-  | "live"
   | "wallets"
   | "snipe"
   | "serverwallets"
@@ -40,7 +37,6 @@ const TAB_ICON = {
   launch: RocketIcon,
   reveal: EyeIcon,
   status: PulseIcon,
-  live: TrendingIcon,
   wallets: WalletIcon,
   dashboard: GridIcon,
   snipe: CrosshairIcon,
@@ -105,7 +101,6 @@ export default function App() {
           </div>
         </div>
         {([
-          ["live", "LIVE"],
           ["wallets", "TRACKER"],
           ["dashboard", "DASHBOARD"],
         ] as const).map(([t, label]) => {
@@ -153,7 +148,6 @@ export default function App() {
       {tab === "launch" ? <LaunchTab /> : null}
       {tab === "reveal" ? <RevealTab /> : null}
       {tab === "status" ? <StatusTab /> : null}
-      {tab === "live" ? <LiveTab /> : null}
       {tab === "wallets" ? <WalletsTab /> : null}
       {tab === "snipe" ? <SnipeTab /> : null}
       {tab === "serverwallets" ? <ServerWalletsTab /> : null}

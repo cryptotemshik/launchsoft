@@ -1111,35 +1111,7 @@ tr.project-detail td {
   }
 }
 
-/* ── Live feed / wallet tracker ──────────────────────────────────────────── */
-.stat-grid {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 10px;
-  margin-bottom: 12px;
-}
-.stat {
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  background: var(--surface-2);
-  padding: 14px 16px;
-}
-.stat-num {
-  font-family: var(--display);
-  font-size: 26px;
-  font-weight: 600;
-  color: var(--green-bright);
-  line-height: 1.1;
-  letter-spacing: -0.01em;
-}
-.stat-label {
-  margin-top: 4px;
-  font-size: 11px;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  color: var(--faint);
-}
-
+/* ── Activity feed (wallet tracker) ──────────────────────────────────────── */
 .feed {
   list-style: none;
   margin: 0;
@@ -1342,12 +1314,6 @@ tr.project-detail td {
 }
 
 @media (max-width: 640px) {
-  .stat-grid {
-    grid-template-columns: repeat(2, 1fr);
-  }
-  .stat-num {
-    font-size: 22px;
-  }
   .feed-row {
     flex-wrap: wrap;
     gap: 6px 10px;

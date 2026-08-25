@@ -317,35 +317,11 @@ symbol, description, website, supply, mint price, per-wallet limit and royalty
 Artwork is deliberately never copied — you upload your own pre-reveal image and
 your own art at reveal.
 
-## Live mints tab (MintGo-style)
-
-What's minting **right now**, read live from the chain's Blockscout API — no
-backend. It reads the newest `SeaDropMint` logs emitted by the canonical
-SeaDrop contract, decodes them (collection, minter, quantity, unit price), and
-shows:
-
-- **Header stats** over the recent window: NFTs minted, mint txns, unique
-  minters, distinct collections.
-- **Trending — most minted**: collections ranked by NFTs minted (then unique
-  minters), with a rough secondary of mint volume and how long ago the last
-  mint landed. Collection names are resolved on-chain via `name()`, and each
-  collection shows its logo (pulled from `contractURI` and cached).
-- **Latest mints**: a live ticker of individual mints with the collection's
-  avatar, the minter linked to their **OpenSea profile**, quantity, unit
-  price, time-ago and tx link.
-- **Realtime (optional)**: the Blockscout feed auto-refreshes every 5s; paste a
-  **WebSocket RPC** (`wss://…` that supports `eth_subscribe`, e.g. your Alchemy
-  WebSocket URL) and it subscribes directly to SeaDrop mint logs for
-  instant, no-poll updates. Nothing is stored.
+## Image loading
 
 Collection logos and pre-reveal art resolve through a **fallback chain of IPFS
 gateways** (ipfs.io → Pinata → Cloudflare → dweb.link → nft.storage), so a
 single slow or rate-limited gateway no longer leaves a broken image.
-
-Only mints that go through SeaDrop are visible here (that's what LaunchPad and
-OpenSea drops use). It needs a **Blockscout API** for the active chain, so it's
-enabled on Robinhood, Base, Optimism, Zora, Soneium, Unichain, Shape, B3, and
-Flow, and shows a "switch chain" note elsewhere.
 
 ## Tracker tab
 
@@ -365,8 +341,8 @@ Watch any set of wallets and get alerted when they **mint**, **buy**, or
 
 Honest limit: a static site can only notify while the tab is open. Closed-tab /
 background push needs a server with Web Push (a Service Worker + VAPID key +
-subscription store), which this keyless app deliberately doesn't run. Like the
-Live tab, activity reads need a Blockscout API for the active chain.
+subscription store), which this keyless app deliberately doesn't run. Activity
+reads need a Blockscout API for the active chain.
 
 ## Dashboard tab
 
@@ -405,8 +381,8 @@ stages differ only in the calldata each wallet carries.
 - **Pre-signed, then blasted.** Every wallet's transaction is signed and
   serialised *before* the stage opens, so at T-0 the only work left is writing
   bytes to the network — signing and encoding are off the critical path. Each
-  signed transaction is sent to every configured RPC endpoint at once
-  (chain defaults plus any you paste, e.g. your own Alchemy key), and whichever
+  signed transaction is sent to every configured RPC endpoint at once (the
+  chain's sequencer and public RPC plus anything you paste), and whichever
   answers first wins.
 - **Guarded the same way the CLI original was.** A max fee under the current
   base fee, a tip above the ceiling, or a wallet that can't cover
@@ -700,6 +676,31 @@ never turn a successful mint into a failed run.
 `snipe.config.json` and `snipe.keys` are gitignored. Keys are read at start,
 held in memory, and never written anywhere — but they *are* on a server, so
 fund those wallets with only what the mint needs.
+
+## Your RPC
+
+One setting, shared by the Snipe and Launch tabs and stored in the browser:
+paste your own endpoint (Alchemy, QuickNode, your own node), one per line,
+best first.
+
+It is the **primary**, not an extra. Every read — stage, price, base fee,
+balances, nonces, receipt waits — goes through the first endpoint, with the
+chain's public RPC only as the backstop behind it, and locally-signed
+transactions are broadcast through it too. `fallback` is what makes that safe:
+if the endpoint errors, viem moves down the list, so a provider outage
+degrades to "slower" rather than "broken". Inside a fallback each transport
+retries once rather than three times — retries there are seconds spent on a
+host already known to be failing before the next one is tried.
+
+It matters because the public RPC meters requests: a hundred wallets is a
+hundred balance reads, and the public node answers that burst with HTTP 429.
+Reads are batched twenty to a POST and throttled with a backoff on 429
+(`src/lib/rpcRead.ts`), but the real fix is not reading through it at all.
+
+The panel also hands these endpoints to the control server when you connect,
+so balances and nonces there stop queueing behind the same limit — the server
+probes each one for chain id before storing it and reports which host it reads
+through.
 
 ## Allow-list detection (Snipe tab)
 

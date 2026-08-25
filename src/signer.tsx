@@ -8,6 +8,7 @@ import {
 import { useAccount, useChainId, useSwitchChain, useWalletClient } from "wagmi";
 import {
   createWalletClient,
+  fallback,
   http,
   type Account,
   type WalletClient,
@@ -20,6 +21,19 @@ import {
   type ChainInfo,
 } from "./chains";
 import { normalizePrivateKey } from "./lib/convert";
+import { loadCustomRpcText, parseCustomRpcs } from "./lib/customRpc";
+
+/**
+ * Where a locally-signed transaction is sent. Reads have their own client
+ * (see lib/readClient); this is the write half of the same idea — the user's
+ * endpoint first, the chain's own RPC as the backstop, so a provider outage
+ * costs a retry rather than a failed launch.
+ */
+function writeTransport() {
+  const custom = parseCustomRpcs(loadCustomRpcText());
+  if (custom.length === 0) return http();
+  return fallback([...custom.map((u) => http(u)), http()], { rank: false });
+}
 
 export type SignerMode = "wallet" | "local";
 
@@ -145,10 +159,13 @@ export function useSigner(): ActiveSigner {
     }
     // Local wallet client built for the selected chain; signs locally with the
     // active key (fast mode can hold several — this is the chosen one).
+    // Broadcasts through the user's own endpoint when they have set one, with
+    // the chain's public RPC behind it: a launch is several transactions, and
+    // the public node is the one that throttles.
     const walletClient = createWalletClient({
       account: ctx.active.account,
       chain: info.chain,
-      transport: http(),
+      transport: writeTransport(),
     });
     return {
       mode: "local",
@@ -163,7 +180,7 @@ export function useSigner(): ActiveSigner {
   }
 
   // Not connected yet: let the user browse a chain of their choice so the
-  // read-only tabs (Live, Wallets, Status, Dashboard) work before connecting.
+  // read-only tabs (Wallets, Status, Dashboard) work before connecting.
   if (!wConnected) {
     const selInfo =
       getChainInfo(ctx?.selectedChainId ?? DEFAULT_CHAIN_ID) ??

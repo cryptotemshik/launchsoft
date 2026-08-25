@@ -59,13 +59,6 @@ export const WalletIcon = (p: SVGProps<SVGSVGElement>) => (
   </svg>
 );
 
-export const TrendingIcon = (p: SVGProps<SVGSVGElement>) => (
-  <svg {...base(p)}>
-    <path d="M3 17l6-6 4 4 8-8" />
-    <path d="M17 7h4v4" />
-  </svg>
-);
-
 export const CopyIcon = (p: SVGProps<SVGSVGElement>) => (
   <svg {...base(p)}>
     <rect x="9" y="9" width="11" height="11" rx="2" />

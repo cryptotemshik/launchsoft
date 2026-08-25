@@ -32,6 +32,7 @@ import {
 } from "../lib/rpcBlast";
 import { waitUntil } from "../lib/snipeTimer";
 import { makeReadClient, primaryReadHost } from "../lib/readClient";
+import { useCustomRpcs } from "../lib/customRpc";
 import { Steps, TxLink, type StepView } from "./Bits";
 import RemoteRunner from "./RemoteRunner";
 
@@ -118,9 +119,6 @@ const STEP_STATUS: Record<FireStatus, StepView["status"]> = {
 type Phase = "form" | "confirm" | "firing";
 type Timing = "now" | "wait";
 
-/** Where the pasted endpoints live between visits. */
-const RPC_KEY = "launchpad.snipe.rpcs";
-
 export default function SnipeTab() {
   const chainInfo = useActiveChain() ?? CHAINS_BY_ID.get(DEFAULT_CHAIN_ID);
   const wagmiClient = usePublicClient({ chainId: chainInfo?.id });
@@ -134,11 +132,8 @@ export default function SnipeTab() {
   const [stage, setStage] = useState<Stage>("public");
 
   const [keysText, setKeysText] = useState("");
-  // Remembered: retyping a keyed provider URL on every visit is how it ends up
-  // not being used at all.
-  const [extraRpcText, setExtraRpcText] = useState(
-    () => localStorage.getItem(RPC_KEY) ?? "",
-  );
+  // Shared with the launch tab — one setting, editable from either.
+  const { text: extraRpcText, setText: setExtraRpcText, urls: customRpcs } = useCustomRpcs();
   const [quantity, setQuantity] = useState(1);
   // "max" defers the number to the stage, which matters when queueing several
   // drops that each declare their own per-wallet cap.
@@ -189,19 +184,6 @@ export default function SnipeTab() {
   const allowParams: MintParams | undefined = eligibleAccounts
     .map((a) => eligByAddr.get(a.address.toLowerCase())?.params)
     .find(Boolean);
-
-  const customRpcs = useMemo(
-    () =>
-      extraRpcText
-        .split("\n")
-        .map((l) => l.trim())
-        .filter(Boolean),
-    [extraRpcText],
-  );
-
-  useEffect(() => {
-    localStorage.setItem(RPC_KEY, extraRpcText);
-  }, [extraRpcText]);
 
   /**
    * Reads go through the pasted endpoint first, with the chain's public RPC
