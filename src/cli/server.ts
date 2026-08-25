@@ -246,18 +246,38 @@ const run = promisify(execFile);
 
 /** Heap ceiling for the update's typecheck, so it cannot starve the box. */
 const TSC_HEAP_MB = Number(process.env.SNIPE_TSC_HEAP_MB ?? 320);
-/** Below this much free memory, an update is refused rather than risked. */
-const MIN_FREE_MB = Number(process.env.SNIPE_MIN_FREE_MB ?? 420);
+/**
+ * Headroom the typecheck needs beyond its own heap, for node itself.
+ *
+ * This used to be an absolute floor of 420MB of free RAM, which was a guess —
+ * and on a 1GB instance the real figure sits around 380MB, so the guard
+ * refused every update for eight hours running while reporting it as a memory
+ * problem. The question is not "is there a lot of memory free" but "can a
+ * capped typecheck run without the kernel having to kill something", and swap
+ * counts towards that: it makes tsc slower, never fatal.
+ */
+const TSC_OVERHEAD_MB = Number(process.env.SNIPE_TSC_OVERHEAD_MB ?? 80);
 
-/** Memory actually available for a new process, in MB. */
-function freeMemoryMb(): number {
-  // freemem() alone reads far too low on Linux, where the page cache counts as
-  // used; availableMemory() is the number the kernel itself reports as usable.
-  const bytes =
+/**
+ * Memory a new process could actually use, in MB — free RAM plus free swap.
+ *
+ * `freemem()` reads far too low on Linux, where the page cache counts as used;
+ * `availableMemory()` is what the kernel itself reports as usable. Swap is read
+ * from /proc, since node exposes no API for it.
+ */
+function usableMemoryMb(): number {
+  const ram =
     typeof (os as { availableMemory?: () => number }).availableMemory === "function"
       ? (os as unknown as { availableMemory: () => number }).availableMemory()
       : os.freemem();
-  return Math.round(bytes / 1024 / 1024);
+  let swapFreeKb = 0;
+  try {
+    const meminfo = readFileSync("/proc/meminfo", "utf8");
+    swapFreeKb = Number(/SwapFree:\s+(\d+)/.exec(meminfo)?.[1] ?? 0);
+  } catch {
+    // Not Linux, or /proc unavailable: RAM alone then.
+  }
+  return Math.round(ram / 1024 / 1024 + swapFreeKb / 1024);
 }
 
 async function gitHead(dir: string): Promise<string> {
@@ -306,11 +326,13 @@ async function selfUpdate(): Promise<UpdateResult> {
     return { before, after, changed: false, detail: "already up to date", restarting: false };
   }
 
-  if (freeMemoryMb() < MIN_FREE_MB) {
+  const usable = usableMemoryMb();
+  const needed = TSC_HEAP_MB + TSC_OVERHEAD_MB;
+  if (usable < needed) {
     await run("git", ["reset", "--hard", before], { cwd: dir }).catch(() => {});
     throw new Error(
-      `only ${freeMemoryMb()}MB of memory free — too little to verify an update safely, ` +
-        `so ${after} was rolled back to ${before}. Add swap or a bigger instance.`,
+      `${usable}MB of memory usable but the check needs ${needed}MB, so ${after} was rolled ` +
+        `back to ${before}. Add swap (setup-vps.sh does), or lower SNIPE_TSC_HEAP_MB.`,
     );
   }
 
