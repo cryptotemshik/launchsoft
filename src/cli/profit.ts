@@ -35,6 +35,8 @@ export interface MintCost {
 
 export interface SaleEvent {
   wallet: `0x${string}`;
+  /** Which contract the token belongs to — one scan covers many. */
+  collection: `0x${string}`;
   tokenId: string;
   blockNumber: bigint;
   txHash: string;
@@ -71,6 +73,7 @@ export interface ProfitReport {
 /** A token leaving one of our wallets — the half of a sale we can see in logs. */
 export interface OutgoingTransfer {
   wallet: `0x${string}`;
+  collection: `0x${string}`;
   tokenId: string;
   blockNumber: bigint;
   txHash: string;
@@ -138,6 +141,7 @@ export async function priceTransfers(
     const share = entry.rise / BigInt(countByKey.get(k) ?? 1);
     return {
       wallet: getAddress(t.wallet),
+      collection: getAddress(t.collection),
       tokenId: t.tokenId,
       blockNumber: t.blockNumber,
       txHash: t.txHash,

@@ -23,6 +23,7 @@ function clientWith(balances: Record<string, bigint>) {
 
 const out = (over: Partial<OutgoingTransfer> = {}): OutgoingTransfer => ({
   wallet: W1,
+  collection: COLL,
   tokenId: "1",
   blockNumber: 100n,
   txHash: "0xtx",
@@ -141,8 +142,8 @@ describe("summarise", () => {
       COLL,
       cost,
       [
-        { wallet: W1, tokenId: "1", blockNumber: 1n, txHash: "0x", proceedsWei: 2n * ETH, priced: true },
-        { wallet: W1, tokenId: "2", blockNumber: 2n, txHash: "0x", proceedsWei: 1n * ETH, priced: true },
+        { wallet: W1, collection: COLL, tokenId: "1", blockNumber: 1n, txHash: "0x", proceedsWei: 2n * ETH, priced: true },
+        { wallet: W1, collection: COLL, tokenId: "2", blockNumber: 2n, txHash: "0x", proceedsWei: 1n * ETH, priced: true },
       ],
       8,
     );

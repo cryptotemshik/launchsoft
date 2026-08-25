@@ -77,10 +77,10 @@ describe("formatMintReport", () => {
 
     expect(out).toHaveLength(3);
     expect(out[0]).toContain("MINT COMPLETE");
-    expect(out[0]).toContain("<b>5</b> NFTs from <b>2</b> wallets");
+    expect(out[0]).toContain("<b>5</b> NFTs on <b>2</b> wallets");
     expect(out[0]).toContain("<b>1</b> wallet failed");
-    expect(out[1]).toContain("Minted — 2 wallets");
-    expect(out[2]).toContain("Failed — 1 wallet");
+    expect(out[1]).toContain("MINTED — 2 wallets, 5 NFTs");
+    expect(out[2]).toContain("FAILED — 1 wallet");
   });
 
   it("puts the overview first, since that is what a lock screen shows", () => {
@@ -97,13 +97,13 @@ describe("formatMintReport", () => {
     });
     expect(out).toHaveLength(2);
     expect(out[0]).toContain("MINT FAILED");
-    expect(out.some((m) => m.includes("Minted —"))).toBe(false);
+    expect(out.some((m) => m.includes("MINTED —"))).toBe(false);
   });
 
   it("omits the failure message when nothing failed", () => {
     const out = formatMintReport({ ...base, wallets: [wallet()] });
     expect(out).toHaveLength(2);
-    expect(out.some((m) => m.includes("Failed —"))).toBe(false);
+    expect(out.some((m) => m.includes("FAILED —"))).toBe(false);
   });
 
   it("names every failed wallet, however many there are", () => {
@@ -148,13 +148,37 @@ describe("formatMintReport", () => {
     for (const id of tokenIds) expect(joined).toContain(`>#${id}</a>`);
   });
 
+  it("links the collection from the mint and failure messages too", () => {
+    const out = formatMintReport({
+      ...base,
+      wallets: [wallet(), wallet({ address: addr(3), status: "rejected", quantity: 0, tokenIds: [] })],
+    });
+    for (const m of out) expect(m).toContain('href="https://opensea.io/assets/robinhood/0xccc"');
+  });
+
+  it("puts each failure reason on its own line, so a phone can read it", () => {
+    const out = formatMintReport({
+      ...base,
+      wallets: [
+        wallet({
+          address: addr(5),
+          status: "reverted",
+          quantity: 0,
+          tokenIds: [],
+          detail: "execution reverted: MintQuantityExceedsMaxMintedPerWallet",
+        }),
+      ],
+    });
+    expect(out[1]).toContain("\n   execution reverted: MintQuantityExceedsMaxMintedPerWallet");
+  });
+
   it("counts skipped wallets apart from failures", () => {
     const out = formatMintReport({
       ...base,
       wallets: [wallet(), wallet({ address: addr(9), status: "skipped", quantity: 0, tokenIds: [] })],
     });
     expect(out[0]).toContain("1 skipped");
-    expect(out.some((m) => m.includes("Failed —"))).toBe(false);
+    expect(out.some((m) => m.includes("FAILED —"))).toBe(false);
   });
 
   it("says plainly when it was a dry run", () => {

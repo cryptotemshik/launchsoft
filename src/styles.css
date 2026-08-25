@@ -1465,3 +1465,23 @@ button.secondary.active-chip {
     max-height: 220px;
   }
 }
+
+/* Token ids as links. Many per row, so they wrap and stay tappable rather
+   than running together into one long unclickable string. */
+.token-ids {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 3px 7px;
+  font-size: 11px;
+  font-family: var(--mono);
+  max-width: 100%;
+}
+.token-ids a {
+  color: var(--dim);
+  text-decoration: none;
+  border-bottom: 1px dotted var(--line);
+}
+.token-ids a:hover {
+  color: var(--green-bright);
+  border-bottom-color: var(--green-bright);
+}

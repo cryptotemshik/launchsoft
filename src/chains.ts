@@ -384,3 +384,22 @@ export function ipfsGatewayUrl(ipfsUri: string): string {
 export function openSeaProfileUrl(address: string): string {
   return `https://opensea.io/${address}`;
 }
+
+/**
+ * The same two links, from a bare slug rather than a ChainInfo.
+ *
+ * The server knows its chain and sends the slug along with its answers, so a
+ * panel rendering server data has the slug but not the registry entry. Falling
+ * back to the default keeps a link working rather than rendering a dead one.
+ */
+export function openSeaCollectionUrlBySlug(slug: string | undefined, contract: string): string {
+  return `https://opensea.io/assets/${slug || "robinhood"}/${contract}`;
+}
+
+export function openSeaItemUrlBySlug(
+  slug: string | undefined,
+  contract: string,
+  tokenId: string,
+): string {
+  return `https://opensea.io/item/${slug || "robinhood"}/${contract}/${tokenId}`;
+}

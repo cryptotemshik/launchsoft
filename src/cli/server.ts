@@ -35,8 +35,7 @@ import { promisify } from "node:util";
 import { createPublicClient, formatEther, parseEther } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { collect, disperse } from "./funding";
-import { scanWallets, walletTokenCounts } from "./blockscout";
-import { holdingsFromLogs, readLedger } from "./holdings";
+import { scanChain } from "./holdings";
 import { costByCollection, loadMints, recordMint } from "./ledger";
 import { priceTransfers, summarise } from "./profit";
 import { loadCollections, rememberCollection } from "./collections";
@@ -812,49 +811,6 @@ async function announceTunnel(): Promise<void> {
   ).catch(() => undefined);
 }
 
-/**
- * Which collections a scan should look at.
- *
- * Reading holdings from logs needs a contract address, so the question "what
- * do my wallets hold" becomes "what do they hold of these". The answer is
- * almost always the collections this server has minted, which it remembers, so
- * no index is involved. An explicit one always wins; `deep` falls back to the
- * index to discover collections nobody told us about.
- */
-async function collectionsToScan(
-  cfg: SnipeConfig,
-  only: `0x${string}` | undefined,
-  deep: boolean,
-  addresses: readonly `0x${string}`[],
-  blockscoutApi: string | undefined,
-): Promise<{ address: `0x${string}`; name?: string; fromBlock: bigint }[]> {
-  if (only) return [{ address: only, fromBlock: 0n }];
-
-  const known = loadCollections(CONFIG_PATH).map((c) => ({
-    address: c.address,
-    name: c.name,
-    fromBlock: c.fromBlock === undefined ? 0n : BigInt(c.fromBlock),
-  }));
-  if (/^0x[0-9a-fA-F]{40}$/.test(cfg.collection ?? "")) {
-    const addr = cfg.collection.toLowerCase();
-    if (!known.some((k) => k.address.toLowerCase() === addr)) {
-      known.push({ address: cfg.collection, name: undefined, fromBlock: 0n });
-    }
-  }
-  if (!deep || !blockscoutApi) return known;
-
-  // Discovery: the index is the only thing that can name a collection nobody
-  // told us about, so it is used for that and nothing else.
-  const found = await scanWallets(addresses, (w) => walletTokenCounts(blockscoutApi, w));
-  for (const counts of found.results.values()) {
-    for (const c of counts) {
-      if (known.some((k) => k.address.toLowerCase() === c.collection.toLowerCase())) continue;
-      known.push({ address: c.collection, name: c.collectionName, fromBlock: 0n });
-    }
-  }
-  return known;
-}
-
 const server = createServer(async (req, res) => {
   cors(req, res);
   if (req.method === "OPTIONS") {
@@ -1037,71 +993,69 @@ const server = createServer(async (req, res) => {
       const costs = costByCollection(loadMints(CONFIG_PATH));
       const known = loadCollections(CONFIG_PATH);
 
-      // Every collection we have either paid for or been told about.
-      const targets = new Map<string, { address: `0x${string}`; name?: string; fromBlock: bigint }>();
-      for (const c of known) {
-        targets.set(c.address.toLowerCase(), {
-          address: c.address,
-          name: c.name,
-          fromBlock: c.fromBlock === undefined ? 0n : BigInt(c.fromBlock),
-        });
-      }
-      for (const [key, c] of costs) {
-        if (!targets.has(key)) {
-          targets.set(key, { address: c.collection, name: c.collectionName, fromBlock: 0n });
-        }
-      }
-
       const client = createPublicClient({
         chain: info.chain,
         transport: readTransport(readRpc(cfg, info)),
       });
 
-      const reports = [];
-      for (const t of targets.values()) {
-        const cost = costs.get(t.address.toLowerCase());
-        try {
-          const ledger = await readLedger(client as never, t.address, addresses, t.fromBlock);
-          const sales = await priceTransfers(client as never, ledger.sent, addresses);
-          const report = summarise(
-            t.address,
-            {
-              gasWei: cost?.gasWei ?? 0n,
-              priceWei: cost?.priceWei ?? 0n,
-              tokens: cost?.tokens ?? 0,
-              wallets: cost?.wallets ?? 0,
-            },
-            sales,
-            ledger.held.reduce((n, h) => n + h.tokenIds.length, 0),
-            t.name ?? cost?.collectionName,
-          );
-          reports.push({
-            ...report,
-            cost: {
-              gasWei: report.cost.gasWei.toString(),
-              priceWei: report.cost.priceWei.toString(),
-              tokens: report.cost.tokens,
-              wallets: report.cost.wallets,
-            },
-            revenueWei: report.revenueWei.toString(),
-            netWei: report.netWei.toString(),
-            sales: report.sales.map((x) => ({
-              ...x,
-              blockNumber: x.blockNumber.toString(),
-              proceedsWei: x.proceedsWei.toString(),
-            })),
-            unpricedSales: report.unpricedSales,
-            runs: cost?.runs ?? 0,
-            lastAt: cost?.lastAt,
-          });
-        } catch (e) {
-          reports.push({
-            collection: t.address,
-            collectionName: t.name,
-            error: e instanceof Error ? e.message.split("\n")[0] : String(e),
-          });
-        }
+      // One scan covers every collection these wallets have ever touched, so
+      // a drop shows up here whether or not it was minted through this server
+      // — the ledger only supplies what it cost.
+      const scan = await scanChain(client as never, addresses);
+      const sales = await priceTransfers(client as never, scan.sent, addresses);
+      const salesByCollection = new Map<string, typeof sales>();
+      for (const sale of sales) {
+        const key = sale.collection.toLowerCase();
+        salesByCollection.set(key, [...(salesByCollection.get(key) ?? []), sale]);
       }
+
+      const seen = new Set<string>([
+        ...scan.collections.map((c) => c.collection.toLowerCase()),
+        ...costs.keys(),
+        ...known.map((k) => k.address.toLowerCase()),
+      ]);
+
+      const reports = [...seen].map((key) => {
+        const held = scan.collections.find((c) => c.collection.toLowerCase() === key);
+        const cost = costs.get(key);
+        const address = (held?.collection ??
+          cost?.collection ??
+          known.find((k) => k.address.toLowerCase() === key)!.address) as `0x${string}`;
+        const mine = salesByCollection.get(key) ?? [];
+        const report = summarise(
+          address,
+          {
+            gasWei: cost?.gasWei ?? 0n,
+            priceWei: cost?.priceWei ?? 0n,
+            tokens: cost?.tokens ?? 0,
+            wallets: cost?.wallets ?? 0,
+          },
+          mine,
+          held?.totalTokens ?? 0,
+          held?.name ?? cost?.collectionName,
+        );
+        return {
+          ...report,
+          cost: {
+            gasWei: report.cost.gasWei.toString(),
+            priceWei: report.cost.priceWei.toString(),
+            tokens: report.cost.tokens,
+            wallets: report.cost.wallets,
+          },
+          revenueWei: report.revenueWei.toString(),
+          netWei: report.netWei.toString(),
+          sales: report.sales.map((x) => ({
+            ...x,
+            blockNumber: x.blockNumber.toString(),
+            proceedsWei: x.proceedsWei.toString(),
+          })),
+          unpricedSales: report.unpricedSales,
+          runs: cost?.runs ?? 0,
+          lastAt: cost?.lastAt,
+        };
+      });
+      // Biggest position first — that is the one worth reading.
+      reports.sort((a, b) => b.heldTokens + b.soldTokens - (a.heldTokens + a.soldTokens));
 
       json(res, 200, {
         chain: info.label,
@@ -1122,75 +1076,47 @@ const server = createServer(async (req, res) => {
       const onlyRaw = url.searchParams.get("collection");
       const only =
         onlyRaw && /^0x[0-9a-fA-F]{40}$/.test(onlyRaw) ? (onlyRaw as `0x${string}`) : undefined;
-      const deep = url.searchParams.get("deep") === "1";
 
-      const entries = loadKeyEntries(CONFIG_PATH, cfg.keysFile);
-      const addresses = entries.map((e) => privateKeyToAccount(e.key).address);
+      const addresses = loadKeyEntries(CONFIG_PATH, cfg.keysFile).map(
+        (e) => privateKeyToAccount(e.key).address,
+      );
       const started = Date.now();
-
-      const targets = await collectionsToScan(cfg, only, deep, addresses, info.blockscoutApi);
-      if (targets.length === 0) {
-        json(res, 200, {
-          chain: info.label,
-          totalTokens: 0,
-          holdings: [],
-          collections: [],
-          checked: addresses.length,
-          note:
-            "No collection to look at yet. Holdings are read from Transfer logs, which need a " +
-            "contract address — queue a mint and this server remembers it, name one in the " +
-            "collection box, or add ?deep=1 to discover them through the explorer (slow).",
-          tookMs: Date.now() - started,
-        });
-        return;
-      }
-
       const client = createPublicClient({
         chain: info.chain,
         transport: readTransport(readRpc(cfg, info)),
       });
 
-      const holdings: Holding[] = [];
-      const unreadable: { collection: string; reason: string }[] = [];
-      for (const target of targets) {
-        try {
-          const held = await holdingsFromLogs(
-            client as never,
-            target.address,
-            addresses,
-            target.fromBlock,
-          );
-          for (const h of held) {
-            holdings.push({
-              wallet: h.wallet,
-              collection: target.address,
-              collectionName: target.name,
-              tokenIds: h.tokenIds,
-            });
-          }
-        } catch (e) {
-          unreadable.push({
-            collection: target.address,
-            reason: e instanceof Error ? e.message.split("\n")[0] : String(e),
-          });
-        }
-      }
-
+      // Two queries cover every wallet and every collection, so there is
+      // nothing to discover first and nothing that can be missed.
+      const scan = await scanChain(client as never, addresses, { collection: only });
       const tookMs = Date.now() - started;
       log(
-        `nft scan: ${addresses.length} wallets × ${targets.length} collection(s) → ` +
-          `${holdings.reduce((n, h) => n + h.tokenIds.length, 0)} tokens in ${tookMs}ms`,
+        `nft scan: ${addresses.length} wallets → ${scan.totalTokens} tokens across ` +
+          `${scan.collections.length} collection(s) in ${tookMs}ms`,
       );
 
       json(res, 200, {
         chain: info.label,
-        totalTokens: holdings.reduce((n, h) => n + h.tokenIds.length, 0),
-        holdings,
-        collections: targets.map((t) => ({ address: t.address, name: t.name })),
+        explorerUrl: info.explorerUrl,
+        openSeaSlug: info.openSeaSlug,
         checked: addresses.length,
-        withTokens: new Set(holdings.map((h) => h.wallet.toLowerCase())).size,
-        // Named, never counted away as an empty wallet.
-        failed: unreadable,
+        withTokens: scan.walletsWithTokens,
+        totalTokens: scan.totalTokens,
+        collections: scan.collections.map((c) => ({
+          collection: c.collection,
+          name: c.name,
+          totalTokens: c.totalTokens,
+          wallets: c.wallets,
+        })),
+        // Flat shape too, so the sweep panel keeps working unchanged.
+        holdings: scan.collections.flatMap((c) =>
+          c.wallets.map((w) => ({
+            wallet: w.wallet,
+            collection: c.collection,
+            collectionName: c.name,
+            tokenIds: w.tokenIds,
+          })),
+        ),
         tookMs,
       });
       return;
@@ -1215,47 +1141,25 @@ const server = createServer(async (req, res) => {
       const entries = loadKeyEntries(CONFIG_PATH, cfg.keysFile);
       const addresses = entries.map((e) => privateKeyToAccount(e.key).address);
 
-      // Read from Transfer logs, same as the scan: two RPC calls per
-      // collection for the whole wallet set, and no index to refuse part of a
-      // burst and leave tokens behind while reporting success.
-      const targets = await collectionsToScan(cfg, only, false, addresses, info.blockscoutApi);
-      if (targets.length === 0) {
-        throw new Error(
-          "no collection to sweep — name one, or queue a mint first so the server knows which " +
-            "contract to read",
-        );
-      }
+      // One scan for every wallet and every collection, so a sweep can't move
+      // what it happened to see and silently leave the rest.
       const client = createPublicClient({
         chain: info.chain,
         transport: readTransport(readRpc(cfg, info)),
       });
+      const scan = await scanChain(client as never, addresses, { collection: only });
 
       const byWallet = new Map<string, Holding[]>();
-      const unreadable: { collection: string; reason: string }[] = [];
-      for (const target of targets) {
-        try {
-          const held = await holdingsFromLogs(
-            client as never,
-            target.address,
-            addresses,
-            target.fromBlock,
-          );
-          for (const h of held) {
-            const list = byWallet.get(h.wallet.toLowerCase()) ?? [];
-            list.push({
-              wallet: h.wallet,
-              collection: target.address,
-              collectionName: target.name,
-              tokenIds: h.tokenIds,
-            });
-            byWallet.set(h.wallet.toLowerCase(), list);
-          }
-        } catch (e) {
-          unreadable.push({
-            collection: target.address,
-            reason: e instanceof Error ? e.message.split("\n")[0] : String(e),
+      for (const c of scan.collections) {
+        for (const w of c.wallets) {
+          const list = byWallet.get(w.wallet.toLowerCase()) ?? [];
+          list.push({
+            wallet: w.wallet,
+            collection: c.collection,
+            collectionName: c.name,
+            tokenIds: w.tokenIds,
           });
-          log(`sweep: couldn't read ${target.address} — its tokens stay put`);
+          byWallet.set(w.wallet.toLowerCase(), list);
         }
       }
 
@@ -1272,6 +1176,10 @@ const server = createServer(async (req, res) => {
           ),
         };
       });
+      log(
+        `sweep: ${perWallet.reduce((n, p) => n + p.items.length, 0)} token(s) to move ` +
+          `from ${perWallet.filter((p) => p.items.length > 0).length} wallet(s)`,
+      );
 
       const result = await sweepNfts(
         {
@@ -1284,7 +1192,7 @@ const server = createServer(async (req, res) => {
         },
         (line) => log(`nft-sweep: ${line}`),
       );
-      json(res, 200, { ...result, unreadable });
+      json(res, 200, result);
       return;
     }
 

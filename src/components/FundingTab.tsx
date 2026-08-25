@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
 import { useRunnerApi } from "../lib/runnerClient";
+import {
+  openSeaCollectionUrlBySlug,
+  openSeaItemUrlBySlug,
+  openSeaProfileUrl,
+} from "../chains";
 import StaleServer from "./StaleServer";
 import { AddrLink, TxLink } from "./Bits";
 
@@ -60,6 +65,10 @@ interface NftsView {
   chain?: string;
   totalTokens: number;
   holdings: Holding[];
+  openSeaSlug?: string;
+  checked?: number;
+  withTokens?: number;
+  tookMs?: number;
 }
 
 interface NftOutcome {
@@ -456,9 +465,9 @@ export default function FundingTab() {
               ) : (
                 <>
                   <p className="ok" style={{ marginTop: 12 }}>
-                    {nfts.totalTokens} token{nfts.totalTokens === 1 ? "" : "s"} across{" "}
-                    {nfts.holdings.length} wallet/collection pair
-                    {nfts.holdings.length === 1 ? "" : "s"}
+                    {nfts.totalTokens} token{nfts.totalTokens === 1 ? "" : "s"} on{" "}
+                    {nfts.withTokens ?? nfts.holdings.length} of {nfts.checked ?? "?"} wallets
+                    {nfts.tookMs ? ` · ${(nfts.tookMs / 1000).toFixed(1)}s` : ""}
                   </p>
                   <div className="table-wrap">
                     <table className="projects">
@@ -472,16 +481,38 @@ export default function FundingTab() {
                       <tbody>
                         {nfts.holdings.map((h) => (
                           <tr key={h.wallet + h.collection}>
-                            <td className="dim">
-                              {h.wallet.slice(0, 10)}…{h.wallet.slice(-4)}
-                            </td>
-                            <td>{h.collectionName ?? `${h.collection.slice(0, 10)}…`}</td>
                             <td>
-                              <b>{h.tokenIds.length}</b>
-                              <span className="dim">
-                                {" "}
-                                #{h.tokenIds.slice(0, 6).join(", #")}
-                                {h.tokenIds.length > 6 ? ` +${h.tokenIds.length - 6}` : ""}
+                              <a
+                                href={openSeaProfileUrl(h.wallet)}
+                                target="_blank"
+                                rel="noreferrer"
+                                title={h.wallet}
+                              >
+                                {h.wallet.slice(0, 10)}…{h.wallet.slice(-4)}
+                              </a>
+                            </td>
+                            <td>
+                              <a
+                                href={openSeaCollectionUrlBySlug(nfts.openSeaSlug, h.collection)}
+                                target="_blank"
+                                rel="noreferrer"
+                              >
+                                {h.collectionName ?? `${h.collection.slice(0, 10)}…`}
+                              </a>
+                            </td>
+                            <td>
+                              <b>{h.tokenIds.length}</b>{" "}
+                              <span className="token-ids">
+                                {h.tokenIds.map((id) => (
+                                  <a
+                                    key={id}
+                                    href={openSeaItemUrlBySlug(nfts.openSeaSlug, h.collection, id)}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                  >
+                                    #{id}
+                                  </a>
+                                ))}
                               </span>
                             </td>
                           </tr>

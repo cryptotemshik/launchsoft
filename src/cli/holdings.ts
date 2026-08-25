@@ -1,26 +1,36 @@
 /**
- * Who holds what, read from the chain instead of from an index.
+ * Who holds what, read from the chain in two queries.
  *
- * The obvious route — ask Blockscout per wallet — is both slow and unreliable
- * at this size: the index answers in 2–4 seconds and refuses part of any
- * burst, so a hundred wallets took over two minutes and quietly reported zero
- * for every wallet whose request was refused.
+ * The obvious route — ask an explorer per wallet — is slow and unreliable at
+ * this size: Robinhood Chain's Blockscout answers in 2–4 seconds and refuses
+ * fifteen of any twenty simultaneous requests, so a hundred wallets took a
+ * minute and undercounted whatever it refused.
  *
- * Transfer logs give the same answer in two RPC calls for the whole set.
- * ERC-721 indexes `from`, `to` and `tokenId`, so the node can filter server
- * side on "any of these hundred addresses", and replaying the matching logs in
- * order leaves each token's current owner. Measured against Robinhood Chain:
- * 1.6s for a hundred wallets, matching Blockscout token for token.
+ * Transfer logs answer the same question for every wallet and every collection
+ * at once. ERC-721 indexes `from`, `to` and `tokenId`, so the node filters
+ * server-side on "any of these hundred addresses" — and with no contract
+ * filter at all, one query returns every NFT any of them has ever received,
+ * whichever collection it came from. Replaying the matches in order settles
+ * each token's current owner.
  *
- * The catch is that this needs to be told which collection to look at — logs
- * are filtered by contract. Discovering unknown collections is what the index
- * is still for; minting through this server already knows.
+ * Measured against the real wallet set: 1.5 seconds for two queries covering
+ * 813 transfers across 11 collections, where the explorer took 59 seconds and
+ * missed tokens.
+ *
+ * ERC-20 shares the event's name and signature hash but leaves `value`
+ * unindexed, so its logs carry three topics where these carry four. That is
+ * the difference the filter below relies on.
  */
 import { getAddress, parseAbiItem, type PublicClient } from "viem";
+import { isRateLimit, mapWithLimit } from "../lib/rpcRead";
 
 const TRANSFER = parseAbiItem(
   "event Transfer(address indexed from, address indexed to, uint256 indexed tokenId)",
 );
+
+const NAME_ABI = [
+  { type: "function", name: "name", stateMutability: "view", inputs: [], outputs: [{ type: "string" }] },
+] as const;
 
 /**
  * Below this, halving again costs more round-trips than it saves, and a
@@ -37,16 +47,27 @@ export interface WalletHolding {
 /** A token that left one of our wallets — the visible half of a sale. */
 export interface OutgoingTransfer {
   wallet: `0x${string}`;
+  collection: `0x${string}`;
   tokenId: string;
   blockNumber: bigint;
   txHash: string;
   to: `0x${string}`;
 }
 
-export interface LedgerView {
-  held: WalletHolding[];
+export interface CollectionHoldings {
+  collection: `0x${string}`;
+  name?: string;
+  wallets: WalletHolding[];
+  totalTokens: number;
+}
+
+export interface ChainScan {
+  collections: CollectionHoldings[];
   /** Every departure, in order. Pricing them is profit.ts's job. */
   sent: OutgoingTransfer[];
+  totalTokens: number;
+  /** Wallets holding at least one token of anything. */
+  walletsWithTokens: number;
 }
 
 /**
@@ -67,22 +88,24 @@ function looksLikeRangeLimit(e: unknown): boolean {
 }
 
 type TransferLog = {
+  address: `0x${string}`;
   blockNumber: bigint;
   logIndex: number;
   transactionHash?: string;
+  topics: readonly string[];
   args: { from?: `0x${string}`; to?: `0x${string}`; tokenId?: bigint };
 };
 
 async function getLogsChunked(
   client: PublicClient,
-  address: `0x${string}`,
   args: Record<string, unknown>,
   fromBlock: bigint,
   toBlock: bigint,
+  address?: `0x${string}`,
 ): Promise<TransferLog[]> {
   try {
     return (await client.getLogs({
-      address,
+      ...(address ? { address } : {}),
       event: TRANSFER,
       args,
       fromBlock,
@@ -93,85 +116,110 @@ async function getLogsChunked(
     if (!looksLikeRangeLimit(e) || span <= MIN_CHUNK) throw e;
     const mid = fromBlock + span / 2n;
     const [a, b] = await Promise.all([
-      getLogsChunked(client, address, args, fromBlock, mid),
-      getLogsChunked(client, address, args, mid + 1n, toBlock),
+      getLogsChunked(client, args, fromBlock, mid, address),
+      getLogsChunked(client, args, mid + 1n, toBlock, address),
     ]);
     return [...a, ...b];
   }
 }
 
-/**
- * Which of `wallets` currently holds which tokens of `collection`.
- *
- * Both directions are needed: a wallet that received a token and later sent it
- * on still has the incoming log. Replaying every transfer touching this wallet
- * set in block order settles who ended up with each token.
- */
-export async function holdingsFromLogs(
-  client: PublicClient,
-  collection: `0x${string}`,
-  wallets: readonly `0x${string}`[],
-  fromBlock = 0n,
-): Promise<WalletHolding[]> {
-  return (await readLedger(client, collection, wallets, fromBlock)).held;
-}
+/** ERC-20 shares the signature but indexes one argument fewer. */
+const isErc721 = (l: TransferLog) => l.topics.length === 4 && l.args.tokenId !== undefined;
 
 /**
- * Both halves in one pass: what is still held, and what has left.
+ * Everything `wallets` hold, of every collection, plus everything they have
+ * sent away.
  *
- * The two share their reads — the same two log queries answer both — so
- * anything wanting profit as well as holdings should ask for this rather than
- * paying for the logs twice.
+ * @param collection restrict to one contract. Omitted, the scan covers all of
+ *   them — which costs the same two queries, so there is rarely a reason to.
  */
-export async function readLedger(
+export async function scanChain(
   client: PublicClient,
-  collection: `0x${string}`,
   wallets: readonly `0x${string}`[],
-  fromBlock = 0n,
-): Promise<LedgerView> {
-  if (wallets.length === 0) return { held: [], sent: [] };
+  opts: { collection?: `0x${string}`; fromBlock?: bigint } = {},
+): Promise<ChainScan> {
+  if (wallets.length === 0) {
+    return { collections: [], sent: [], totalTokens: 0, walletsWithTokens: 0 };
+  }
+  const fromBlock = opts.fromBlock ?? 0n;
   const toBlock = await client.getBlockNumber();
+  const list = wallets as `0x${string}`[];
 
-  const [incoming, outgoing] = await Promise.all([
-    getLogsChunked(client, collection, { to: wallets as `0x${string}`[] }, fromBlock, toBlock),
-    getLogsChunked(client, collection, { from: wallets as `0x${string}`[] }, fromBlock, toBlock),
+  const [incomingRaw, outgoingRaw] = await Promise.all([
+    getLogsChunked(client, { to: list }, fromBlock, toBlock, opts.collection),
+    getLogsChunked(client, { from: list }, fromBlock, toBlock, opts.collection),
   ]);
+  const incoming = incomingRaw.filter(isErc721);
+  const outgoing = outgoingRaw.filter(isErc721);
 
   // Last write wins, so order matters: block first, then position within it.
   const ordered = [...incoming, ...outgoing].sort(
-    (a, b) =>
-      Number(a.blockNumber - b.blockNumber) || Number(a.logIndex) - Number(b.logIndex),
+    (a, b) => Number(a.blockNumber - b.blockNumber) || Number(a.logIndex) - Number(b.logIndex),
   );
 
+  // Keyed by contract as well as id — two collections can both have token #1.
   const ownerOf = new Map<string, string>();
-  for (const log of ordered) {
-    if (log.args.tokenId === undefined || !log.args.to) continue;
-    ownerOf.set(log.args.tokenId.toString(), log.args.to.toLowerCase());
+  for (const l of ordered) {
+    ownerOf.set(`${l.address.toLowerCase()}#${l.args.tokenId}`, l.args.to!.toLowerCase());
   }
 
   const mine = new Set(wallets.map((w) => w.toLowerCase()));
-  const byWallet = new Map<string, string[]>();
-  for (const [tokenId, owner] of ownerOf) {
+  const byCollection = new Map<string, Map<string, string[]>>();
+  for (const [key, owner] of ownerOf) {
     if (!mine.has(owner)) continue;
-    byWallet.set(owner, [...(byWallet.get(owner) ?? []), tokenId]);
+    const [collection, tokenId] = key.split("#");
+    const perWallet = byCollection.get(collection) ?? new Map<string, string[]>();
+    perWallet.set(owner, [...(perWallet.get(owner) ?? []), tokenId]);
+    byCollection.set(collection, perWallet);
   }
 
-  const sent = outgoing
-    .filter((l) => l.args.tokenId !== undefined && l.args.from && l.args.to)
-    .map((l) => ({
+  const addresses = [...byCollection.keys()] as `0x${string}`[];
+  // One `name()` each, batched by the read transport — 124ms for eleven.
+  //
+  // Rate limits are rethrown rather than caught, so mapWithLimit can back off
+  // and try again: swallowing them here is what turned nine named collections
+  // into nine bare addresses the moment the endpoint pushed back.
+  const names = await mapWithLimit(addresses, async (address) => {
+    try {
+      return (await client.readContract({ address, abi: NAME_ABI, functionName: "name" })) as string;
+    } catch (e) {
+      if (isRateLimit(e)) throw e;
+      // Not every contract implements it, and a missing name is not a reason
+      // to lose the holdings under it.
+      return undefined;
+    }
+  }).catch(() => addresses.map(() => undefined));
+
+  const collections: CollectionHoldings[] = addresses.map((address, i) => {
+    const perWallet = byCollection.get(address.toLowerCase())!;
+    const walletsOut = [...perWallet.entries()].map(([wallet, tokenIds]) => ({
+      wallet: getAddress(wallet),
+      // Numeric order, so a list of ids reads the way a person would write it.
+      tokenIds: tokenIds.sort((a, b) => (BigInt(a) < BigInt(b) ? -1 : 1)),
+    }));
+    return {
+      collection: getAddress(address),
+      name: names[i],
+      wallets: walletsOut.sort((a, b) => b.tokenIds.length - a.tokenIds.length),
+      totalTokens: walletsOut.reduce((n, w) => n + w.tokenIds.length, 0),
+    };
+  });
+  collections.sort((a, b) => b.totalTokens - a.totalTokens);
+
+  const holders = new Set<string>();
+  for (const c of collections) for (const w of c.wallets) holders.add(w.wallet.toLowerCase());
+
+  return {
+    collections,
+    sent: outgoing.map((l) => ({
       wallet: getAddress(l.args.from!),
+      collection: getAddress(l.address),
       tokenId: l.args.tokenId!.toString(),
       blockNumber: l.blockNumber,
       txHash: l.transactionHash ?? "",
       to: getAddress(l.args.to!),
-    }));
-
-  return {
-    held: [...byWallet.entries()].map(([wallet, tokenIds]) => ({
-      wallet: getAddress(wallet),
-      // Numeric order, so a list of ids reads the way a person would write it.
-      tokenIds: tokenIds.sort((a, b) => (BigInt(a) < BigInt(b) ? -1 : 1)),
     })),
-    sent,
+    totalTokens: collections.reduce((n, c) => n + c.totalTokens, 0),
+    walletsWithTokens: holders.size,
   };
 }

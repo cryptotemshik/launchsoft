@@ -113,19 +113,23 @@ export function formatMintReport(r: MintReport): string[] {
       ? "✅ <b>MINT COMPLETE</b>"
       : "⚠️ <b>MINT FAILED</b>";
 
+  // Numbers first, name after: on a lock screen the first line is all that is
+  // read, and "28 NFTs from 4 wallets" is the thing worth knowing there.
   const overview = [
     head,
-    `<a href="${r.collectionUrl}">${escapeHtml(r.collectionName)}</a>`,
-    `${escapeHtml(r.chainLabel)} · ${escapeHtml(r.stage)} stage`,
     "",
-    `<b>${totalNfts}</b> NFT${totalNfts === 1 ? "" : "s"} from <b>${minted.length}</b> wallet${minted.length === 1 ? "" : "s"}`,
+    `💎 <b>${totalNfts}</b> NFT${totalNfts === 1 ? "" : "s"} on <b>${minted.length}</b> wallet${minted.length === 1 ? "" : "s"}`,
     failed.length ? `❌ <b>${failed.length}</b> wallet${failed.length === 1 ? "" : "s"} failed` : "",
     skipped.length ? `⚪ ${skipped.length} skipped (not eligible)` : "",
+    "",
+    `<a href="${r.collectionUrl}">${escapeHtml(r.collectionName)}</a>`,
+    `${escapeHtml(r.chainLabel)} · ${escapeHtml(r.stage)} stage`,
   ]
     .filter(Boolean)
     .join("\n");
 
   const messages = [overview];
+  const collectionLine = `<a href="${r.collectionUrl}">${escapeHtml(r.collectionName)}</a>`;
 
   if (minted.length > 0) {
     const lines = minted.map((w) => {
@@ -133,24 +137,31 @@ export function formatMintReport(r: MintReport): string[] {
       const tx = w.txHash ? ` · <a href="${r.explorerTxUrl(w.txHash)}">tx</a>` : "";
       return (
         `✅ <a href="${r.profileUrl(w.address)}">${shortAddr(w.address)}</a>` +
-        ` — ${w.quantity} NFT${w.quantity === 1 ? "" : "s"}${tx}` +
+        ` — <b>${w.quantity}</b> NFT${w.quantity === 1 ? "" : "s"}${tx}` +
         (links ? `\n   ${links}` : "")
       );
     });
-    messages.push(...packMessages(`💎 <b>Minted — ${minted.length} wallet${minted.length === 1 ? "" : "s"}</b>`, lines));
+    const header =
+      `💎 <b>MINTED — ${minted.length} wallet${minted.length === 1 ? "" : "s"}, ` +
+      `${totalNfts} NFT${totalNfts === 1 ? "" : "s"}</b>\n${collectionLine}`;
+    messages.push(...packMessages(header, lines));
   }
 
   if (failed.length > 0) {
     const lines = failed.map((w) => {
       const icon = STATUS_ICON[w.status] ?? "•";
       const tx = w.txHash ? ` · <a href="${r.explorerTxUrl(w.txHash)}">tx</a>` : "";
-      const why = w.detail ? `: ${escapeHtml(w.detail.slice(0, 160))}` : "";
+      const why = w.detail ? escapeHtml(w.detail.slice(0, 160)) : escapeHtml(w.status);
+      // Reason on its own line: a wallet and a revert string on one line wraps
+      // into an unreadable block on a phone.
       return (
-        `${icon} <a href="${r.profileUrl(w.address)}">${shortAddr(w.address)}</a>` +
-        ` — ${escapeHtml(w.status)}${why}${tx}`
+        `${icon} <a href="${r.profileUrl(w.address)}">${shortAddr(w.address)}</a>${tx}` +
+        `\n   ${why}`
       );
     });
-    messages.push(...packMessages(`❌ <b>Failed — ${failed.length} wallet${failed.length === 1 ? "" : "s"}</b>`, lines));
+    const header =
+      `❌ <b>FAILED — ${failed.length} wallet${failed.length === 1 ? "" : "s"}</b>\n${collectionLine}`;
+    messages.push(...packMessages(header, lines));
   }
 
   return messages;
