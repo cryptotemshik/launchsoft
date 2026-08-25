@@ -1,0 +1,152 @@
+#!/usr/bin/env bash
+#
+# One-shot setup for the snipe runner on a fresh Ubuntu VPS.
+#
+# Does steps 4-7 of the README's VPS guide: installs Node/git/pm2/cloudflared,
+# clones the repo, checks that this box is actually near the sequencer, writes
+# the config and a generated token, and starts both services under pm2.
+#
+# Safe to re-run: it skips what is already installed and never overwrites an
+# existing config, keys file or token.
+#
+#   curl -fsSL https://raw.githubusercontent.com/cryptotemshik/launchsoft/claude/pensive-ramanujan-w5cpew/setup-vps.sh -o setup-vps.sh
+#   less setup-vps.sh          # read it before running anything as root
+#   bash setup-vps.sh
+set -euo pipefail
+
+REPO_URL="${REPO_URL:-https://github.com/cryptotemshik/launchsoft.git}"
+REPO_DIR="${REPO_DIR:-$HOME/launchsoft}"
+SEQUENCER="${SEQUENCER:-https://sequencer.mainnet.chain.robinhood.com}"
+PORT="${SNIPE_PORT:-8787}"
+
+bold() { printf '\n\033[1m%s\033[0m\n' "$*"; }
+ok()   { printf '  \033[32m✓\033[0m %s\n' "$*"; }
+warn() { printf '  \033[33m!\033[0m %s\n' "$*"; }
+die()  { printf '\n\033[31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
+
+[ "$(id -u)" -eq 0 ] && die "Run this as the normal 'ubuntu' user, not root — pm2 would install for the wrong user."
+
+# ── 1. Packages ─────────────────────────────────────────────────────────────
+bold "1/6  Installing Node.js, git and pm2"
+if command -v node >/dev/null 2>&1 && [ "$(node -v | cut -c2- | cut -d. -f1)" -ge 20 ] 2>/dev/null; then
+  ok "node $(node -v) already present"
+else
+  curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - >/dev/null
+  sudo apt-get install -y nodejs >/dev/null
+  ok "node $(node -v) installed"
+fi
+command -v git >/dev/null 2>&1 || sudo apt-get install -y git >/dev/null
+ok "git $(git --version | awk '{print $3}')"
+command -v pm2 >/dev/null 2>&1 || sudo npm i -g pm2 >/dev/null 2>&1
+ok "pm2 ready"
+
+# ── 2. cloudflared ──────────────────────────────────────────────────────────
+bold "2/6  Installing cloudflared (the tunnel — no inbound port is opened)"
+if command -v cloudflared >/dev/null 2>&1; then
+  ok "already installed"
+else
+  case "$(uname -m)" in
+    x86_64) ARCH=amd64 ;;
+    aarch64|arm64) ARCH=arm64 ;;
+    *) die "unexpected CPU $(uname -m)" ;;
+  esac
+  curl -fsSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${ARCH}" -o /tmp/cloudflared
+  chmod +x /tmp/cloudflared && sudo mv /tmp/cloudflared /usr/local/bin/cloudflared
+  ok "installed for linux-${ARCH}"
+fi
+
+# ── 3. The one check that actually matters ──────────────────────────────────
+bold "3/6  Checking how close this machine is to the sequencer"
+CONNECT=$(curl -s -o /dev/null -w '%{time_connect}' --max-time 20 -X POST \
+  -H 'content-type: application/json' \
+  --data '{"jsonrpc":"2.0","method":"eth_sendRawTransaction","params":["0x00"],"id":1}' \
+  "$SEQUENCER" || echo "9")
+MS=$(awk -v c="$CONNECT" 'BEGIN{printf "%.0f", c*1000}')
+if [ "$MS" -le 10 ]; then
+  ok "${MS}ms — you are in the right region"
+elif [ "$MS" -le 40 ]; then
+  warn "${MS}ms — close, but not the same region. us-east-2 (Ohio) gives ~1ms."
+else
+  warn "${MS}ms — this box is NOT near the sequencer."
+  warn "The whole point of running here is proximity. Recreate the instance in"
+  warn "US East (Ohio) / us-east-2 unless you have a reason not to."
+fi
+
+# ── 4. Code ─────────────────────────────────────────────────────────────────
+bold "4/6  Fetching the code"
+if [ -d "$REPO_DIR/.git" ]; then
+  git -C "$REPO_DIR" pull --ff-only >/dev/null 2>&1 || warn "couldn't fast-forward; keeping what's there"
+  ok "updated $REPO_DIR"
+else
+  git clone --quiet "$REPO_URL" "$REPO_DIR"
+  ok "cloned into $REPO_DIR"
+fi
+cd "$REPO_DIR"
+npm install --silent >/dev/null 2>&1
+ok "dependencies installed"
+
+# ── 5. Config, keys and secrets ─────────────────────────────────────────────
+bold "5/6  Writing config"
+[ -f snipe.config.json ] || cp snipe.config.example.json snipe.config.json
+ok "snipe.config.json"
+
+# Wallets are added from the site's WALLETS tab; the file just has to exist.
+[ -f snipe.keys ] || { : > snipe.keys; chmod 600 snipe.keys; }
+ok "snipe.keys (add wallets from the site, not here)"
+
+if [ -f snipe.env ] && grep -q '^SNIPE_TOKEN=.\+' snipe.env; then
+  SNIPE_TOKEN=$(grep '^SNIPE_TOKEN=' snipe.env | cut -d= -f2-)
+  ok "keeping the existing SNIPE_TOKEN"
+else
+  SNIPE_TOKEN=$(openssl rand -hex 32)
+  printf 'SNIPE_TOKEN=%s\n' "$SNIPE_TOKEN" > snipe.env
+  ok "generated a new SNIPE_TOKEN"
+
+  printf '\n  Telegram summaries after each mint (press Enter twice to skip)\n'
+  read -rp "  bot token: " TG_TOKEN || TG_TOKEN=""
+  read -rp "  chat id:   " TG_CHAT || TG_CHAT=""
+  if [ -n "$TG_TOKEN" ] && [ -n "$TG_CHAT" ]; then
+    printf 'TELEGRAM_BOT_TOKEN=%s\nTELEGRAM_CHAT_ID=%s\n' "$TG_TOKEN" "$TG_CHAT" >> snipe.env
+    ok "Telegram configured"
+  else
+    warn "skipped — add TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID to snipe.env later"
+  fi
+fi
+chmod 600 snipe.env
+
+# ── 6. Run ──────────────────────────────────────────────────────────────────
+bold "6/6  Starting the runner and the tunnel"
+set -a; . ./snipe.env; set +a
+pm2 delete snipe-api tunnel >/dev/null 2>&1 || true
+pm2 start npm --name snipe-api -- run snipe:server >/dev/null
+pm2 start cloudflared --name tunnel -- tunnel --url "http://127.0.0.1:${PORT}" >/dev/null
+pm2 save >/dev/null 2>&1
+ok "both services started under pm2"
+
+printf '  waiting for the tunnel to come up'
+TUNNEL_URL=""
+for _ in $(seq 1 30); do
+  sleep 2; printf '.'
+  TUNNEL_URL=$(pm2 logs tunnel --lines 200 --nostream 2>/dev/null \
+    | grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' | tail -1 || true)
+  [ -n "$TUNNEL_URL" ] && break
+done
+printf '\n'
+
+if grep -q 'telegram notifications ON' <(pm2 logs snipe-api --lines 40 --nostream 2>/dev/null); then
+  ok "Telegram notifications ON"
+fi
+
+printf '\n\033[1m─────────────────────────────────────────────────────────────\033[0m\n'
+if [ -n "$TUNNEL_URL" ]; then
+  printf '\033[1mPaste these into the site (SNIPE tab → Remote runner):\033[0m\n\n'
+  printf '  server URL : \033[32m%s\033[0m\n' "$TUNNEL_URL"
+else
+  warn "the tunnel URL hasn't appeared yet — run:  pm2 logs tunnel --lines 50 --nostream | grep trycloudflare"
+  printf '\n'
+fi
+printf '  token      : \033[32m%s\033[0m\n' "$SNIPE_TOKEN"
+printf '\n\033[1mThen:\033[0m  WALLETS tab → upload your keys · FUNDING tab → send 0.001 ETH each\n'
+printf '\033[1mNote:\033[0m  the tunnel URL changes if the tunnel restarts — re-read it with\n'
+printf '        pm2 logs tunnel --lines 50 --nostream | grep trycloudflare\n'
+printf '\nRun \033[1mpm2 startup\033[0m and paste the command it prints, so this survives a reboot.\n\n'

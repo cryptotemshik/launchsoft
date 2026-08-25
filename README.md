@@ -446,7 +446,28 @@ contrast, sits behind Cloudflare — one more hop the sequencer doesn't have.
 Because Arbitrum Orbit sequences first-come-first-served with no mempool, that
 latency is the *only* lever: raising the tip cannot buy priority here.
 
-### Setup
+### Setup — the scripted way
+
+`setup-vps.sh` does the whole install: Node, git, pm2, cloudflared, the clone,
+the config, a generated `SNIPE_TOKEN`, and both services under pm2. It ends by
+printing the tunnel URL and token to paste into the site. Re-running it is safe
+— it skips what exists and never overwrites a config, keys file or token.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/cryptotemshik/launchsoft/claude/pensive-ramanujan-w5cpew/setup-vps.sh -o setup-vps.sh
+less setup-vps.sh      # read it first; it runs sudo
+bash setup-vps.sh
+```
+
+Download it rather than piping straight into `bash`: it asks for the Telegram
+token interactively, which a pipe would swallow — and a script that runs sudo
+is worth reading first.
+
+It also measures the connection time to the sequencer and says plainly if the
+box is in the wrong region, which is the one mistake that makes the whole setup
+pointless.
+
+### Setup — by hand
 
 ```bash
 # on an Ubuntu EC2 instance in us-east-2
