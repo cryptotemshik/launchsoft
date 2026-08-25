@@ -44,6 +44,7 @@ import {
 } from "./config";
 import { runSnipe, type RunOptions, type RunResult } from "./runner";
 import { formatMintReport, sendTelegram, type MintedWallet } from "../lib/telegram";
+import { API_VERSION } from "../lib/apiVersion";
 
 const stamp = () => new Date().toISOString().slice(11, 23);
 const log = (msg: string) => console.log(`[${stamp()}] ${msg}`);
@@ -82,6 +83,12 @@ interface Job {
   result?: RunResult;
   error?: string;
   abort?: AbortController;
+  /**
+   * Addresses this job may fire from (lowercase). Absent means every wallet on
+   * the server — the restriction lives on the job, not on RunOptions, because
+   * the server owns the keys and simply passes fewer of them.
+   */
+  wallets?: string[];
   /** Set when the post-run NFT sweep ran. */
   consolidated?: { to: string; moved: number; total: number };
 }
@@ -137,6 +144,7 @@ function jobView(j: Job) {
     stage: j.request.stage,
     quantity: j.request.quantity,
     dryRun: j.request.dryRun,
+    wallets: j.wallets,
     logs: j.logs.slice(-60),
     plan: j.result?.plan,
     outcomes: j.result?.outcomes,
@@ -154,10 +162,12 @@ function buildRequest(body: Record<string, unknown>): Omit<RunOptions, "keys"> {
 
   const stage = body.stage === "allowlist" || body.stage === "public" ? body.stage : cfg.stage;
   const timing = body.timing === "now" || body.timing === "wait" ? body.timing : cfg.timing;
-  const quantity =
-    typeof body.quantity === "number" && Number.isInteger(body.quantity) && body.quantity >= 1
-      ? body.quantity
-      : cfg.quantity;
+  const quantity: number | "max" =
+    body.quantity === "max"
+      ? "max"
+      : typeof body.quantity === "number" && Number.isInteger(body.quantity) && body.quantity >= 1
+        ? body.quantity
+        : cfg.quantity;
   const gasIn = (body.gas ?? {}) as Partial<RunOptions["gas"]>;
 
   return {
@@ -176,6 +186,19 @@ function buildRequest(body: Record<string, unknown>): Omit<RunOptions, "keys"> {
     timing,
     dryRun: body.dryRun !== false,
   };
+}
+
+
+/** Addresses a job is restricted to, validated; undefined means "all wallets". */
+function parseWalletFilter(body: Record<string, unknown>): string[] | undefined {
+  if (!Array.isArray(body.wallets)) return undefined;
+  const out = (body.wallets as unknown[])
+    .filter((a): a is string => typeof a === "string")
+    .map((a) => a.trim().toLowerCase());
+  for (const a of out) {
+    if (!/^0x[0-9a-f]{40}$/.test(a)) throw new Error(`"${a}" is not a 0x address`);
+  }
+  return out.length > 0 ? out : undefined;
 }
 
 // ── Wallets ──────────────────────────────────────────────────────────────────
@@ -270,7 +293,17 @@ async function execute(job: Job) {
   const abort = new AbortController();
   job.abort = abort;
   job.status = "armed";
-  const keys = loadKeys(CONFIG_PATH, loadConfig(CONFIG_PATH).keysFile);
+  let keys = loadKeys(CONFIG_PATH, loadConfig(CONFIG_PATH).keysFile);
+  if (job.wallets && job.wallets.length > 0) {
+    const want = new Set(job.wallets);
+    keys = keys.filter((k) => want.has(privateKeyToAccount(k).address.toLowerCase()));
+    if (keys.length === 0) {
+      job.status = "error";
+      job.error = "none of the wallets chosen for this job are on the server any more";
+      activeJobId = null;
+      return;
+    }
+  }
   log(`job ${job.id} (${job.label}) arming — ${job.request.dryRun ? "dry run" : "LIVE"}`);
 
   try {
@@ -395,7 +428,7 @@ const server = createServer(async (req, res) => {
 
   // Unauthenticated liveness probe — says nothing about the wallets.
   if (url.pathname === "/api/ping") {
-    json(res, 200, { ok: true, service: "launchpad-snipe" });
+    json(res, 200, { ok: true, service: "launchpad-snipe", apiVersion: API_VERSION });
     return;
   }
 
@@ -407,6 +440,7 @@ const server = createServer(async (req, res) => {
   try {
     if (url.pathname === "/api/status" && req.method === "GET") {
       json(res, 200, {
+        apiVersion: API_VERSION,
         running: activeJobId !== null,
         activeJobId,
         armLeadMs: ARM_LEAD_MS,
@@ -660,12 +694,31 @@ const server = createServer(async (req, res) => {
     if (url.pathname === "/api/queue" && req.method === "POST") {
       const body = await readBody(req);
       const request = buildRequest(body);
+      const wallets = parseWalletFilter(body);
+      if (wallets) {
+        // Catch a stale selection now, while someone is watching, rather than
+        // at fire time hours later when nobody is.
+        const cfg = loadConfig(CONFIG_PATH);
+        const have = new Set(
+          loadKeyEntries(CONFIG_PATH, cfg.keysFile).map((e) =>
+            privateKeyToAccount(e.key).address.toLowerCase(),
+          ),
+        );
+        const missing = wallets.filter((a) => !have.has(a));
+        if (missing.length === wallets.length) {
+          throw new Error("none of the chosen wallets are on this server");
+        }
+        if (missing.length > 0) {
+          log(`queue: ${missing.length} chosen wallet(s) are not on this server — ignoring them`);
+        }
+      }
       const job: Job = {
         id: randomUUID().slice(0, 8),
         label: typeof body.label === "string" && body.label ? body.label : request.collection.slice(0, 10),
         addedAt: Date.now(),
         status: "queued",
         request,
+        wallets,
         startTime: typeof body.startTime === "number" ? body.startTime : undefined,
         logs: [],
       };
@@ -709,12 +762,31 @@ const server = createServer(async (req, res) => {
     if (url.pathname === "/api/snipe" && req.method === "POST") {
       const body = await readBody(req);
       const request = buildRequest(body);
+      const wallets = parseWalletFilter(body);
+      if (wallets) {
+        // Catch a stale selection now, while someone is watching, rather than
+        // at fire time hours later when nobody is.
+        const cfg = loadConfig(CONFIG_PATH);
+        const have = new Set(
+          loadKeyEntries(CONFIG_PATH, cfg.keysFile).map((e) =>
+            privateKeyToAccount(e.key).address.toLowerCase(),
+          ),
+        );
+        const missing = wallets.filter((a) => !have.has(a));
+        if (missing.length === wallets.length) {
+          throw new Error("none of the chosen wallets are on this server");
+        }
+        if (missing.length > 0) {
+          log(`queue: ${missing.length} chosen wallet(s) are not on this server — ignoring them`);
+        }
+      }
       const job: Job = {
         id: randomUUID().slice(0, 8),
         label: typeof body.label === "string" && body.label ? body.label : request.collection.slice(0, 10),
         addedAt: Date.now(),
         status: "queued",
         request,
+        wallets: parseWalletFilter(body),
         logs: [],
       };
       jobs.push(job);

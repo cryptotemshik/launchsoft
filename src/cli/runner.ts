@@ -44,7 +44,11 @@ export interface RunOptions {
   chainId: number;
   collection: `0x${string}`;
   stage: "public" | "allowlist";
-  quantity: number;
+  /**
+   * NFTs per wallet, or "max" to take whatever the stage allows. "max" is the
+   * useful setting for a queue, where each drop has its own per-wallet cap.
+   */
+  quantity: number | "max";
   keys: `0x${string}`[];
   extraRpcs: string[];
   gas: { maxFeeGwei: string; tipGwei: string; limit: number };
@@ -242,9 +246,18 @@ export async function runSnipe(opts: RunOptions, hooks: RunHooks): Promise<RunRe
     log("stage      public");
   }
 
-  const quantity = Math.min(opts.quantity, perWallet || opts.quantity);
-  if (quantity < opts.quantity) {
-    log(`note       quantity clamped to the stage's per-wallet cap (${perWallet})`);
+  // The cap comes from the stage itself, so "max" needs no guessing — and a
+  // number is clamped to it rather than sent to revert.
+  let quantity: number;
+  if (opts.quantity === "max") {
+    if (!perWallet) throw new Error("this stage declares no per-wallet limit, so 'max' has no value to use");
+    quantity = perWallet;
+    log(`quantity   max allowed by the stage: ${quantity}`);
+  } else {
+    quantity = Math.min(opts.quantity, perWallet || opts.quantity);
+    if (quantity < opts.quantity) {
+      log(`note       quantity clamped to the stage's per-wallet cap (${perWallet})`);
+    }
   }
 
   // ── Gas rails — the same ones the browser applies ───────────────────────

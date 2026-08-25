@@ -132,6 +132,9 @@ export default function SnipeTab() {
   const [keysText, setKeysText] = useState("");
   const [extraRpcText, setExtraRpcText] = useState("");
   const [quantity, setQuantity] = useState(1);
+  // "max" defers the number to the stage, which matters when queueing several
+  // drops that each declare their own per-wallet cap.
+  const [maxQuantity, setMaxQuantity] = useState(false);
   const [maxFeeGwei, setMaxFeeGwei] = useState("2");
   const [tipGwei, setTipGwei] = useState("0.05");
   const [gasLimitStr, setGasLimitStr] = useState("250000");
@@ -269,8 +272,10 @@ export default function SnipeTab() {
     gasError = `max fee is below the current base fee (${formatGwei(baseFeeWei)} gwei) — every node will reject it`;
   }
 
+  // "max" resolves against the stage's own cap, which is only known after read.
+  const effectiveQty = maxQuantity && stagePerWallet > 0 ? stagePerWallet : quantity;
   const requiredPerWallet =
-    (gasLimit ?? 0n) * (maxFeePerGas ?? 0n) + stagePrice * BigInt(quantity);
+    (gasLimit ?? 0n) * (maxFeePerGas ?? 0n) + stagePrice * BigInt(effectiveQty);
   // In allowlist mode, only eligible wallets fire — judge affordability on those.
   const firingAccounts = stage === "allowlist" ? eligibleAccounts : accounts;
   const unaffordable = firingAccounts.filter((a) => {
@@ -433,7 +438,7 @@ export default function SnipeTab() {
           let qty: number;
           if (stage === "allowlist") {
             const el = eligByAddr.get(a.address.toLowerCase())!;
-            qty = Math.min(quantity, Number(el.params!.maxTotalMintableByWallet) || quantity);
+            qty = Math.min(effectiveQty, Number(el.params!.maxTotalMintableByWallet) || effectiveQty);
             data = encodeFunctionData({
               abi: seaDropAbi,
               functionName: "mintAllowList",
@@ -441,7 +446,7 @@ export default function SnipeTab() {
             });
             value = el.params!.mintPrice * BigInt(qty);
           } else {
-            qty = quantity;
+            qty = effectiveQty;
             data = encodeFunctionData({
               abi: seaDropAbi,
               functionName: "mintPublic",
@@ -530,7 +535,7 @@ export default function SnipeTab() {
     }
   }
 
-  const totalMintCost = stagePrice * BigInt(quantity) * BigInt(firingAccounts.length);
+  const totalMintCost = stagePrice * BigInt(effectiveQty) * BigInt(firingAccounts.length);
   const canFire =
     Boolean(target) &&
     firingAccounts.length > 0 &&
@@ -729,11 +734,19 @@ export default function SnipeTab() {
               min={1}
               max={stagePerWallet || undefined}
               value={quantity}
+              disabled={maxQuantity}
               onChange={(e) =>
                 setQuantity(Math.max(1, Math.min(stagePerWallet || 999, Number(e.target.value) || 1)))
               }
             />
           </div>
+          <label
+            className="dim"
+            style={{ display: "flex", alignItems: "center", gap: 6, paddingBottom: 10 }}
+          >
+            <input type="checkbox" checked={maxQuantity} onChange={(e) => setMaxQuantity(e.target.checked)} />
+            mint the max the stage allows
+          </label>
         </div>
         {gasError ? <p className="error" style={{ marginBottom: 0 }}>{gasError}</p> : null}
         {unaffordable.length > 0 ? (
@@ -782,7 +795,7 @@ export default function SnipeTab() {
         collection={target?.address}
         collectionName={target?.name}
         stage={stage}
-        quantity={quantity}
+        quantity={maxQuantity ? "max" : quantity}
         gas={{ maxFeeGwei, tipGwei, limit: Number(gasLimitStr) || 250000 }}
         extraRpcs={extraRpcText.split("\n").map((l) => l.trim()).filter(Boolean)}
         timing={timing}
@@ -847,7 +860,8 @@ export default function SnipeTab() {
               </dd>
               <dt>quantity</dt>
               <dd>
-                {quantity} / wallet = {quantity * firingAccounts.length} NFTs total
+                {effectiveQty} / wallet{maxQuantity ? " (stage max)" : ""} ={" "}
+                {effectiveQty * firingAccounts.length} NFTs total
               </dd>
               <dt>mint cost</dt>
               <dd>

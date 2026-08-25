@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { formatCountdown, unixToLocalAndUtc } from "../lib/convert";
 import { useRunnerApi } from "../lib/runnerClient";
+import { API_VERSION, UPDATE_HINT } from "../lib/apiVersion";
 
 /**
  * Control panel for a snipe runner living next to the sequencer.
@@ -53,15 +54,25 @@ interface Job {
   startTime?: number;
   collection: string;
   stage: string;
-  quantity: number;
+  quantity: number | "max";
   dryRun: boolean;
+  /** Present when the job is pinned to a subset of the server's wallets. */
+  wallets?: string[];
   logs?: string[];
   plan?: RunPlan;
   outcomes?: Outcome[];
   error?: string;
 }
 
+interface ServerWallet {
+  address: string;
+  label?: string;
+  balance: string | null;
+}
+
 interface StatusView {
+  /** Absent on servers older than the version handshake. */
+  apiVersion?: number;
   running: boolean;
   activeJobId: string | null;
   armLeadMs: number;
@@ -82,7 +93,7 @@ export interface RemoteRunnerProps {
   /** Its name, for a readable queue label. */
   collectionName?: string;
   stage: "public" | "allowlist";
-  quantity: number;
+  quantity: number | "max";
   gas: { maxFeeGwei: string; tipGwei: string; limit: number };
   extraRpcs: string[];
   timing: "now" | "wait";
@@ -106,6 +117,9 @@ export default function RemoteRunner(props: RemoteRunnerProps) {
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<StatusView | null>(null);
   const [openJob, setOpenJob] = useState<string | null>(null);
+  // The server's own wallets, so a job can be aimed at a subset of them.
+  const [wallets, setWallets] = useState<ServerWallet[]>([]);
+  const [chosen, setChosen] = useState<Set<string>>(new Set());
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
   const pollRef = useRef<ReturnType<typeof setInterval>>();
 
@@ -120,6 +134,23 @@ export default function RemoteRunner(props: RemoteRunnerProps) {
       setStatus(s);
       setConnected(true);
       setError(null);
+      // Wallet list drives the picker below; a failure here must not break
+      // the queue view, which is the important half.
+      try {
+        const w = (await call("/api/wallets")) as unknown as { wallets: ServerWallet[] };
+        const list = w.wallets ?? [];
+        setWallets(list);
+        // Drop anything that has since been deleted on the server, otherwise a
+        // ghost address keeps the selection looking partial forever.
+        setChosen((prev) => {
+          if (prev.size === 0) return prev;
+          const live = new Set(list.map((x) => x.address));
+          const next = new Set([...prev].filter((a) => live.has(a)));
+          return next.size === prev.size ? prev : next;
+        });
+      } catch {
+        setWallets([]);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -159,6 +190,8 @@ export default function RemoteRunner(props: RemoteRunnerProps) {
           collection: props.collection,
           stage: props.stage,
           quantity: props.quantity,
+          // Empty selection means "every wallet", which is the sane default.
+          ...(chosen.size > 0 && chosen.size < wallets.length ? { wallets: [...chosen] } : {}),
           gas: props.gas,
           extraRpcs: props.extraRpcs,
           timing: props.timing,
@@ -257,8 +290,24 @@ export default function RemoteRunner(props: RemoteRunnerProps) {
       </div>
       {error ? <p className="error">{error}</p> : null}
 
+      {connected && (status?.apiVersion ?? 0) < API_VERSION ? (
+        <p className="warn" style={{ marginBottom: 0 }}>
+          <b>Your server is running older code than this page.</b> Newer features
+          send requests it can&apos;t parse, which shows up as odd errors. Update
+          it over SSH:
+          <br />
+          <code>{UPDATE_HINT}</code>
+        </p>
+      ) : null}
+
       {connected ? (
         <>
+          <WalletPicker
+            wallets={wallets}
+            chosen={chosen}
+            setChosen={setChosen}
+          />
+
           <div style={{ display: "flex", gap: 10, marginTop: 14, flexWrap: "wrap" }}>
             <button className="secondary" disabled={busy} onClick={() => void enqueue(true)}>
               + queue as DRY RUN
@@ -321,6 +370,7 @@ export default function RemoteRunner(props: RemoteRunnerProps) {
                         </td>
                         <td className="dim">
                           {j.stage} ×{j.quantity}
+                          {j.wallets?.length ? ` · ${j.wallets.length}w` : ""}
                         </td>
                         <td className="dim">
                           {j.startTime
@@ -416,6 +466,101 @@ function JobDetail({ job }: { job?: Job }) {
       {job.logs && job.logs.length > 0 ? (
         <pre className="runner-log">{job.logs.slice(-14).join("\n")}</pre>
       ) : null}
+    </div>
+  );
+}
+
+/**
+ * Which of the server's wallets this job fires from. Nothing ticked means all
+ * of them, which is both the default and what most drops want; ticking a
+ * label's chip is the quick way to aim one drop at a batch.
+ */
+function WalletPicker({
+  wallets,
+  chosen,
+  setChosen,
+}: {
+  wallets: ServerWallet[];
+  chosen: Set<string>;
+  setChosen: (s: Set<string>) => void;
+}) {
+  if (wallets.length === 0) {
+    return (
+      <p className="warn" style={{ marginTop: 14, marginBottom: 0 }}>
+        No wallets on the server yet — add them in the <b>WALLETS</b> tab, or a
+        queued job will have nothing to mint with.
+      </p>
+    );
+  }
+
+  const labels = [...new Set(wallets.map((w) => w.label).filter((l): l is string => Boolean(l)))];
+  const all = chosen.size === 0 || chosen.size === wallets.length;
+  const funded = wallets.filter((w) => Number(w.balance ?? 0) > 0).length;
+
+  const pick = (addresses: string[]) => setChosen(new Set(addresses));
+
+  return (
+    <div style={{ marginTop: 16 }}>
+      <div className="field" style={{ marginBottom: 8 }}>
+        <label>
+          wallets for this job — {all ? `all ${wallets.length}` : `${chosen.size} of ${wallets.length}`}
+          {funded < wallets.length ? ` · ${wallets.length - funded} with no balance` : ""}
+        </label>
+      </div>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
+        <button
+          className={all ? "secondary active-chip" : "secondary"}
+          style={{ padding: "3px 12px", fontSize: 11 }}
+          onClick={() => setChosen(new Set())}
+        >
+          all ({wallets.length})
+        </button>
+        <button
+          className="secondary"
+          style={{ padding: "3px 12px", fontSize: 11 }}
+          onClick={() => pick(wallets.filter((w) => Number(w.balance ?? 0) > 0).map((w) => w.address))}
+        >
+          funded only ({funded})
+        </button>
+        {labels.map((l) => (
+          <button
+            key={l}
+            className="secondary"
+            style={{ padding: "3px 12px", fontSize: 11 }}
+            onClick={() => pick(wallets.filter((w) => w.label === l).map((w) => w.address))}
+          >
+            {l} ({wallets.filter((w) => w.label === l).length})
+          </button>
+        ))}
+      </div>
+      <div className="wallet-picker">
+        {wallets.map((w) => {
+          const on = all || chosen.has(w.address);
+          return (
+            <label key={w.address} className={`wallet-pick ${on ? "on" : ""}`}>
+              <input
+                type="checkbox"
+                checked={on}
+                onChange={() => {
+                  // First tick off an "all" selection materialises the full set,
+                  // so unticking one leaves the rest selected.
+                  const base = chosen.size === 0 ? new Set(wallets.map((x) => x.address)) : new Set(chosen);
+                  if (base.has(w.address)) base.delete(w.address);
+                  else base.add(w.address);
+                  setChosen(base);
+                }}
+              />
+              <span className="mono-break">
+                {w.address.slice(0, 8)}…{w.address.slice(-4)}
+              </span>
+              <span className={Number(w.balance ?? 0) > 0 ? "dim" : "warn"}>
+                {w.balance === null ? "—" : `${Number(w.balance).toFixed(4)}`}
+              </span>
+              {w.label ? <span className="dim">{w.label}</span> : null}
+            </label>
+          );
+        })}
+      </div>
     </div>
   );
 }

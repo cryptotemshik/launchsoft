@@ -1441,3 +1441,61 @@ tr.row-selected td {
   margin: 0;
   flex: none;
 }
+
+/* Which server wallets a queued job runs on. A dense grid so 30 wallets stay
+   on one screen; the whole row is the hit target, not just the checkbox. */
+.wallet-picker {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 4px;
+  max-height: 260px;
+  overflow-y: auto;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-2);
+}
+.wallet-pick {
+  display: grid;
+  grid-template-columns: auto 1fr auto auto;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  font-size: 12px;
+  font-family: var(--mono);
+  cursor: pointer;
+  user-select: none;
+}
+.wallet-pick:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+.wallet-pick.on {
+  border-color: rgba(0, 200, 5, 0.35);
+  background: rgba(0, 200, 5, 0.08);
+}
+.wallet-pick input {
+  width: auto;
+  margin: 0;
+  flex: none;
+  cursor: pointer;
+}
+.wallet-pick .dim,
+.wallet-pick .warn {
+  font-size: 11px;
+}
+
+/* The chip standing for the filter currently in force. */
+button.secondary.active-chip {
+  background: rgba(0, 200, 5, 0.2);
+  border-color: var(--green-bright);
+  color: var(--green-bright);
+}
+
+@media (max-width: 640px) {
+  .wallet-picker {
+    grid-template-columns: 1fr;
+    max-height: 220px;
+  }
+}
