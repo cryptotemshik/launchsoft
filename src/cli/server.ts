@@ -29,6 +29,8 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { timingSafeEqual, randomUUID } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { createPublicClient, formatEther, parseEther } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { collect, disperse } from "./funding";
@@ -208,6 +210,83 @@ function parseWalletFilter(body: Record<string, unknown>): string[] | undefined 
     if (!/^0x[0-9a-f]{40}$/.test(a)) throw new Error(`"${a}" is not a 0x address`);
   }
   return out.length > 0 ? out : undefined;
+}
+
+// ── Self-update ──────────────────────────────────────────────────────────────
+/**
+ * Pull the latest code and restart, triggered from the panel.
+ *
+ * The site and this server ship from the same repo but deploy separately, so
+ * the box falls behind every time the site is published — and reaching a
+ * terminal is exactly what someone away from their desk cannot do. This runs
+ * the same two commands the README gives, over the same authenticated API as
+ * everything else. It can only fast-forward the checkout it is already running
+ * from: no caller input reaches the command line, and the remote is whatever
+ * the box was cloned from.
+ */
+const run = promisify(execFile);
+
+async function gitHead(dir: string): Promise<string> {
+  const { stdout } = await run("git", ["rev-parse", "--short", "HEAD"], { cwd: dir });
+  return stdout.trim();
+}
+
+interface UpdateResult {
+  before: string;
+  after: string;
+  changed: boolean;
+  detail: string;
+  restarting: boolean;
+}
+
+async function selfUpdate(): Promise<UpdateResult> {
+  const dir = process.cwd();
+  let before: string;
+  try {
+    before = await gitHead(dir);
+  } catch {
+    throw new Error(
+      `${dir} is not a git checkout, so there is nothing to pull — start the server from the cloned repo`,
+    );
+  }
+
+  let detail: string;
+  try {
+    const { stdout } = await run("git", ["pull", "--ff-only"], { cwd: dir, timeout: 120_000 });
+    detail = stdout.trim().split("\n").slice(-3).join(" · ");
+  } catch (e) {
+    const err = e as { stderr?: string; stdout?: string; message?: string };
+    const lines = `${err.stderr ?? ""}\n${err.stdout ?? ""}\n${err.message ?? ""}`
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean);
+    // git's first line is usually "From <remote>"; the reason is further down.
+    const said =
+      lines.find((l) => /error|fatal|overwritten|conflict|diverged|refus/i.test(l)) ??
+      lines[lines.length - 1];
+    throw new Error(`git pull failed: ${said || "unknown reason"}`);
+  }
+
+  const after = await gitHead(dir);
+  if (after === before) {
+    return { before, after, changed: false, detail: "already up to date", restarting: false };
+  }
+
+  // Dependencies only need reinstalling when the lockfile actually moved.
+  const { stdout: touched } = await run("git", ["diff", "--name-only", before, after], { cwd: dir });
+  if (touched.split("\n").some((f) => f.trim() === "package-lock.json")) {
+    log("update: lockfile changed — installing dependencies");
+    await run("npm", ["install", "--silent"], { cwd: dir, timeout: 600_000 });
+  }
+
+  // Answer before the restart tears this process down; pm2 brings it back and
+  // the tunnel is a separate process, so the URL and token do not change.
+  setTimeout(() => {
+    log("update: restarting");
+    run("pm2", ["restart", "snipe-api"]).catch(() => process.exit(0));
+  }, 400);
+
+  return { before, after, changed: true, detail, restarting: true };
 }
 
 // ── Read endpoint ────────────────────────────────────────────────────────────
@@ -568,6 +647,25 @@ const server = createServer(async (req, res) => {
         readRpc: info ? rpcHost(readRpc(cfg, info)) : null,
         jobs: jobs.map(jobView),
       });
+      return;
+    }
+
+    /**
+     * Pull the latest code and restart. Refused while a job is armed or
+     * running — a restart mid-mint would lose it.
+     */
+    if (url.pathname === "/api/update" && req.method === "POST") {
+      if (activeJobId) {
+        json(res, 409, { error: "a job is running — wait for it or abort first" });
+        return;
+      }
+      if (jobs.some((j) => j.status === "armed")) {
+        json(res, 409, { error: "a job is armed and about to fire — update after it runs" });
+        return;
+      }
+      const result = await selfUpdate();
+      log(`update: ${result.before} → ${result.after} (${result.detail})`);
+      json(res, 200, result);
       return;
     }
 

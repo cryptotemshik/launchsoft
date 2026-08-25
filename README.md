@@ -555,6 +555,36 @@ leave the server — the panel receives addresses and balances only.
 
 Under pm2: `pm2 start "npm run snipe:server" --name snipe-api && pm2 save`.
 
+### Keeping the server in step with the site
+
+The site and the server ship from this one repo but deploy separately: the site
+updates when it is published, the server only when the box pulls. A panel
+talking to an older server fails in ways that read as bugs — a bulk delete
+against a pre-`apiVersion` server answers `address must be a 0x address`,
+because that server only ever understood one address in the query string.
+
+Two things keep that from being a mystery:
+
+- Every response carries `apiVersion`. When it is behind the version the page
+  was built with, all three panels say so and give the commands to run.
+- **update server** in the Snipe connection row does it without a terminal:
+  `POST /api/update` fast-forwards the checkout the server is running from,
+  reinstalls dependencies if the lockfile moved, and restarts under pm2. It is
+  refused while a job is armed or running. Nothing from the caller reaches the
+  command line and the remote is whatever the box was cloned from, so the only
+  thing this can do is move that checkout to its own origin's latest commit.
+
+By hand it is the same two commands:
+
+```bash
+cd ~/launchsoft && git pull && pm2 restart snipe-api
+curl -s http://127.0.0.1:8787/api/ping   # should report the current apiVersion
+```
+
+From a phone with no SSH client, **EC2 Instance Connect** in the AWS console
+(EC2 → Instances → the instance → Connect) opens a browser terminal that runs
+those same commands; ask the browser for the desktop site first.
+
 ### Managing the server's wallets from the browser
 
 **SNIPE → WALLETS** adds and removes the wallets the runner mints with, so
