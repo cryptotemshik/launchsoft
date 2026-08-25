@@ -37,7 +37,7 @@ import { privateKeyToAccount } from "viem/accounts";
 import { collect, disperse } from "./funding";
 import { scanChain } from "./holdings";
 import { costByCollection, loadMints, recordMint } from "./ledger";
-import { priceTransfers, summarise } from "./profit";
+import { blockTimes, costByMintTx, priceTransfers, readMintTxs, summarise } from "./profit";
 import { loadCollections, rememberCollection } from "./collections";
 import { sweepNfts, type Holding } from "./nftSweep";
 import { getChainInfo } from "../chains";
@@ -1004,7 +1004,14 @@ const server = createServer(async (req, res) => {
       // a drop shows up here whether or not it was minted through this server
       // — the ledger only supplies what it cost.
       const scan = await scanChain(client as never, addresses);
-      const sales = await priceTransfers(client as never, scan.sent, addresses);
+      const [sales, mintTxs] = await Promise.all([
+        priceTransfers(client as never, scan.sent, addresses),
+        // What the mints cost, read from their own transactions. The ledger
+        // only covers runs this server made, so on its own it left every
+        // earlier drop showing no mints and no spend at all.
+        readMintTxs(client as never, scan.minted),
+      ]);
+      const minted = costByMintTx(mintTxs);
       const salesByCollection = new Map<string, typeof sales>();
       for (const sale of sales) {
         const key = sale.collection.toLowerCase();
@@ -1024,14 +1031,27 @@ const server = createServer(async (req, res) => {
           cost?.collection ??
           known.find((k) => k.address.toLowerCase() === key)!.address) as `0x${string}`;
         const mine = salesByCollection.get(key) ?? [];
+        const chain = minted.get(key);
+        // The chain is the better source where it has anything: it sees mints
+        // this server never made. The ledger still supplies the one figure the
+        // chain cannot — gas burnt by attempts that reverted and left no token
+        // — and takes over entirely where the chain found no mints at all.
+        const spend = chain
+          ? {
+              gasWei: chain.gasWei + (cost?.failedGasWei ?? 0n),
+              priceWei: chain.priceWei,
+              tokens: chain.tokens,
+              wallets: chain.wallets,
+            }
+          : {
+              gasWei: cost?.gasWei ?? 0n,
+              priceWei: cost?.priceWei ?? 0n,
+              tokens: cost?.tokens ?? 0,
+              wallets: cost?.wallets ?? 0,
+            };
         const report = summarise(
           address,
-          {
-            gasWei: cost?.gasWei ?? 0n,
-            priceWei: cost?.priceWei ?? 0n,
-            tokens: cost?.tokens ?? 0,
-            wallets: cost?.wallets ?? 0,
-          },
+          spend,
           mine,
           held?.totalTokens ?? 0,
           held?.name ?? cost?.collectionName,
@@ -1059,12 +1079,47 @@ const server = createServer(async (req, res) => {
       // Biggest position first — that is the one worth reading.
       reports.sort((a, b) => b.heldTokens + b.soldTokens - (a.heldTokens + a.soldTokens));
 
+      // Every spend and every receipt, stamped with when it happened, so the
+      // dashboard can re-cut the same figures by time — last hour, last week —
+      // and draw a profit line without asking the chain again.
+      const times = await blockTimes(client as never, [
+        ...mintTxs.map((t) => t.blockNumber),
+        ...sales.map((s) => s.blockNumber),
+      ]);
+      const events = [
+        ...mintTxs.map((t) => ({
+          collection: t.collection.toLowerCase(),
+          kind: "mint" as const,
+          at: times.get(String(t.blockNumber)) ?? 0,
+          block: t.blockNumber.toString(),
+          // Signed: a mint takes money out, a sale puts it back.
+          wei: (-(t.gasWei + t.priceWei)).toString(),
+          tokens: t.tokens,
+          wallet: t.wallet,
+          txHash: t.txHash,
+        })),
+        ...sales.map((s) => ({
+          collection: s.collection.toLowerCase(),
+          kind: "sale" as const,
+          at: times.get(String(s.blockNumber)) ?? 0,
+          block: s.blockNumber.toString(),
+          wei: s.proceedsWei.toString(),
+          tokens: 1,
+          wallet: s.wallet,
+          txHash: s.txHash,
+          tokenId: s.tokenId,
+          priced: s.priced,
+        })),
+      ].sort((a, b) => a.at - b.at || Number(BigInt(a.block) - BigInt(b.block)));
+
       json(res, 200, {
         chain: info.label,
         explorerUrl: info.explorerUrl,
         openSeaSlug: info.openSeaSlug,
         wallets: addresses.length,
         collections: reports,
+        events,
+        now: Math.floor(Date.now() / 1000),
         tookMs: Date.now() - started,
       });
       return;

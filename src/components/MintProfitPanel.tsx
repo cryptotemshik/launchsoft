@@ -6,29 +6,21 @@
  * where the cost is gas and mint price across a hundred wallets and the
  * revenue is whatever those tokens have sold for since.
  *
- * Everything comes from the server, which works it out from the chain — the
- * ledger it wrote while minting, plus each token's departure priced by the
- * seller's balance rise in that block. No marketplace API is involved, so
- * there is nothing to key and nothing to break when one changes.
+ * The server sends every spend and every receipt with the time it happened, so
+ * the window, the sort and the profit line are all cut from the same data
+ * without asking the chain again. No marketplace API is involved, so there is
+ * nothing to key and nothing to break when one changes.
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRunnerApi } from "../lib/runnerClient";
 import { formatEthShort } from "../lib/profit";
 import StaleServer from "./StaleServer";
-
-interface Sale {
-  wallet: string;
-  tokenId: string;
-  blockNumber: string;
-  txHash: string;
-  proceedsWei: string;
-}
 
 interface CollectionProfit {
   collection: string;
   collectionName?: string;
   cost?: { gasWei: string; priceWei: string; tokens: number; wallets: number };
-  sales?: Sale[];
+  sales?: { wallet: string; tokenId: string; blockNumber: string; txHash: string; proceedsWei: string }[];
   soldTokens?: number;
   revenueWei?: string;
   netWei?: string;
@@ -39,16 +31,61 @@ interface CollectionProfit {
   error?: string;
 }
 
+/** One spend or one receipt, as the server timestamps it. */
+interface ProfitEvent {
+  collection: string;
+  kind: "mint" | "sale";
+  /** Unix seconds, from the block it happened in. */
+  at: number;
+  block: string;
+  /** Signed wei — negative for a mint, positive for a sale. */
+  wei: string;
+  tokens: number;
+  wallet: string;
+  txHash: string;
+  tokenId?: string;
+  priced?: boolean;
+}
+
 interface ProfitView {
   chain: string;
   explorerUrl: string;
   openSeaSlug?: string;
   wallets: number;
   collections: CollectionProfit[];
+  events?: ProfitEvent[];
+  now?: number;
   tookMs: number;
 }
 
 const wei = (s: string | undefined) => (s ? BigInt(s) : 0n);
+
+const RANGES = [
+  { key: "1h", label: "1h", secs: 3600 },
+  { key: "6h", label: "6h", secs: 6 * 3600 },
+  { key: "24h", label: "24h", secs: 24 * 3600 },
+  { key: "7d", label: "7d", secs: 7 * 86400 },
+  { key: "30d", label: "30d", secs: 30 * 86400 },
+  { key: "all", label: "all time", secs: null },
+] as const;
+
+type RangeKey = (typeof RANGES)[number]["key"];
+type SortKey = "collection" | "minted" | "spent" | "sold" | "earned" | "net";
+
+interface Row {
+  collection: string;
+  name?: string;
+  minted: number;
+  wallets: number;
+  spent: bigint;
+  sold: number;
+  earned: bigint;
+  net: bigint;
+  held: number;
+  unpriced: number;
+  runs: number;
+  sales: ProfitEvent[];
+}
 
 export default function MintProfitPanel() {
   const { url, setUrl, token, setToken, base, call, save, serverVersion } = useRunnerApi();
@@ -56,13 +93,26 @@ export default function MintProfitPanel() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [open, setOpen] = useState<string | null>(null);
+  const [range, setRange] = useState<RangeKey>("24h");
+  const [sort, setSort] = useState<SortKey>("net");
+  const [desc, setDesc] = useState(true);
+  const [widened, setWidened] = useState(false);
 
   const load = useCallback(async () => {
     setBusy(true);
     setError(null);
     try {
       save();
-      setView((await call("/api/profit")) as unknown as ProfitView);
+      const next = (await call("/api/profit")) as unknown as ProfitView;
+      setView(next);
+      // A day is the useful default, but a day that happens to be quiet would
+      // show an empty panel and read as broken. So when the default window is
+      // empty and something did happen earlier, open it out and say so.
+      const now = next.now ?? Math.floor(Date.now() / 1000);
+      const events = Array.isArray(next.events) ? next.events : [];
+      const recent = events.some((e) => e.at >= now - 24 * 3600);
+      setWidened(!recent && events.length > 0);
+      setRange(!recent && events.length > 0 ? "all" : "24h");
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setError(
@@ -83,28 +133,153 @@ export default function MintProfitPanel() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const withCost = (view?.collections ?? []).filter((c) => !c.error);
-  const totals = withCost.reduce(
-    (acc, c) => ({
-      spent: acc.spent + wei(c.cost?.gasWei) + wei(c.cost?.priceWei),
-      revenue: acc.revenue + wei(c.revenueWei),
-      net: acc.net + wei(c.netWei),
-      minted: acc.minted + (c.cost?.tokens ?? 0),
-      sold: acc.sold + (c.soldTokens ?? 0),
-      unpriced: acc.unpriced + (c.unpricedSales ?? 0),
-      held: acc.held + (c.heldTokens ?? 0),
-    }),
-    { spent: 0n, revenue: 0n, net: 0n, minted: 0, sold: 0, held: 0, unpriced: 0 },
+  /** A server too old to send events still has its totals — show those. */
+  const legacy = view != null && !Array.isArray(view.events);
+
+  const since = useMemo(() => {
+    const secs = RANGES.find((r) => r.key === range)?.secs ?? null;
+    if (secs === null) return 0;
+    return (view?.now ?? Math.floor(Date.now() / 1000)) - secs;
+  }, [range, view]);
+
+  const events = useMemo(
+    () => (Array.isArray(view?.events) ? view.events : []).filter((e) => e.at >= since),
+    [view, since],
   );
+
+  const rows = useMemo<Row[]>(() => {
+    // A response missing the fields we expect must not take the dashboard down
+    // with it — an old or half-broken server is a reason to show less, not a
+    // white screen.
+    const all = view?.collections ?? [];
+    if (!view) return [];
+    const meta = new Map(all.map((c) => [c.collection.toLowerCase(), c]));
+
+    if (legacy) {
+      return all
+        .filter((c) => !c.error)
+        .map((c) => ({
+          collection: c.collection,
+          name: c.collectionName,
+          minted: c.cost?.tokens ?? 0,
+          wallets: c.cost?.wallets ?? 0,
+          spent: wei(c.cost?.gasWei) + wei(c.cost?.priceWei),
+          sold: c.soldTokens ?? 0,
+          earned: wei(c.revenueWei),
+          net: wei(c.netWei),
+          held: c.heldTokens ?? 0,
+          unpriced: c.unpricedSales ?? 0,
+          runs: c.runs ?? 0,
+          sales: [],
+        }));
+    }
+
+    const by = new Map<string, Row>();
+    for (const e of events) {
+      const c = meta.get(e.collection);
+      const row =
+        by.get(e.collection) ??
+        ({
+          collection: c?.collection ?? e.collection,
+          name: c?.collectionName,
+          minted: 0,
+          wallets: 0,
+          spent: 0n,
+          sold: 0,
+          earned: 0n,
+          net: 0n,
+          // Holdings are a fact about now, not about the window.
+          held: c?.heldTokens ?? 0,
+          unpriced: 0,
+          runs: c?.runs ?? 0,
+          sales: [],
+        } satisfies Row);
+      if (e.kind === "mint") {
+        row.minted += e.tokens;
+        row.spent += -BigInt(e.wei);
+      } else {
+        row.sold += 1;
+        if (e.priced === false) row.unpriced += 1;
+        else row.earned += BigInt(e.wei);
+        row.sales.push(e);
+      }
+      by.set(e.collection, row);
+    }
+    const walletsPer = new Map<string, Set<string>>();
+    for (const e of events) {
+      if (e.kind !== "mint") continue;
+      const seen = walletsPer.get(e.collection) ?? new Set<string>();
+      seen.add(e.wallet.toLowerCase());
+      walletsPer.set(e.collection, seen);
+    }
+    for (const [key, row] of by) {
+      row.wallets = walletsPer.get(key)?.size ?? 0;
+      row.net = row.earned - row.spent;
+    }
+    return [...by.values()];
+  }, [view, events, legacy]);
+
+  const sorted = useMemo(() => {
+    const dir = desc ? -1 : 1;
+    const cmp = (a: Row, b: Row): number => {
+      switch (sort) {
+        case "collection":
+          return (a.name ?? a.collection).localeCompare(b.name ?? b.collection);
+        case "minted":
+          return a.minted - b.minted;
+        case "sold":
+          return a.sold - b.sold;
+        case "spent":
+          return a.spent < b.spent ? -1 : a.spent > b.spent ? 1 : 0;
+        case "earned":
+          return a.earned < b.earned ? -1 : a.earned > b.earned ? 1 : 0;
+        default:
+          return a.net < b.net ? -1 : a.net > b.net ? 1 : 0;
+      }
+    };
+    return [...rows].sort((a, b) => dir * cmp(a, b));
+  }, [rows, sort, desc]);
+
+  const totals = rows.reduce(
+    (acc, r) => ({
+      spent: acc.spent + r.spent,
+      earned: acc.earned + r.earned,
+      net: acc.net + r.net,
+      minted: acc.minted + r.minted,
+      sold: acc.sold + r.sold,
+      held: acc.held + r.held,
+      unpriced: acc.unpriced + r.unpriced,
+    }),
+    { spent: 0n, earned: 0n, net: 0n, minted: 0, sold: 0, held: 0, unpriced: 0 },
+  );
+
+  function header(key: SortKey, label: string, className = "") {
+    return (
+      <th
+        className={`sortable ${className}`.trim()}
+        onClick={() => {
+          if (sort === key) setDesc(!desc);
+          else {
+            setSort(key);
+            setDesc(true);
+          }
+        }}
+      >
+        {label}
+        {sort === key ? (desc ? " ▼" : " ▲") : ""}
+      </th>
+    );
+  }
 
   return (
     <div className="panel">
       <h2>Sniped mints — cost &amp; profit</h2>
       <p className="dim" style={{ marginTop: 0 }}>
         Read from your server: what each drop cost in gas and mint price, and
-        what its tokens have sold for since. A sale is a token leaving one of
-        your wallets while that wallet&apos;s balance rises in the same block —
-        no OpenSea account or API key involved.
+        what its tokens have sold for since — both taken from the chain itself,
+        so a drop counts whether or not it was minted through this server. A
+        sale is a token leaving one of your wallets while that wallet&apos;s
+        balance rises in the same block; no OpenSea account or API key involved.
       </p>
 
       <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
@@ -133,25 +308,56 @@ export default function MintProfitPanel() {
         </button>
         {view ? (
           <span className="pill ok">
-            ● {view.wallets} wallets · {view.collections.length} collection
-            {view.collections.length === 1 ? "" : "s"} · {(view.tookMs / 1000).toFixed(1)}s
+            ● {view.wallets ?? 0} wallets · {(view.collections ?? []).length} collection
+            {(view.collections ?? []).length === 1 ? "" : "s"} ·{" "}
+            {((view.tookMs ?? 0) / 1000).toFixed(1)}s
           </span>
         ) : null}
       </div>
       {error ? <p className="error">{error}</p> : null}
       <StaleServer version={serverVersion} />
 
-      {view && withCost.length > 0 ? (
+      {view && !legacy ? (
+        <div className="range-picker">
+          {RANGES.map((r) => (
+            <button
+              key={r.key}
+              className={range === r.key ? "secondary active-chip" : "secondary"}
+              onClick={() => {
+                setRange(r.key);
+                setWidened(false);
+              }}
+            >
+              {r.label}
+            </button>
+          ))}
+        </div>
+      ) : null}
+      {widened ? (
+        <p className="dim hint" style={{ marginTop: 6 }}>
+          Nothing happened in the last 24 hours, so this is all time.
+        </p>
+      ) : null}
+
+      {view && rows.length > 0 ? (
         <>
-          <div className={`profit-big ${totals.net >= 0n ? "profit-pos" : "profit-neg"}`}>
-            {totals.net >= 0n ? "▲ +" : "▼ "}
-            {formatEthShort(totals.net)} ETH
+          <div className="profit-summary">
+            <div className={`profit-headline ${totals.net >= 0n ? "profit-pos" : "profit-neg"}`}>
+              <span className="profit-label">net</span>
+              <span className="profit-big">
+                {totals.net >= 0n ? "▲ +" : "▼ "}
+                {formatEthShort(totals.net)} <small>ETH</small>
+              </span>
+            </div>
+            <div className="profit-facts">
+              <Fact label="spent" value={`${formatEthShort(totals.spent)} ETH`} tone="neg" />
+              <Fact label="earned" value={`${formatEthShort(totals.earned)} ETH`} tone="pos" />
+              <Fact label="minted" value={String(totals.minted)} />
+              <Fact label="sold" value={String(totals.sold)} />
+              <Fact label="still held" value={String(totals.held)} />
+            </div>
           </div>
-          <p className="dim hint">
-            spent {formatEthShort(totals.spent)} ETH · earned{" "}
-            {formatEthShort(totals.revenue)} ETH · {totals.minted} minted,{" "}
-            {totals.sold} sold, {totals.held} still held
-          </p>
+
           {totals.unpriced > 0 ? (
             <p className="warn" style={{ marginTop: 0 }}>
               {totals.unpriced} sale{totals.unpriced === 1 ? "" : "s"} could not be
@@ -163,76 +369,87 @@ export default function MintProfitPanel() {
           ) : null}
 
           <div className="table-wrap">
-            <table>
+            <table className="ledger-table">
               <thead>
                 <tr>
-                  <th>collection</th>
-                  <th>minted</th>
-                  <th>spent</th>
-                  <th>sold</th>
-                  <th>earned</th>
-                  <th>net</th>
+                  {header("collection", "collection")}
+                  {header("minted", "minted", "num")}
+                  {header("spent", "spent", "num")}
+                  {header("sold", "sold", "num")}
+                  {header("earned", "earned", "num")}
+                  {header("net", "net", "num")}
                 </tr>
               </thead>
               <tbody>
-                {withCost.map((c) => {
-                  const net = wei(c.netWei);
-                  const spent = wei(c.cost?.gasWei) + wei(c.cost?.priceWei);
-                  const isOpen = open === c.collection;
-                  return (
-                    <>
-                      <tr
-                        key={c.collection}
-                        className="project-row"
-                        onClick={() => setOpen(isOpen ? null : c.collection)}
-                      >
-                        <td>
-                          {c.collectionName ?? `${c.collection.slice(0, 10)}…`}
-                          {c.runs ? <span className="dim"> · {c.runs} run{c.runs === 1 ? "" : "s"}</span> : null}
-                        </td>
-                        <td className="dim">
-                          {c.cost?.tokens ?? 0}
-                          {c.cost?.wallets ? ` / ${c.cost.wallets}w` : ""}
-                        </td>
-                        <td className="dim">{formatEthShort(spent)}</td>
-                        <td className="dim">{c.soldTokens ?? 0}</td>
-                        <td className="dim">{formatEthShort(wei(c.revenueWei))}</td>
-                        <td className={net >= 0n ? "ok" : "error"}>
-                          {net >= 0n ? "+" : ""}
-                          {formatEthShort(net)}
+                {sorted.map((r) => {
+                  const isOpen = open === r.collection;
+                  return [
+                    <tr
+                      key={r.collection}
+                      className={`project-row${isOpen ? " row-open" : ""}`}
+                      onClick={() => setOpen(isOpen ? null : r.collection)}
+                    >
+                      <td>
+                        <span className="cell-name">
+                          {r.name ?? `${r.collection.slice(0, 10)}…`}
+                        </span>
+                        <span className="cell-sub dim">
+                          {r.held} held
+                          {r.wallets ? ` · ${r.wallets} wallet${r.wallets === 1 ? "" : "s"}` : ""}
+                          {r.runs ? ` · ${r.runs} run${r.runs === 1 ? "" : "s"}` : ""}
+                        </span>
+                      </td>
+                      <td className="num">{r.minted}</td>
+                      <td className="num neg">{r.spent > 0n ? `−${formatEthShort(r.spent)}` : "0"}</td>
+                      <td className="num">{r.sold}</td>
+                      <td className="num pos">{r.earned > 0n ? `+${formatEthShort(r.earned)}` : "0"}</td>
+                      <td className={`num strong ${r.net >= 0n ? "pos" : "neg"}`}>
+                        {r.net >= 0n ? "+" : "−"}
+                        {formatEthShort(r.net < 0n ? -r.net : r.net)}
+                      </td>
+                    </tr>,
+                    isOpen ? (
+                      <tr key={`${r.collection}-detail`} className="detail-row">
+                        <td colSpan={6}>
+                          <SaleList sales={r.sales} explorerUrl={view.explorerUrl} held={r.held} />
                         </td>
                       </tr>
-                      {isOpen ? (
-                        <tr key={`${c.collection}-detail`}>
-                          <td colSpan={6}>
-                            <SaleList
-                              sales={c.sales ?? []}
-                              explorerUrl={view.explorerUrl}
-                              held={c.heldTokens ?? 0}
-                            />
-                          </td>
-                        </tr>
-                      ) : null}
-                    </>
-                  );
+                    ) : null,
+                  ];
                 })}
               </tbody>
+              <tfoot>
+                <tr>
+                  <td>total</td>
+                  <td className="num">{totals.minted}</td>
+                  <td className="num neg">−{formatEthShort(totals.spent)}</td>
+                  <td className="num">{totals.sold}</td>
+                  <td className="num pos">+{formatEthShort(totals.earned)}</td>
+                  <td className={`num strong ${totals.net >= 0n ? "pos" : "neg"}`}>
+                    {totals.net >= 0n ? "+" : "−"}
+                    {formatEthShort(totals.net < 0n ? -totals.net : totals.net)}
+                  </td>
+                </tr>
+              </tfoot>
             </table>
           </div>
+
+          {!legacy ? <PnlChart events={events} /> : null}
         </>
       ) : null}
 
-      {view && withCost.length === 0 ? (
+      {view && rows.length === 0 ? (
         <p className="dim hint">
-          Nothing minted through this server yet. Queue a drop in the Snipe tab
-          and its cost is recorded as it runs.
+          {(view.events?.length ?? 0) > 0
+            ? "Nothing minted or sold in this window — try a longer one."
+            : "Nothing minted through these wallets yet. Queue a drop in the Snipe tab and its cost shows up here."}
         </p>
       ) : null}
 
-      {view?.collections.some((c) => c.error) ? (
+      {(view?.collections ?? []).some((c) => c.error) ? (
         <p className="warn">
           Couldn&apos;t read:{" "}
-          {view.collections
+          {(view?.collections ?? [])
             .filter((c) => c.error)
             .map((c) => `${c.collection.slice(0, 10)}… (${c.error})`)
             .join(", ")}
@@ -242,19 +459,125 @@ export default function MintProfitPanel() {
   );
 }
 
+function Fact({ label, value, tone }: { label: string; value: string; tone?: "pos" | "neg" }) {
+  return (
+    <div className="fact">
+      <span className="fact-label">{label}</span>
+      <span className={`fact-value ${tone ?? ""}`.trim()}>{value}</span>
+    </div>
+  );
+}
+
+/**
+ * Running profit across the window.
+ *
+ * Drawn from the same events the table counts, so the line and the numbers can
+ * never disagree. Each mint steps it down by what it cost, each sale steps it
+ * up by what it made; where it ends is the net above.
+ */
+function PnlChart({ events }: { events: ProfitEvent[] }) {
+  const points = useMemo(() => {
+    let cum = 0n;
+    return events
+      .filter((e) => e.at > 0)
+      .map((e) => {
+        cum += BigInt(e.wei);
+        return { t: e.at, v: Number(cum) / 1e18 };
+      });
+  }, [events]);
+
+  if (points.length < 2) {
+    return (
+      <p className="dim hint">
+        A profit line needs at least two events in the window — pick a longer one.
+      </p>
+    );
+  }
+
+  const W = 720;
+  const H = 190;
+  const PAD = { l: 8, r: 8, t: 14, b: 20 };
+  const t0 = points[0].t;
+  const t1 = points[points.length - 1].t;
+  const span = Math.max(1, t1 - t0);
+  const lo = Math.min(0, ...points.map((p) => p.v));
+  const hi = Math.max(0, ...points.map((p) => p.v));
+  const range = hi - lo || 1;
+
+  const x = (t: number) => PAD.l + ((t - t0) / span) * (W - PAD.l - PAD.r);
+  const y = (v: number) => PAD.t + (1 - (v - lo) / range) * (H - PAD.t - PAD.b);
+
+  // A step line, because profit changes at an event and holds until the next —
+  // sloping between them would draw money arriving that had not arrived.
+  const d: string[] = [`M ${x(points[0].t).toFixed(1)} ${y(points[0].v).toFixed(1)}`];
+  for (let i = 1; i < points.length; i += 1) {
+    const p = points[i];
+    d.push(`L ${x(p.t).toFixed(1)} ${y(points[i - 1].v).toFixed(1)}`);
+    d.push(`L ${x(p.t).toFixed(1)} ${y(p.v).toFixed(1)}`);
+  }
+  const line = d.join(" ");
+  const last = points[points.length - 1].v;
+  const zero = y(0);
+  const area = `${line} L ${x(t1).toFixed(1)} ${zero.toFixed(1)} L ${x(t0).toFixed(1)} ${zero.toFixed(1)} Z`;
+  const when = (t: number) =>
+    new Date(t * 1000).toLocaleString(undefined, {
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+
+  return (
+    <div className="pnl-chart">
+      <div className="pnl-head">
+        <span className="dim">running profit</span>
+        <span className={last >= 0 ? "ok" : "error"}>
+          {last >= 0 ? "+" : ""}
+          {last.toFixed(4)} ETH
+        </span>
+      </div>
+      <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" role="img" aria-label="profit over time">
+        <defs>
+          {/* Anchored on the zero line rather than the top of the box: a
+              gradient that starts at the frame paints a solid slab whenever
+              the line sits below zero. */}
+          <linearGradient
+            id="pnl-fill"
+            gradientUnits="userSpaceOnUse"
+            x1="0"
+            y1={last >= 0 ? PAD.t : zero}
+            x2="0"
+            y2={last >= 0 ? zero : H - PAD.b}
+          >
+            <stop offset="0%" stopColor={last >= 0 ? "#00c805" : "#ff5c57"} stopOpacity="0.3" />
+            <stop offset="100%" stopColor={last >= 0 ? "#00c805" : "#ff5c57"} stopOpacity="0.02" />
+          </linearGradient>
+        </defs>
+        <line x1={PAD.l} x2={W - PAD.r} y1={zero} y2={zero} className="pnl-zero" />
+        <path d={area} fill="url(#pnl-fill)" />
+        <path d={line} fill="none" className={last >= 0 ? "pnl-line pos" : "pnl-line neg"} />
+      </svg>
+      <div className="pnl-axis dim">
+        <span>{when(t0)}</span>
+        <span>{when(t1)}</span>
+      </div>
+    </div>
+  );
+}
+
 function SaleList({
   sales,
   explorerUrl,
   held,
 }: {
-  sales: Sale[];
+  sales: ProfitEvent[];
   explorerUrl: string;
   held: number;
 }) {
   if (sales.length === 0) {
     return (
       <p className="dim hint" style={{ margin: 0 }}>
-        Nothing sold yet — {held} token{held === 1 ? "" : "s"} still held.
+        Nothing sold in this window — {held} token{held === 1 ? "" : "s"} still held.
       </p>
     );
   }
@@ -272,7 +595,7 @@ function SaleList({
               #{s.tokenId} from {s.wallet.slice(0, 8)}…{s.wallet.slice(-4)}
             </span>
             <span className="feed-meta dim">
-              {formatEthShort(BigInt(s.proceedsWei))} ETH ·{" "}
+              {formatEthShort(BigInt(s.wei))} ETH ·{" "}
               <a href={`${explorerUrl}/tx/${s.txHash}`} target="_blank" rel="noreferrer">
                 tx
               </a>

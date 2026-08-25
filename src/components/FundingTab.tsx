@@ -115,6 +115,11 @@ export default function FundingTab() {
   const [nftDest, setNftDest] = useState("");
   const [nftFilter, setNftFilter] = useState("");
   const [nResult, setNResult] = useState<SweepNftsResult | null>(null);
+  // How the scan results are shown. Kept apart from the scan itself so
+  // re-sorting or narrowing to one collection never costs another chain read.
+  const [nftSort, setNftSort] = useState<"tokens" | "wallet" | "collection">("tokens");
+  const [nftSortDesc, setNftSortDesc] = useState(true);
+  const [onlyCollection, setOnlyCollection] = useState<string | null>(null);
   const [nftError, setNftError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
@@ -231,6 +236,64 @@ export default function FundingTab() {
   const wallets = view?.wallets ?? [];
   const total = wallets.reduce((n, w) => n + Number(w.balance ?? 0), 0);
   const empty = wallets.filter((w) => Number(w.balance ?? 0) === 0).length;
+
+  /**
+   * What the scan table shows: the same holdings, narrowed and ordered.
+   *
+   * Derived rather than stored, so choosing a collection or a sort order is
+   * instant — the chain has already been read and nothing here goes back to it.
+   */
+  const nftRows = (() => {
+    const rows = (nfts?.holdings ?? []).filter(
+      (h) => !onlyCollection || h.collection.toLowerCase() === onlyCollection,
+    );
+    const dir = nftSortDesc ? -1 : 1;
+    return [...rows].sort((a, b) => {
+      if (nftSort === "wallet") return dir * a.wallet.localeCompare(b.wallet);
+      if (nftSort === "collection") {
+        const an = a.collectionName ?? a.collection;
+        const bn = b.collectionName ?? b.collection;
+        // Same collection, so order by holding size — the useful tiebreak.
+        return dir * (an.localeCompare(bn) || a.tokenIds.length - b.tokenIds.length);
+      }
+      return dir * (a.tokenIds.length - b.tokenIds.length);
+    });
+  })();
+
+  /** Collections found by the scan, largest first, for the filter chips. */
+  const nftCollections = (() => {
+    const by = new Map<string, { address: string; name?: string; tokens: number }>();
+    for (const h of nfts?.holdings ?? []) {
+      const key = h.collection.toLowerCase();
+      const e = by.get(key) ?? { address: h.collection, name: h.collectionName, tokens: 0 };
+      e.tokens += h.tokenIds.length;
+      by.set(key, e);
+    }
+    return [...by.entries()]
+      .map(([key, v]) => ({ key, ...v }))
+      .sort((a, b) => b.tokens - a.tokens);
+  })();
+
+  const shownTokens = nftRows.reduce((n, h) => n + h.tokenIds.length, 0);
+  const shownWallets = new Set(nftRows.map((h) => h.wallet.toLowerCase())).size;
+
+  function nftHeader(key: typeof nftSort, label: string) {
+    return (
+      <th
+        className="sortable"
+        onClick={() => {
+          if (nftSort === key) setNftSortDesc(!nftSortDesc);
+          else {
+            setNftSort(key);
+            setNftSortDesc(true);
+          }
+        }}
+      >
+        {label}
+        {nftSort === key ? (nftSortDesc ? " ▼" : " ▲") : ""}
+      </th>
+    );
+  }
 
   return (
     <div>
@@ -465,21 +528,44 @@ export default function FundingTab() {
               ) : (
                 <>
                   <p className="ok" style={{ marginTop: 12 }}>
-                    {nfts.totalTokens} token{nfts.totalTokens === 1 ? "" : "s"} on{" "}
-                    {nfts.withTokens ?? nfts.holdings.length} of {nfts.checked ?? "?"} wallets
+                    {shownTokens} token{shownTokens === 1 ? "" : "s"} on{" "}
+                    {shownWallets} of {nfts.checked ?? "?"} wallets
+                    {onlyCollection ? " (filtered)" : ""}
                     {nfts.tookMs ? ` · ${(nfts.tookMs / 1000).toFixed(1)}s` : ""}
                   </p>
+
+                  {nftCollections.length > 1 ? (
+                    <div className="wallet-picker-chips">
+                      <button
+                        className={onlyCollection === null ? "secondary active-chip" : "secondary"}
+                        onClick={() => setOnlyCollection(null)}
+                      >
+                        all ({nfts.totalTokens})
+                      </button>
+                      {nftCollections.map((c) => (
+                        <button
+                          key={c.key}
+                          className={onlyCollection === c.key ? "secondary active-chip" : "secondary"}
+                          onClick={() => setOnlyCollection(onlyCollection === c.key ? null : c.key)}
+                          title={c.address}
+                        >
+                          {c.name ?? `${c.address.slice(0, 8)}…`} ({c.tokens})
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
+
                   <div className="table-wrap">
                     <table className="projects">
                       <thead>
                         <tr>
-                          <th>wallet</th>
-                          <th>collection</th>
-                          <th>tokens</th>
+                          {nftHeader("wallet", "wallet")}
+                          {nftHeader("collection", "collection")}
+                          {nftHeader("tokens", "tokens")}
                         </tr>
                       </thead>
                       <tbody>
-                        {nfts.holdings.map((h) => (
+                        {nftRows.map((h) => (
                           <tr key={h.wallet + h.collection}>
                             <td>
                               <a

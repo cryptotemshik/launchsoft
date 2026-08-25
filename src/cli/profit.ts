@@ -151,6 +151,149 @@ export async function priceTransfers(
   });
 }
 
+/** A token arriving from the zero address — the visible half of a mint. */
+export interface MintTransfer {
+  wallet: `0x${string}`;
+  collection: `0x${string}`;
+  tokenId: string;
+  blockNumber: bigint;
+  txHash: string;
+}
+
+/** One transaction that minted, and what it cost. */
+export interface MintTx {
+  collection: `0x${string}`;
+  wallet: `0x${string}`;
+  txHash: string;
+  blockNumber: bigint;
+  /** How many tokens of this collection it minted. */
+  tokens: number;
+  gasWei: bigint;
+  priceWei: bigint;
+}
+
+/**
+ * What the mints themselves cost, read from their transactions.
+ *
+ * The local ledger only knows about runs this server made, so a drop minted
+ * before it existed — or from another machine — showed a blank cost and a
+ * profit equal to its revenue. The chain knows about all of them: every token
+ * that arrived from the zero address came in a transaction, and that
+ * transaction says what it paid the contract and what its gas cost.
+ *
+ * One transaction usually mints several tokens for one wallet, so the reads
+ * are per transaction, not per token — reading per token would multiply a
+ * drop's cost by its quantity. Where a single transaction touched two
+ * collections its cost is split between them by token count, which is the only
+ * split the chain supports.
+ */
+export async function readMintTxs(
+  client: PublicClient,
+  mints: readonly MintTransfer[],
+): Promise<MintTx[]> {
+  if (mints.length === 0) return [];
+
+  const hashes = [...new Set(mints.map((m) => m.txHash).filter(Boolean))];
+  const costs = await mapWithLimit(hashes, async (hash) => {
+    try {
+      const [tx, receipt] = await Promise.all([
+        client.getTransaction({ hash: hash as `0x${string}` }),
+        client.getTransactionReceipt({ hash: hash as `0x${string}` }),
+      ]);
+      const gasPrice = receipt.effectiveGasPrice ?? tx.gasPrice ?? 0n;
+      return { valueWei: tx.value ?? 0n, gasWei: receipt.gasUsed * gasPrice };
+    } catch {
+      // A pruned node may not have the transaction any more. Counting it as
+      // free would overstate profit, but inventing a number is worse — so it
+      // contributes nothing and the token still counts as minted.
+      return { valueWei: 0n, gasWei: 0n };
+    }
+  });
+  const byHash = new Map(hashes.map((h, i) => [h, costs[i]]));
+
+  // Group by transaction and collection: one row per (tx, collection).
+  const rows = new Map<string, MintTx>();
+  const perTx = new Map<string, number>();
+  for (const m of mints) perTx.set(m.txHash, (perTx.get(m.txHash) ?? 0) + 1);
+
+  for (const m of mints) {
+    const key = `${m.txHash}#${m.collection.toLowerCase()}`;
+    const row =
+      rows.get(key) ??
+      ({
+        collection: getAddress(m.collection),
+        wallet: getAddress(m.wallet),
+        txHash: m.txHash,
+        blockNumber: m.blockNumber,
+        tokens: 0,
+        gasWei: 0n,
+        priceWei: 0n,
+      } satisfies MintTx);
+    row.tokens += 1;
+    rows.set(key, row);
+  }
+  for (const row of rows.values()) {
+    const all = BigInt(perTx.get(row.txHash) ?? row.tokens);
+    const cost = byHash.get(row.txHash) ?? { valueWei: 0n, gasWei: 0n };
+    // This collection's share of a transaction that may have minted others.
+    row.gasWei = (cost.gasWei * BigInt(row.tokens)) / all;
+    row.priceWei = (cost.valueWei * BigInt(row.tokens)) / all;
+  }
+  return [...rows.values()].sort((a, b) => Number(a.blockNumber - b.blockNumber));
+}
+
+/** Roll mint transactions up per collection. */
+export function costByMintTx(txs: readonly MintTx[]): Map<string, MintCost> {
+  const out = new Map<string, MintCost>();
+  const walletsPer = new Map<string, Set<string>>();
+  for (const t of txs) {
+    const key = t.collection.toLowerCase();
+    const acc =
+      out.get(key) ?? ({ gasWei: 0n, priceWei: 0n, tokens: 0, wallets: 0 } satisfies MintCost);
+    acc.gasWei += t.gasWei;
+    acc.priceWei += t.priceWei;
+    acc.tokens += t.tokens;
+    out.set(key, acc);
+    const seen = walletsPer.get(key) ?? new Set<string>();
+    seen.add(t.wallet.toLowerCase());
+    walletsPer.set(key, seen);
+  }
+  for (const [key, acc] of out) acc.wallets = walletsPer.get(key)?.size ?? 0;
+  return out;
+}
+
+/** What each collection's mints cost, straight from the chain. */
+export async function priceMints(
+  client: PublicClient,
+  mints: readonly MintTransfer[],
+): Promise<Map<string, MintCost>> {
+  return costByMintTx(await readMintTxs(client, mints));
+}
+
+/**
+ * When each of these blocks happened.
+ *
+ * A profit line needs a time axis, and a block number is not one. Interpolating
+ * from an average block time would be cheaper and wrong — this chain produces
+ * blocks on demand, so an hour of quiet and an hour of a drop cover very
+ * different spans. So the timestamps are read, deduplicated and batched.
+ */
+export async function blockTimes(
+  client: PublicClient,
+  blocks: readonly bigint[],
+): Promise<Map<string, number>> {
+  const unique = [...new Set(blocks.map(String))];
+  const times = await mapWithLimit(unique, async (n) => {
+    try {
+      const b = await client.getBlock({ blockNumber: BigInt(n) });
+      return Number(b.timestamp);
+    } catch {
+      return 0;
+    }
+  });
+  return new Map(unique.map((n, i) => [n, times[i]]));
+}
+
 /** Assemble the report. Pure arithmetic — the reading already happened. */
 export function summarise(
   collection: `0x${string}`,

@@ -72,6 +72,13 @@ export interface CollectionCost {
   collectionName?: string;
   gasWei: bigint;
   priceWei: bigint;
+  /**
+   * Gas burnt by wallets that came away with nothing — a reverted mint still
+   * pays. The chain cannot be asked for this after the fact without knowing
+   * which transactions were attempts, so it is the one cost only the ledger
+   * knows, and the one it is read for once the rest comes from the chain.
+   */
+  failedGasWei: bigint;
   tokens: number;
   wallets: number;
   runs: number;
@@ -91,6 +98,7 @@ export function costByCollection(records: readonly MintRecord[]): Map<string, Co
         collectionName: r.collectionName,
         gasWei: 0n,
         priceWei: 0n,
+        failedGasWei: 0n,
         tokens: 0,
         wallets: 0,
         runs: 0,
@@ -103,6 +111,7 @@ export function costByCollection(records: readonly MintRecord[]): Map<string, Co
       acc.gasWei += BigInt(w.gasWei || "0");
       acc.priceWei += BigInt(w.valueWei || "0");
       acc.tokens += w.tokenIds.length;
+      if (w.tokenIds.length === 0) acc.failedGasWei += BigInt(w.gasWei || "0");
       if (w.gasWei && w.gasWei !== "0") walletsThatSpent.add(w.address.toLowerCase());
     }
     acc.wallets = Math.max(acc.wallets, walletsThatSpent.size);

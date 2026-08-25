@@ -44,6 +44,15 @@ export interface WalletHolding {
   tokenIds: string[];
 }
 
+/** A token arriving from nowhere — a mint, and the half of a cost we can see. */
+export interface MintTransfer {
+  wallet: `0x${string}`;
+  collection: `0x${string}`;
+  tokenId: string;
+  blockNumber: bigint;
+  txHash: string;
+}
+
 /** A token that left one of our wallets — the visible half of a sale. */
 export interface OutgoingTransfer {
   wallet: `0x${string}`;
@@ -65,6 +74,12 @@ export interface ChainScan {
   collections: CollectionHoldings[];
   /** Every departure, in order. Pricing them is profit.ts's job. */
   sent: OutgoingTransfer[];
+  /**
+   * Every arrival from the zero address. This is what a mint looks like from
+   * the outside, and it is how many a drop cost — a figure the local ledger
+   * only knows for runs this server happened to make.
+   */
+  minted: MintTransfer[];
   totalTokens: number;
   /** Wallets holding at least one token of anything. */
   walletsWithTokens: number;
@@ -139,7 +154,7 @@ export async function scanChain(
   opts: { collection?: `0x${string}`; fromBlock?: bigint } = {},
 ): Promise<ChainScan> {
   if (wallets.length === 0) {
-    return { collections: [], sent: [], totalTokens: 0, walletsWithTokens: 0 };
+    return { collections: [], sent: [], minted: [], totalTokens: 0, walletsWithTokens: 0 };
   }
   const fromBlock = opts.fromBlock ?? 0n;
   const toBlock = await client.getBlockNumber();
@@ -163,6 +178,7 @@ export async function scanChain(
     ownerOf.set(`${l.address.toLowerCase()}#${l.args.tokenId}`, l.args.to!.toLowerCase());
   }
 
+  const ZERO = "0x0000000000000000000000000000000000000000";
   const mine = new Set(wallets.map((w) => w.toLowerCase()));
   const byCollection = new Map<string, Map<string, string[]>>();
   for (const [key, owner] of ownerOf) {
@@ -211,6 +227,15 @@ export async function scanChain(
 
   return {
     collections,
+    minted: incoming
+      .filter((l) => l.args.from!.toLowerCase() === ZERO)
+      .map((l) => ({
+        wallet: getAddress(l.args.to!),
+        collection: getAddress(l.address),
+        tokenId: l.args.tokenId!.toString(),
+        blockNumber: l.blockNumber,
+        txHash: l.transactionHash ?? "",
+      })),
     sent: outgoing.map((l) => ({
       wallet: getAddress(l.args.from!),
       collection: getAddress(l.address),

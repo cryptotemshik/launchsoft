@@ -219,3 +219,30 @@ describe("scanChain", () => {
     expect(scan.totalTokens).toBe(0);
   });
 });
+
+describe("mint detection", () => {
+  it("reports arrivals from the zero address, and nothing else, as mints", async () => {
+    const scan = await scanChain(
+      clientWith([
+        transfer(1, 0, ZERO, W1, 1),
+        transfer(1, 1, ZERO, W1, 2),
+        // Bought from someone, not minted — a cost we cannot read this way.
+        transfer(2, 0, OUTSIDER, W2, 3),
+      ]),
+      [W1, W2],
+    );
+    expect(scan.minted.map((m) => m.tokenId)).toEqual(["1", "2"]);
+    expect(scan.minted[0].wallet).toBe(W1);
+    expect(scan.minted[0].txHash).toBe("0xtx10");
+  });
+
+  it("keeps a mint in the list after the token has been sold on", async () => {
+    // Cost is spent whether or not the token is still held.
+    const scan = await scanChain(
+      clientWith([transfer(1, 0, ZERO, W1, 1), transfer(5, 0, W1, OUTSIDER, 1)]),
+      [W1],
+    );
+    expect(scan.minted).toHaveLength(1);
+    expect(scan.totalTokens).toBe(0);
+  });
+});

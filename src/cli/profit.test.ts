@@ -1,5 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
-import { eth, priceTransfers, summarise, type OutgoingTransfer } from "./profit";
+import {
+  eth,
+  priceMints,
+  priceTransfers,
+  summarise,
+  type MintTransfer,
+  type OutgoingTransfer,
+} from "./profit";
 
 const W1 = "0x1111111111111111111111111111111111111111" as const;
 const W2 = "0x2222222222222222222222222222222222222222" as const;
@@ -166,5 +173,102 @@ describe("eth", () => {
     expect(eth(5_300_000_000_000n)).toBe("0.000005");
     expect(eth(1n * ETH)).toBe("1");
     expect(eth(1_500_000_000_000_000_000n)).toBe("1.500000");
+  });
+});
+
+describe("priceMints", () => {
+  const mint = (over: Partial<MintTransfer> = {}): MintTransfer => ({
+    wallet: W1,
+    collection: COLL,
+    tokenId: "1",
+    blockNumber: 10n,
+    txHash: "0xtx1",
+    ...over,
+  });
+
+  /** A node that knows two transactions. */
+  const node = (txs: Record<string, { value: bigint; gasUsed: bigint; gasPrice: bigint }>) =>
+    ({
+      getTransaction: async ({ hash }: { hash: string }) => {
+        if (!txs[hash]) throw new Error("not found");
+        return { value: txs[hash].value, gasPrice: txs[hash].gasPrice };
+      },
+      getTransactionReceipt: async ({ hash }: { hash: string }) => {
+        if (!txs[hash]) throw new Error("not found");
+        return { gasUsed: txs[hash].gasUsed, effectiveGasPrice: txs[hash].gasPrice };
+      },
+    }) as never;
+
+  it("charges the mint price and the gas of the transaction that minted", async () => {
+    const cost = await priceMints(
+      node({ "0xtx1": { value: 2n * ETH, gasUsed: 100_000n, gasPrice: 10n } }),
+      [mint()],
+    );
+    const c = cost.get(COLL.toLowerCase())!;
+    expect(c.priceWei).toBe(2n * ETH);
+    expect(c.gasWei).toBe(1_000_000n);
+    expect(c.tokens).toBe(1);
+    expect(c.wallets).toBe(1);
+  });
+
+  it("reads one transaction once however many tokens it minted", async () => {
+    // A wallet minting ten in one go pays once, not ten times — the bug this
+    // guards against would have multiplied a drop's cost by its quantity.
+    const getTransaction = vi.fn(async () => ({ value: 3n * ETH, gasPrice: 0n }));
+    const getTransactionReceipt = vi.fn(async () => ({ gasUsed: 0n, effectiveGasPrice: 0n }));
+    const cost = await priceMints({ getTransaction, getTransactionReceipt } as never, [
+      mint({ tokenId: "1" }),
+      mint({ tokenId: "2" }),
+      mint({ tokenId: "3" }),
+    ]);
+    expect(getTransaction).toHaveBeenCalledTimes(1);
+    expect(cost.get(COLL.toLowerCase())!.priceWei).toBe(3n * ETH);
+    expect(cost.get(COLL.toLowerCase())!.tokens).toBe(3);
+  });
+
+  it("keeps collections apart and counts the wallets behind each", async () => {
+    const other = "0xdddddddddddddddddddddddddddddddddddddddd" as const;
+    const cost = await priceMints(
+      node({
+        "0xtx1": { value: 1n * ETH, gasUsed: 0n, gasPrice: 0n },
+        "0xtx2": { value: 5n * ETH, gasUsed: 0n, gasPrice: 0n },
+      }),
+      [
+        mint(),
+        mint({ wallet: W2, tokenId: "2", txHash: "0xtx2", collection: other }),
+      ],
+    );
+    expect(cost.get(COLL.toLowerCase())!.priceWei).toBe(1n * ETH);
+    expect(cost.get(other.toLowerCase())!.priceWei).toBe(5n * ETH);
+    expect(cost.get(other.toLowerCase())!.wallets).toBe(1);
+  });
+
+  it("counts a token the node has forgotten as minted, but not as free", async () => {
+    const cost = await priceMints(node({}), [mint()]);
+    const c = cost.get(COLL.toLowerCase())!;
+    expect(c.tokens).toBe(1);
+    expect(c.priceWei).toBe(0n);
+  });
+
+  it("splits one transaction between the collections it minted, by token count", async () => {
+    const other = "0xdddddddddddddddddddddddddddddddddddddddd" as const;
+    const cost = await priceMints(
+      node({ "0xtx1": { value: 3n * ETH, gasUsed: 0n, gasPrice: 0n } }),
+      [
+        mint({ tokenId: "1" }),
+        mint({ tokenId: "2" }),
+        mint({ tokenId: "3", collection: other }),
+      ],
+    );
+    expect(cost.get(COLL.toLowerCase())!.priceWei).toBe(2n * ETH);
+    expect(cost.get(other.toLowerCase())!.priceWei).toBe(1n * ETH);
+  });
+
+  it("asks nothing of the node when nothing was minted", async () => {
+    const getTransaction = vi.fn();
+    expect(
+      (await priceMints({ getTransaction } as never, [])).size,
+    ).toBe(0);
+    expect(getTransaction).not.toHaveBeenCalled();
   });
 });

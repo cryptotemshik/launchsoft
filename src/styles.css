@@ -1452,6 +1452,242 @@ tr.row-selected td {
   font-size: 11px;
 }
 
+/* ── The sniped-mints ledger ─────────────────────────────────────────────
+   A dense money table wants three things a plain table does not give it:
+   figures that line up, rows you can tell apart at a glance, and a total that
+   stays attached to the bottom. */
+.range-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 14px 0 4px;
+}
+.range-picker button {
+  padding: 4px 12px;
+  font-size: 12px;
+  width: auto;
+}
+
+.profit-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  margin: 14px 0 4px;
+  padding: 16px 18px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: linear-gradient(180deg, var(--surface-hi), transparent);
+}
+.profit-headline {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.profit-label {
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.profit-headline .profit-big {
+  padding: 0;
+  font-size: 34px;
+}
+.profit-headline .profit-big small {
+  font-size: 15px;
+  opacity: 0.65;
+}
+.profit-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 26px;
+}
+.fact {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 74px;
+}
+.fact-label {
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+.fact-value {
+  font-family: var(--mono);
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+.fact-value.pos {
+  color: var(--green-bright);
+}
+.fact-value.neg {
+  color: var(--err);
+}
+
+.ledger-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.ledger-table th {
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--faint);
+  font-weight: 600;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+}
+.ledger-table td {
+  padding: 10px;
+  border-bottom: 1px solid rgba(120, 210, 150, 0.07);
+  vertical-align: middle;
+}
+/* Every other row shaded: at a dozen collections the eye loses the line. */
+.ledger-table tbody tr.project-row:nth-of-type(odd) {
+  background: rgba(255, 255, 255, 0.015);
+}
+.ledger-table tbody tr.project-row:hover {
+  background: var(--surface-hi);
+  cursor: pointer;
+}
+.ledger-table tbody tr.row-open {
+  background: rgba(0, 200, 5, 0.07);
+  box-shadow: inset 2px 0 0 var(--green);
+}
+.ledger-table .num {
+  text-align: right;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.ledger-table .strong {
+  font-weight: 700;
+}
+.ledger-table .pos {
+  color: var(--green-bright);
+}
+.ledger-table .neg {
+  color: rgba(255, 92, 87, 0.85);
+}
+.ledger-table .cell-name {
+  display: block;
+  font-weight: 600;
+}
+.ledger-table .cell-sub {
+  display: block;
+  font-size: 11px;
+  margin-top: 2px;
+}
+.ledger-table tfoot td {
+  border-top: 1px solid var(--line-strong);
+  border-bottom: none;
+  padding-top: 12px;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.ledger-table tfoot .num {
+  font-size: 13px;
+  letter-spacing: 0;
+  text-transform: none;
+}
+.ledger-table .detail-row td {
+  background: var(--surface-2);
+  padding: 12px 14px;
+}
+
+/* Profit over the chosen window. Stretched to the panel width, so it reads as
+   a shape rather than as a chart to measure things off. */
+.pnl-chart {
+  margin-top: 18px;
+  padding: 14px 16px 10px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface-2);
+}
+.pnl-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 12px;
+  font-family: var(--mono);
+  margin-bottom: 6px;
+}
+.pnl-chart svg {
+  display: block;
+  width: 100%;
+  height: 190px;
+}
+.pnl-line {
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+  stroke-linejoin: round;
+}
+.pnl-line.pos {
+  stroke: var(--green-bright);
+}
+.pnl-line.neg {
+  stroke: var(--err);
+}
+.pnl-zero {
+  stroke: rgba(120, 210, 150, 0.25);
+  stroke-dasharray: 4 4;
+  vector-effect: non-scaling-stroke;
+}
+.pnl-axis {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  font-family: var(--mono);
+}
+
+@media (max-width: 640px) {
+  .profit-summary {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .ledger-table {
+    font-size: 12px;
+  }
+  .ledger-table td,
+  .ledger-table th {
+    padding: 8px 6px;
+  }
+}
+
+/* A row of filters that wraps rather than scrolls: after a scan there can be
+   a dozen collections, and a hidden one is a filter nobody uses. */
+.wallet-picker-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 10px 0 4px;
+}
+.wallet-picker-chips button {
+  padding: 4px 10px;
+  font-size: 12px;
+  width: auto;
+}
+
+/* Column headers that reorder the table. The whole cell is the hit target,
+   and the arrow says which way it is pointing. */
+th.sortable {
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+th.sortable:hover {
+  color: var(--green-bright);
+}
+
 /* The chip standing for the filter currently in force. */
 button.secondary.active-chip {
   background: rgba(0, 200, 5, 0.2);
