@@ -36,6 +36,7 @@ export default function ServerWalletsTab() {
   const [keysText, setKeysText] = useState("");
   const [label, setLabel] = useState("");
   const [notice, setNotice] = useState<string | null>(null);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
 
   const refresh = useCallback(async () => {
     try {
@@ -91,20 +92,33 @@ export default function ServerWalletsTab() {
     }
   }
 
-  async function removeWallet(address: string) {
+  /** Removes one wallet, or every ticked one when called with no argument. */
+  async function removeWallets(addresses: string[]) {
+    if (addresses.length === 0) return;
     setBusy(true);
     setError(null);
     try {
-      const v = (await call(`/api/wallets?address=${encodeURIComponent(address)}`, {
+      const v = (await call("/api/wallets", {
         method: "DELETE",
-      })) as unknown as WalletsView;
+        body: JSON.stringify({ addresses }),
+      })) as unknown as WalletsView & { removed: number };
       setView(v);
-      setNotice(`Removed ${address.slice(0, 10)}…`);
+      setSelected(new Set());
+      setNotice(`Removed ${v.removed} wallet${v.removed === 1 ? "" : "s"}`);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
     }
+  }
+
+  function toggle(address: string) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(address)) next.delete(address);
+      else next.add(address);
+      return next;
+    });
   }
 
   const wallets = view?.wallets ?? [];
@@ -228,41 +242,91 @@ export default function ServerWalletsTab() {
                 No wallets yet — add some above and the runner will mint with them.
               </p>
             ) : (
-              <div className="table-wrap">
-                <table className="projects">
-                  <thead>
-                    <tr>
-                      <th>address</th>
-                      <th>label</th>
-                      <th>balance</th>
-                      <th></th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {wallets.map((w) => (
-                      <tr key={w.address}>
-                        <td>
-                          <AddrLink address={w.address} />
-                        </td>
-                        <td className="dim">{w.label ?? "—"}</td>
-                        <td className={w.balance && Number(w.balance) > 0 ? "" : "warn"}>
-                          {w.balance === null ? "—" : `${Number(w.balance).toFixed(4)} ETH`}
-                        </td>
-                        <td>
-                          <button
-                            className="secondary"
-                            style={{ padding: "2px 10px", fontSize: 11 }}
-                            disabled={busy}
-                            onClick={() => void removeWallet(w.address)}
-                          >
-                            remove
-                          </button>
-                        </td>
+              <>
+                <div
+                  style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 10 }}
+                >
+                  <button
+                    className="secondary"
+                    style={{ padding: "4px 12px", fontSize: 12 }}
+                    disabled={busy}
+                    onClick={() =>
+                      setSelected(
+                        selected.size === wallets.length
+                          ? new Set()
+                          : new Set(wallets.map((w) => w.address)),
+                      )
+                    }
+                  >
+                    {selected.size === wallets.length ? "clear selection" : "select all"}
+                  </button>
+                  <button
+                    className="danger"
+                    style={{ padding: "4px 12px", fontSize: 12 }}
+                    disabled={busy || selected.size === 0}
+                    onClick={() => void removeWallets([...selected])}
+                  >
+                    remove selected ({selected.size})
+                  </button>
+                </div>
+                <div className="table-wrap">
+                  <table className="projects">
+                    <thead>
+                      <tr>
+                        <th style={{ width: 34 }}>
+                          <input
+                            type="checkbox"
+                            checked={selected.size === wallets.length && wallets.length > 0}
+                            onChange={() =>
+                              setSelected(
+                                selected.size === wallets.length
+                                  ? new Set()
+                                  : new Set(wallets.map((w) => w.address)),
+                              )
+                            }
+                            aria-label="select every wallet"
+                          />
+                        </th>
+                        <th>address</th>
+                        <th>label</th>
+                        <th>balance</th>
+                        <th></th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                    </thead>
+                    <tbody>
+                      {wallets.map((w) => (
+                        <tr key={w.address} className={selected.has(w.address) ? "row-selected" : ""}>
+                          <td>
+                            <input
+                              type="checkbox"
+                              checked={selected.has(w.address)}
+                              onChange={() => toggle(w.address)}
+                              aria-label={`select ${w.address}`}
+                            />
+                          </td>
+                          <td>
+                            <AddrLink address={w.address} />
+                          </td>
+                          <td className="dim">{w.label ?? "—"}</td>
+                          <td className={w.balance && Number(w.balance) > 0 ? "" : "warn"}>
+                            {w.balance === null ? "—" : `${Number(w.balance).toFixed(4)} ETH`}
+                          </td>
+                          <td>
+                            <button
+                              className="secondary"
+                              style={{ padding: "2px 10px", fontSize: 11 }}
+                              disabled={busy}
+                              onClick={() => void removeWallets([w.address])}
+                            >
+                              remove
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
             )}
             <p className="hint dim" style={{ marginBottom: 0 }}>
               Every wallet here fires on every queued drop. Removing one only

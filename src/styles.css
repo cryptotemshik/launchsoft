@@ -1361,6 +1361,11 @@ tr.project-detail td {
   }
 }
 
+/* Ticked rows in a selectable table. */
+tr.row-selected td {
+  background: rgba(0, 200, 5, 0.08);
+}
+
 /* A panel whose controls aren't usable yet — visible so the page still shows
    what belongs there, dimmed so it doesn't read as broken. */
 .panel-locked {

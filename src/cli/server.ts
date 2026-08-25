@@ -455,23 +455,39 @@ const server = createServer(async (req, res) => {
       return;
     }
 
+    // Removes one wallet (?address=) or a batch (JSON body {addresses:[…]}),
+    // so clearing out a set doesn't mean one request per wallet.
     if (url.pathname === "/api/wallets" && req.method === "DELETE") {
-      const address = (url.searchParams.get("address") ?? "").toLowerCase();
-      if (!/^0x[0-9a-f]{40}$/.test(address)) throw new Error("address must be a 0x address");
       if (activeJobId) {
         json(res, 409, { error: "a job is running — wait for it or abort first" });
         return;
       }
+      const body = await readBody(req).catch(() => ({}) as Record<string, unknown>);
+      const requested = Array.isArray(body.addresses)
+        ? (body.addresses as unknown[]).filter((a): a is string => typeof a === "string")
+        : [url.searchParams.get("address") ?? ""];
+
+      const wanted = new Set<string>();
+      for (const a of requested) {
+        const lower = a.trim().toLowerCase();
+        if (!/^0x[0-9a-f]{40}$/.test(lower)) throw new Error(`"${a}" is not a 0x address`);
+        wanted.add(lower);
+      }
+      if (wanted.size === 0) throw new Error("no addresses given");
+
       const cfg = loadConfig(CONFIG_PATH);
       const entries = loadKeyEntries(CONFIG_PATH, cfg.keysFile);
-      const kept = entries.filter((e) => privateKeyToAccount(e.key).address.toLowerCase() !== address);
-      if (kept.length === entries.length) {
-        json(res, 404, { error: "no wallet with that address" });
+      const kept = entries.filter(
+        (e) => !wanted.has(privateKeyToAccount(e.key).address.toLowerCase()),
+      );
+      const removed = entries.length - kept.length;
+      if (removed === 0) {
+        json(res, 404, { error: "none of those addresses are on the server" });
         return;
       }
       writeKeys(kept);
-      log(`wallets: removed ${address}`);
-      json(res, 200, await walletsView());
+      log(`wallets: removed ${removed} of ${wanted.size} requested`);
+      json(res, 200, { removed, ...(await walletsView()) });
       return;
     }
 
