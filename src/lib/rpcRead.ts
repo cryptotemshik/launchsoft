@@ -25,10 +25,12 @@ const BATCH_WAIT_MS = 16;
  * one used to broadcast a mint: there, batching would add latency to the only
  * request that matters.
  */
-export function readTransport(url: string): HttpTransport {
+export function readTransport(url: string, opts: { retryCount?: number } = {}): HttpTransport {
   return http(url, {
     batch: { batchSize: BATCH_SIZE, wait: BATCH_WAIT_MS },
-    retryCount: 3,
+    // Behind a fallback this should be low: every retry here is time spent on
+    // an endpoint already known to be failing, before the next one is tried.
+    retryCount: opts.retryCount ?? 3,
     retryDelay: 400,
     timeout: 20_000,
     // Robinhood Chain's RPC answers a throttled batch with HTTP 429 and a

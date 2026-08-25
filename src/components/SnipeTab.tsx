@@ -31,6 +31,7 @@ import {
   type RpcEndpoint,
 } from "../lib/rpcBlast";
 import { waitUntil } from "../lib/snipeTimer";
+import { makeReadClient, primaryReadHost } from "../lib/readClient";
 import { Steps, TxLink, type StepView } from "./Bits";
 import RemoteRunner from "./RemoteRunner";
 
@@ -117,9 +118,12 @@ const STEP_STATUS: Record<FireStatus, StepView["status"]> = {
 type Phase = "form" | "confirm" | "firing";
 type Timing = "now" | "wait";
 
+/** Where the pasted endpoints live between visits. */
+const RPC_KEY = "launchpad.snipe.rpcs";
+
 export default function SnipeTab() {
   const chainInfo = useActiveChain() ?? CHAINS_BY_ID.get(DEFAULT_CHAIN_ID);
-  const publicClient = usePublicClient({ chainId: chainInfo?.id });
+  const wagmiClient = usePublicClient({ chainId: chainInfo?.id });
 
   const [input, setInput] = useState("");
   const [target, setTarget] = useState<SnipeTarget | null>(null);
@@ -130,7 +134,11 @@ export default function SnipeTab() {
   const [stage, setStage] = useState<Stage>("public");
 
   const [keysText, setKeysText] = useState("");
-  const [extraRpcText, setExtraRpcText] = useState("");
+  // Remembered: retyping a keyed provider URL on every visit is how it ends up
+  // not being used at all.
+  const [extraRpcText, setExtraRpcText] = useState(
+    () => localStorage.getItem(RPC_KEY) ?? "",
+  );
   const [quantity, setQuantity] = useState(1);
   // "max" defers the number to the stage, which matters when queueing several
   // drops that each declare their own per-wallet cap.
@@ -182,17 +190,37 @@ export default function SnipeTab() {
     .map((a) => eligByAddr.get(a.address.toLowerCase())?.params)
     .find(Boolean);
 
+  const customRpcs = useMemo(
+    () =>
+      extraRpcText
+        .split("\n")
+        .map((l) => l.trim())
+        .filter(Boolean),
+    [extraRpcText],
+  );
+
+  useEffect(() => {
+    localStorage.setItem(RPC_KEY, extraRpcText);
+  }, [extraRpcText]);
+
+  /**
+   * Reads go through the pasted endpoint first, with the chain's public RPC
+   * only as a backstop. Without this the endpoint someone paid for would be
+   * used to broadcast and nothing else, while every balance, nonce and stage
+   * read still queued behind the public node's rate limit.
+   */
+  const publicClient = useMemo(() => {
+    if (!chainInfo || customRpcs.length === 0) return wagmiClient;
+    return makeReadClient(chainInfo.chain, customRpcs) as unknown as typeof wagmiClient;
+  }, [chainInfo, customRpcs, wagmiClient]);
+
   const endpoints: RpcEndpoint[] = useMemo(() => {
     const defaults = chainInfo?.chain.rpcUrls.default.http ?? [];
     // The chain's own sequencer, where it has one: an L2 orders by arrival
     // time, so this is the shortest path into the queue.
     const submit = chainInfo?.submitRpcs ?? [];
-    const extra = extraRpcText
-      .split("\n")
-      .map((l) => l.trim())
-      .filter(Boolean);
-    return parseRpcEndpoints([...submit, ...defaults, ...extra]);
-  }, [chainInfo, extraRpcText]);
+    return parseRpcEndpoints([...submit, ...defaults, ...customRpcs]);
+  }, [chainInfo, customRpcs]);
 
   // Live base fee, so the gas fields have a real number to aim above.
   useEffect(() => {
@@ -683,17 +711,15 @@ export default function SnipeTab() {
       </div>
 
       <div className="panel">
-        <h2>RPC endpoints</h2>
+        <h2>Your RPC</h2>
         <p className="dim">
-          Every endpoint gets the raw signed transaction at the same instant;
-          whichever accepts it first wins. The chain&apos;s <b>sequencer</b> and
-          public RPC are included automatically
-          {chainInfo?.submitRpcs?.length
-            ? " — this chain's sequencer is the shortest path into its ordering queue, since an L2 sequences by arrival time"
-            : ""}
-          . Paste extra endpoints (e.g. your own Alchemy URL) below, one per
-          line. All connections are opened before the stage opens, so firing
-          costs only a round-trip.
+          Paste your own endpoint (Alchemy, QuickNode, your own node) — one per
+          line, best first. It becomes the <b>main</b> RPC: every read on this
+          page goes through it, and the chain&apos;s public RPC drops to being
+          the backstop behind it, used only if yours errors. It is remembered
+          between visits, and handed to your server when you connect below, so
+          balances and nonces there stop queueing behind the public node&apos;s
+          rate limit.
         </p>
         <textarea
           rows={2}
@@ -702,8 +728,17 @@ export default function SnipeTab() {
           placeholder="https://….g.alchemy.com/v2/YOUR_KEY"
         />
         <p className="dim hint" style={{ marginBottom: 0 }}>
-          {endpoints.length} endpoint{endpoints.length === 1 ? "" : "s"}:{" "}
-          {endpoints.map((e) => e.label).join(", ") || "none"}
+          reads go to <b>{chainInfo ? primaryReadHost(chainInfo.chain, customRpcs) : "—"}</b>
+          {customRpcs.length === 0 ? " (the public RPC — paste yours above)" : ""}.
+          {" "}
+          Broadcast hits all {endpoints.length} endpoint
+          {endpoints.length === 1 ? "" : "s"} at once —{" "}
+          {endpoints.map((e) => e.label).join(", ") || "none"} — since{" "}
+          {chainInfo?.submitRpcs?.length
+            ? "the sequencer orders by arrival time and whichever path reaches it first wins"
+            : "whichever accepts it first wins"}
+          . All of them are connected before the stage opens, so firing costs
+          only a round-trip.
         </p>
       </div>
 
@@ -797,7 +832,7 @@ export default function SnipeTab() {
         stage={stage}
         quantity={maxQuantity ? "max" : quantity}
         gas={{ maxFeeGwei, tipGwei, limit: Number(gasLimitStr) || 250000 }}
-        extraRpcs={extraRpcText.split("\n").map((l) => l.trim()).filter(Boolean)}
+        extraRpcs={customRpcs}
         timing={timing}
       />
 
