@@ -12,6 +12,9 @@
   },
   "timing": "wait",
 
+  "_consolidateTo": "Optional. After every successful mint, move the tokens just minted to this address, so a twenty-wallet mint ends up listable from one wallet. It uses the token ids from the receipt, so it moves exactly what was minted and nothing else. The CONSOLIDATE_TO env var wins over this.",
+  "consolidateTo": "",
+
   "_telegram": "Optional. Prefer the TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID env vars, which win over this block, so the token never sits in a file you might paste somewhere.",
   "telegram": {
     "botToken": "",

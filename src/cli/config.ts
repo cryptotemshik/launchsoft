@@ -33,6 +33,11 @@ export interface SnipeConfig {
   timing: "now" | "wait";
   /** Optional Telegram bot for run summaries. Server-side only. */
   telegram?: { botToken: string; chatId: string };
+  /**
+   * When set, freshly minted tokens are moved to this address as soon as a run
+   * finishes — so a twenty-wallet mint ends up listable from one wallet.
+   */
+  consolidateTo?: `0x${string}`;
 }
 
 const DEFAULTS = {
@@ -84,8 +89,14 @@ export function loadConfig(path: string): SnipeConfig {
   const chatId = process.env.TELEGRAM_CHAT_ID ?? c.telegram?.chatId;
   const telegram = botToken && chatId ? { botToken, chatId } : undefined;
 
+  const consolidateTo = process.env.CONSOLIDATE_TO ?? c.consolidateTo;
+  if (consolidateTo && !/^0x[0-9a-fA-F]{40}$/.test(consolidateTo)) {
+    fail("consolidateTo must be a 0x address");
+  }
+
   return {
     telegram,
+    consolidateTo: consolidateTo as `0x${string}` | undefined,
     chainId: c.chainId,
     collection: c.collection as `0x${string}`,
     stage,

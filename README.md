@@ -572,6 +572,31 @@ Practical details:
 - Collect sends `balance − gas reserve` from each wallet and skips empty and
   dust ones automatically; the only input is the destination.
 
+### Gathering the minted NFTs onto one wallet
+
+A twenty-wallet mint leaves the tokens across twenty wallets, and listing them
+means signing into twenty wallets. **FUNDING → Collect NFTs** moves them onto
+one address first, so selling is one session.
+
+- **Scan wallets** lists what the set holds — optionally filtered to one
+  collection — then **Move all NFTs** transfers the lot. Transfers are signed
+  together and blasted at once, like everything else here.
+- **Automatically, after every mint:** set `consolidateTo` in
+  `snipe.config.json` (or the `CONSOLIDATE_TO` env var) to the destination.
+  That path uses the token ids decoded from the mint receipt, so it moves
+  exactly what the run minted and needs no holdings lookup at all.
+
+Two things worth knowing. `ERC721SeaDrop` is ERC721A and does **not** implement
+`tokenOfOwnerByIndex`, so holdings cannot be enumerated on-chain — the manual
+scan reads the chain's Blockscout index instead, and is therefore unavailable
+on chains without one (the automatic post-mint sweep still works there, since
+it already knows the ids). And a collection with **enforced royalties** points
+at a transfer validator that can reject transfers; a rejected move is reported
+per token rather than failing the batch.
+
+A failed sweep never fails the mint — the tokens are minted either way, and can
+be moved by hand afterwards.
+
 ### Queueing drops ahead of time
 
 Load a collection in the Snipe tab, press **+ QUEUE THIS DROP**, then load the

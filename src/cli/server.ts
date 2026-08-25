@@ -31,6 +31,7 @@ import { writeFileSync } from "node:fs";
 import { createPublicClient, http as viemHttp, formatEther, parseEther } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { collect, disperse } from "./funding";
+import { findHoldings, sweepNfts, type Holding } from "./nftSweep";
 import { getChainInfo } from "../chains";
 import { normalizePrivateKey } from "../lib/convert";
 import {
@@ -81,6 +82,8 @@ interface Job {
   result?: RunResult;
   error?: string;
   abort?: AbortController;
+  /** Set when the post-run NFT sweep ran. */
+  consolidated?: { to: string; moved: number; total: number };
 }
 
 const jobs: Job[] = [];
@@ -137,6 +140,7 @@ function jobView(j: Job) {
     logs: j.logs.slice(-60),
     plan: j.result?.plan,
     outcomes: j.result?.outcomes,
+    consolidated: j.consolidated,
     error: j.error,
   };
 }
@@ -294,7 +298,70 @@ async function execute(job: Job) {
   } finally {
     activeJobId = null;
   }
+  await consolidate(job);
   await notify(job);
+}
+
+/**
+ * Move what this run just minted onto one wallet, when the config asks for it.
+ * The token ids come from the receipts the run already decoded, so this needs
+ * no holdings lookup and can't pick up anything the run didn't mint.
+ */
+async function consolidate(job: Job) {
+  if (job.request.dryRun) return;
+  let cfg;
+  try {
+    cfg = loadConfig(CONFIG_PATH);
+  } catch {
+    return;
+  }
+  const to = cfg.consolidateTo;
+  if (!to) return;
+
+  const outcomes = job.result?.outcomes ?? [];
+  const collection = job.request.collection;
+  const entries = loadKeyEntries(CONFIG_PATH, cfg.keysFile);
+  const keyByAddress = new Map(
+    entries.map((e) => [privateKeyToAccount(e.key).address.toLowerCase(), e.key] as const),
+  );
+
+  const holdings = outcomes
+    .filter((o) => o.status === "mined" && (o.tokenIds?.length ?? 0) > 0)
+    // A wallet that is itself the destination has nothing to move.
+    .filter((o) => o.address.toLowerCase() !== to.toLowerCase())
+    .map((o) => ({
+      key: keyByAddress.get(o.address.toLowerCase()),
+      items: (o.tokenIds ?? []).map((tokenId) => ({ collection, tokenId })),
+    }))
+    .filter((h): h is { key: `0x${string}`; items: { collection: `0x${string}`; tokenId: string }[] } =>
+      Boolean(h.key),
+    );
+
+  if (holdings.length === 0) return;
+  try {
+    const r = await sweepNfts(
+      {
+        chainId: job.request.chainId,
+        extraRpcs: job.request.extraRpcs,
+        gas: { maxFeeGwei: job.request.gas.maxFeeGwei, tipGwei: job.request.gas.tipGwei },
+        holdings,
+        to,
+        dryRun: false,
+      },
+      (line) => {
+        const entry = `[${stamp()}] consolidate: ${line}`;
+        job.logs.push(entry);
+        console.log(entry);
+      },
+    );
+    job.consolidated = { to, moved: r.moved, total: r.total };
+  } catch (e) {
+    // A failed sweep must not turn a successful mint into a failed job — the
+    // tokens are minted either way and can be swept by hand.
+    const msg = e instanceof Error ? e.message : String(e);
+    job.logs.push(`[${stamp()}] consolidate failed: ${msg}`);
+    log(`consolidate failed for job ${job.id}: ${msg}`);
+  }
 }
 
 /**
@@ -405,6 +472,86 @@ const server = createServer(async (req, res) => {
       writeKeys(kept);
       log(`wallets: removed ${address}`);
       json(res, 200, await walletsView());
+      return;
+    }
+
+    // ── NFTs: see what the wallet set holds, and gather it onto one wallet ──
+    if (url.pathname === "/api/nfts" && req.method === "GET") {
+      const cfg = loadConfig(CONFIG_PATH);
+      const info = getChainInfo(cfg.chainId);
+      if (!info?.blockscoutApi) {
+        throw new Error(
+          `${info?.label ?? "this chain"} has no Blockscout API in the registry, so holdings ` +
+            `can't be listed. A sweep straight after a mint still works — it uses the token ids ` +
+            `from the receipt.`,
+        );
+      }
+      const only = url.searchParams.get("collection");
+      const entries = loadKeyEntries(CONFIG_PATH, cfg.keysFile);
+      const found = await Promise.all(
+        entries.map((e) =>
+          findHoldings(
+            info.blockscoutApi!,
+            privateKeyToAccount(e.key).address,
+            only && /^0x[0-9a-fA-F]{40}$/.test(only) ? (only as `0x${string}`) : undefined,
+          ).catch(() => [] as Holding[]),
+        ),
+      );
+      const holdings = found.flat();
+      json(res, 200, {
+        chain: info.label,
+        totalTokens: holdings.reduce((n, h) => n + h.tokenIds.length, 0),
+        holdings,
+      });
+      return;
+    }
+
+    if (url.pathname === "/api/sweep-nfts" && req.method === "POST") {
+      if (activeJobId) {
+        json(res, 409, { error: "a mint job is running — wait for it or abort first" });
+        return;
+      }
+      const body = await readBody(req);
+      const to = typeof body.to === "string" ? body.to : "";
+      if (!/^0x[0-9a-fA-F]{40}$/.test(to)) throw new Error("to must be a 0x address");
+      const only =
+        typeof body.collection === "string" && /^0x[0-9a-fA-F]{40}$/.test(body.collection)
+          ? (body.collection as `0x${string}`)
+          : undefined;
+
+      const cfg = loadConfig(CONFIG_PATH);
+      const info = getChainInfo(cfg.chainId);
+      if (!info?.blockscoutApi) throw new Error("this chain has no Blockscout API to read holdings from");
+      const entries = loadKeyEntries(CONFIG_PATH, cfg.keysFile);
+
+      const perWallet = await Promise.all(
+        entries.map(async (e) => {
+          const address = privateKeyToAccount(e.key).address;
+          const held = await findHoldings(info.blockscoutApi!, address, only).catch(() => []);
+          return {
+            key: e.key,
+            items: held.flatMap((h) =>
+              // Never move a token to the wallet it already sits on.
+              address.toLowerCase() === to.toLowerCase()
+                ? []
+                : h.tokenIds.map((tokenId) => ({ collection: h.collection, tokenId })),
+            ),
+          };
+        }),
+      );
+
+      const result = await sweepNfts(
+        {
+          chainId: cfg.chainId,
+          extraRpcs: cfg.extraRpcs,
+          gas: { maxFeeGwei: cfg.gas.maxFeeGwei, tipGwei: cfg.gas.tipGwei },
+          holdings: perWallet,
+          to: to as `0x${string}`,
+          dryRun: body.dryRun !== false,
+        },
+        (line) => log(`nft-sweep: ${line}`),
+      );
+      json(res, 200, result);
       return;
     }
 

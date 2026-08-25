@@ -48,6 +48,35 @@ interface CollectResult {
   outcomes: TransferOutcome[];
 }
 
+interface Holding {
+  wallet: string;
+  collection: string;
+  collectionName?: string;
+  tokenIds: string[];
+}
+
+interface NftsView {
+  chain?: string;
+  totalTokens: number;
+  holdings: Holding[];
+}
+
+interface NftOutcome {
+  wallet: string;
+  collection: string;
+  tokenId: string;
+  txHash?: string;
+  status: "sent" | "rejected";
+  detail?: string;
+}
+
+interface SweepNftsResult {
+  to: string;
+  moved: number;
+  total: number;
+  outcomes: NftOutcome[];
+}
+
 const eth = (wei?: string) => (wei ? Number(wei) / 1e18 : 0);
 
 export default function FundingTab() {
@@ -69,6 +98,13 @@ export default function FundingTab() {
   // Collect
   const [dest, setDest] = useState("");
   const [cResult, setCResult] = useState<CollectResult | null>(null);
+
+  // NFTs
+  const [nfts, setNfts] = useState<NftsView | null>(null);
+  const [nftDest, setNftDest] = useState("");
+  const [nftFilter, setNftFilter] = useState("");
+  const [nResult, setNResult] = useState<SweepNftsResult | null>(null);
+  const [nftError, setNftError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -140,6 +176,42 @@ export default function FundingTab() {
       if (!dryRun) await refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function scanNfts() {
+    setBusy(true);
+    setNftError(null);
+    setNfts(null);
+    try {
+      const q = nftFilter.trim() ? `?collection=${encodeURIComponent(nftFilter.trim())}` : "";
+      setNfts((await call(`/api/nfts${q}`)) as unknown as NftsView);
+    } catch (e) {
+      setNftError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function runNftSweep(dryRun: boolean) {
+    setBusy(true);
+    setNftError(null);
+    setNResult(null);
+    try {
+      const r = (await call("/api/sweep-nfts", {
+        method: "POST",
+        body: JSON.stringify({
+          to: nftDest.trim(),
+          collection: nftFilter.trim() || undefined,
+          dryRun,
+        }),
+      })) as unknown as SweepNftsResult;
+      setNResult(r);
+      if (!dryRun) await scanNfts();
+    } catch (e) {
+      setNftError(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
     }
@@ -329,8 +401,153 @@ export default function FundingTab() {
               </>
             ) : null}
           </div>
+
+          <div className="panel">
+            <h2>Collect NFTs — all wallets → one wallet</h2>
+            <p className="dim" style={{ marginTop: 0 }}>
+              After a multi-wallet mint the tokens sit across every wallet, and
+              listing them means signing into every wallet. This moves them onto
+              one address so you can sell from a single place. Transfers are
+              signed together and fired at once, same as everything else here.
+            </p>
+
+            <div style={{ display: "flex", gap: 10, alignItems: "end", flexWrap: "wrap" }}>
+              <div className="field" style={{ flex: 1, minWidth: 220 }}>
+                <label>only this collection (optional — blank means every NFT held)</label>
+                <input
+                  value={nftFilter}
+                  onChange={(e) => setNftFilter(e.target.value)}
+                  placeholder="0x… collection address"
+                />
+              </div>
+              <button className="secondary" disabled={busy} onClick={() => void scanNfts()}>
+                {busy ? "…" : "SCAN WALLETS"}
+              </button>
+            </div>
+
+            {nftError ? <p className="error">{nftError}</p> : null}
+
+            {nfts ? (
+              nfts.totalTokens === 0 ? (
+                <p className="dim" style={{ marginTop: 12, marginBottom: 0 }}>
+                  No NFTs found on the server&apos;s wallets
+                  {nftFilter.trim() ? " for that collection" : ""}.
+                </p>
+              ) : (
+                <>
+                  <p className="ok" style={{ marginTop: 12 }}>
+                    {nfts.totalTokens} token{nfts.totalTokens === 1 ? "" : "s"} across{" "}
+                    {nfts.holdings.length} wallet/collection pair
+                    {nfts.holdings.length === 1 ? "" : "s"}
+                  </p>
+                  <div className="table-wrap">
+                    <table className="projects">
+                      <thead>
+                        <tr>
+                          <th>wallet</th>
+                          <th>collection</th>
+                          <th>tokens</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {nfts.holdings.map((h) => (
+                          <tr key={h.wallet + h.collection}>
+                            <td className="dim">
+                              {h.wallet.slice(0, 10)}…{h.wallet.slice(-4)}
+                            </td>
+                            <td>{h.collectionName ?? `${h.collection.slice(0, 10)}…`}</td>
+                            <td>
+                              <b>{h.tokenIds.length}</b>
+                              <span className="dim">
+                                {" "}
+                                #{h.tokenIds.slice(0, 6).join(", #")}
+                                {h.tokenIds.length > 6 ? ` +${h.tokenIds.length - 6}` : ""}
+                              </span>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
+              )
+            ) : null}
+
+            <div className="field" style={{ marginTop: 12 }}>
+              <label>send every token to</label>
+              <input value={nftDest} onChange={(e) => setNftDest(e.target.value)} placeholder="0x…" />
+            </div>
+            <div style={{ display: "flex", gap: 10, marginTop: 12, flexWrap: "wrap" }}>
+              <button className="secondary" disabled={busy || !nftDest.trim()} onClick={() => void runNftSweep(true)}>
+                DRY RUN
+              </button>
+              <button className="primary" disabled={busy || !nftDest.trim()} onClick={() => void runNftSweep(false)}>
+                MOVE ALL NFTs
+              </button>
+            </div>
+
+            {nResult ? (
+              <>
+                <dl className="kv" style={{ marginTop: 14 }}>
+                  <dt>to</dt>
+                  <dd>
+                    <AddrLink address={nResult.to} />
+                  </dd>
+                  <dt>result</dt>
+                  <dd>
+                    <span className={nResult.moved > 0 ? "ok" : "warn"}>
+                      {nResult.moved}/{nResult.total} moved
+                    </span>
+                  </dd>
+                </dl>
+                <NftOutcomeList outcomes={nResult.outcomes} />
+              </>
+            ) : null}
+
+            <p className="hint dim" style={{ marginBottom: 0 }}>
+              To have this happen by itself after every mint, set{" "}
+              <code>consolidateTo</code> in the server&apos;s{" "}
+              <code>snipe.config.json</code> (or the <code>CONSOLIDATE_TO</code>{" "}
+              env var) to the destination address. The automatic sweep uses the
+              token ids from the mint receipt, so it moves exactly what was just
+              minted and nothing else.
+            </p>
+          </div>
         </>
       ) : null}
+    </div>
+  );
+}
+
+function NftOutcomeList({ outcomes }: { outcomes: NftOutcome[] }) {
+  if (outcomes.length === 0) return null;
+  return (
+    <div className="table-wrap" style={{ marginTop: 10 }}>
+      <table className="projects">
+        <thead>
+          <tr>
+            <th>wallet</th>
+            <th>token</th>
+            <th>status</th>
+            <th>tx</th>
+          </tr>
+        </thead>
+        <tbody>
+          {outcomes.slice(0, 100).map((o) => (
+            <tr key={o.wallet + o.collection + o.tokenId}>
+              <td className="dim">
+                {o.wallet.slice(0, 10)}…{o.wallet.slice(-4)}
+              </td>
+              <td>#{o.tokenId}</td>
+              <td>
+                <span className={o.status === "sent" ? "ok" : "error"}>{o.status}</span>
+                {o.detail ? <span className="dim"> — {o.detail}</span> : null}
+              </td>
+              <td>{o.txHash ? <TxLink hash={o.txHash} label="tx" /> : "—"}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }
