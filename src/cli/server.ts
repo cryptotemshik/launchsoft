@@ -32,7 +32,7 @@ import { resolve } from "node:path";
 import { execFile } from "node:child_process";
 import * as os from "node:os";
 import { promisify } from "node:util";
-import { createPublicClient, formatEther, parseEther } from "viem";
+import { formatEther, parseEther } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { collect, disperse } from "./funding";
 import { scanChain } from "./holdings";
@@ -54,7 +54,8 @@ import {
 import { runSnipe, type RunOptions, type RunResult } from "./runner";
 import { formatMintReport, sendTelegram, type MintedWallet } from "../lib/telegram";
 import { API_VERSION } from "../lib/apiVersion";
-import { mapWithLimit, readTransport } from "../lib/rpcRead";
+import { mapWithLimit } from "../lib/rpcRead";
+import { makeReadClient } from "../lib/readClient";
 import { currentTunnelUrl } from "./tunnelUrl";
 
 const stamp = () => new Date().toISOString().slice(11, 23);
@@ -431,10 +432,11 @@ function startAutoUpdate() {
 
 // ── Read endpoint ────────────────────────────────────────────────────────────
 /**
- * Which endpoint state is read from. Broadcasting a mint goes to every endpoint
- * at once, but reading a hundred balances has to pick one — and the public RPC
- * meters requests per minute, so a paid endpoint pasted into the panel belongs
- * here first.
+ * The endpoint reads are *attempted* against first.
+ *
+ * Not the only one they can use: every read client is built with the chain's
+ * own RPC behind this one, so a rate-limited provider costs a retry rather
+ * than the whole request. This is what the panel displays.
  */
 function readRpc(cfg: SnipeConfig, info: NonNullable<ReturnType<typeof getChainInfo>>): string {
   return cfg.extraRpcs[0] ?? info.chain.rpcUrls.default.http[0];
@@ -544,10 +546,7 @@ async function walletsView() {
     balances = balanceCache.values;
   } else if (info && addresses.length > 0) {
     try {
-      const client = createPublicClient({
-        chain: info.chain,
-        transport: readTransport(readRpc(cfg, info)),
-      });
+      const client = makeReadClient(info.chain, cfg.extraRpcs);
       const got = await mapWithLimit(addresses, (a) => client.getBalance({ address: a.address }));
       balances = new Map(addresses.map((a, i) => [a.address, formatEther(got[i])]));
       balanceCache = { at: Date.now(), values: balances };
@@ -556,22 +555,6 @@ async function walletsView() {
       // so a rate limit doesn't look like the wallets have no money.
       log(`balances unavailable: ${e instanceof Error ? e.message.split("\n")[0] : e}`);
       balances = balanceCache?.values ?? new Map();
-    }
-  }
-
-  if (balances.size === 0 && info && addresses.length > 0 && cfg.extraRpcs.length > 0) {
-    // The configured endpoint let us down; the chain's own RPC is slower and
-    // metered, but it is better than a list of dashes.
-    try {
-      const client = createPublicClient({
-        chain: info.chain,
-        transport: readTransport(info.chain.rpcUrls.default.http[0]),
-      });
-      const got = await mapWithLimit(addresses, (a) => client.getBalance({ address: a.address }));
-      balances = new Map(addresses.map((a, i) => [a.address, formatEther(got[i])]));
-      balanceCache = { at: Date.now(), values: balances };
-    } catch {
-      // Nothing more to try.
     }
   }
 
@@ -1015,10 +998,7 @@ const server = createServer(async (req, res) => {
       const costs = costByCollection(loadMints(CONFIG_PATH));
       const known = loadCollections(CONFIG_PATH);
 
-      const client = createPublicClient({
-        chain: info.chain,
-        transport: readTransport(readRpc(cfg, info)),
-      });
+      const client = makeReadClient(info.chain, cfg.extraRpcs);
 
       // One scan covers every collection these wallets have ever touched, so
       // a drop shows up here whether or not it was minted through this server
@@ -1103,10 +1083,7 @@ const server = createServer(async (req, res) => {
         (e) => privateKeyToAccount(e.key).address,
       );
       const started = Date.now();
-      const client = createPublicClient({
-        chain: info.chain,
-        transport: readTransport(readRpc(cfg, info)),
-      });
+      const client = makeReadClient(info.chain, cfg.extraRpcs);
 
       // Two queries cover every wallet and every collection, so there is
       // nothing to discover first and nothing that can be missed.
@@ -1165,10 +1142,7 @@ const server = createServer(async (req, res) => {
 
       // One scan for every wallet and every collection, so a sweep can't move
       // what it happened to see and silently leave the rest.
-      const client = createPublicClient({
-        chain: info.chain,
-        transport: readTransport(readRpc(cfg, info)),
-      });
+      const client = makeReadClient(info.chain, cfg.extraRpcs);
       const scan = await scanChain(client as never, addresses, { collection: only });
 
       const byWallet = new Map<string, Holding[]>();
