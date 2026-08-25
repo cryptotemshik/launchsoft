@@ -278,10 +278,27 @@ export default function FundingTab() {
         {error ? <p className="error">{error}</p> : null}
       </div>
 
-      {connected ? (
+      {!connected ? (
+        <div className="panel panel-locked">
+          <h2>Not connected</h2>
+          <p className="warn" style={{ marginTop: 0, marginBottom: 0 }}>
+            Connect to your server above to send ETH out to the wallet set,
+            sweep it back, and gather minted NFTs onto one wallet.
+          </p>
+        </div>
+      ) : (
         <>
           <div className="panel">
             <h2>Send out — one wallet → all {wallets.length}</h2>
+            <p className="dim" style={{ marginTop: 0 }}>
+              Where the money comes from: the server has to sign one transaction
+              per wallet, so it needs a key it can sign with — a browser wallet
+              would ask you to approve {wallets.length || "N"} times.
+              The simplest route is to send one ordinary transfer from
+              MetaMask into any wallet already on the server, then pick that one
+              below as the payer. Pasting a payer key works too and is never
+              stored.
+            </p>
             <div className="mode-toggle" style={{ marginBottom: 12 }}>
               <button className={payerMode === "key" ? "active" : ""} onClick={() => setPayerMode("key")}>
                 paste a payer key
@@ -514,7 +531,7 @@ export default function FundingTab() {
             </p>
           </div>
         </>
-      ) : null}
+      )}
     </div>
   );
 }

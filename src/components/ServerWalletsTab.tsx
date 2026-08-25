@@ -171,17 +171,25 @@ export default function ServerWalletsTab() {
         </p>
       </div>
 
-      {connected ? (
-        <>
-          <div className="panel">
+      {/* Shown even before connecting, disabled, so it's obvious this is where
+          wallets go rather than leaving the page looking empty. */}
+      <>
+        <div className={`panel ${connected ? "" : "panel-locked"}`}>
             <h2>Add wallets</h2>
             <p className="dim" style={{ marginTop: 0 }}>
               One private key per line. They upload to the server and this box is
               cleared straight away.
             </p>
+            {!connected ? (
+              <p className="warn" style={{ marginTop: 0 }}>
+                Connect to your server above first — that&apos;s where the wallets
+                are stored.
+              </p>
+            ) : null}
             <textarea
               rows={4}
               value={keysText}
+              disabled={!connected}
               onChange={(e) => setKeysText(e.target.value)}
               placeholder={"0x…\n0x…"}
               autoComplete="off"
@@ -191,18 +199,31 @@ export default function ServerWalletsTab() {
             <div style={{ display: "flex", gap: 10, alignItems: "end", flexWrap: "wrap", marginTop: 8 }}>
               <div className="field" style={{ flex: 1, minWidth: 180 }}>
                 <label>label (optional — shown next to these wallets)</label>
-                <input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="e.g. batch A" />
+                <input
+                  value={label}
+                  disabled={!connected}
+                  onChange={(e) => setLabel(e.target.value)}
+                  placeholder="e.g. batch A"
+                />
               </div>
-              <button className="primary" disabled={busy || !keysText.trim()} onClick={() => void addWallets()}>
+              <button
+                className="primary"
+                disabled={!connected || busy || !keysText.trim()}
+                onClick={() => void addWallets()}
+              >
                 UPLOAD TO SERVER
               </button>
             </div>
             {notice ? <p className="ok" style={{ marginBottom: 0 }}>{notice}</p> : null}
           </div>
 
-          <div className="panel">
+          <div className={`panel ${connected ? "" : "panel-locked"}`}>
             <h2>On the server ({wallets.length})</h2>
-            {wallets.length === 0 ? (
+            {!connected ? (
+              <p className="dim" style={{ marginBottom: 0 }}>
+                Connect above to see the wallets already stored on your server.
+              </p>
+            ) : wallets.length === 0 ? (
               <p className="dim" style={{ marginBottom: 0 }}>
                 No wallets yet — add some above and the runner will mint with them.
               </p>
@@ -249,8 +270,7 @@ export default function ServerWalletsTab() {
               contents are untouched.
             </p>
           </div>
-        </>
-      ) : null}
+      </>
     </div>
   );
 }

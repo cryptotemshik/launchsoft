@@ -1361,6 +1361,16 @@ tr.project-detail td {
   }
 }
 
+/* A panel whose controls aren't usable yet — visible so the page still shows
+   what belongs there, dimmed so it doesn't read as broken. */
+.panel-locked {
+  opacity: 0.62;
+}
+.panel-locked input:disabled,
+.panel-locked textarea:disabled {
+  cursor: not-allowed;
+}
+
 /* Remote runner log tail. */
 .runner-log {
   margin: 12px 0 0;
