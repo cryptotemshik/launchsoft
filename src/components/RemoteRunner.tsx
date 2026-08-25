@@ -227,9 +227,14 @@ export default function RemoteRunner(props: RemoteRunnerProps) {
         Queue drops hours in advance on a server sitting next to the chain&apos;s
         sequencer. Each job is armed ahead of its stage (nonces read, transactions
         pre-signed, connections warmed) and fires on the server&apos;s own clock —
-        so this is exactly as fast as starting it over SSH, and you can close the
-        browser once a job is queued. Private keys stay on the server; this panel
-        only ever sees addresses.
+        so this is exactly as fast as starting it over SSH.
+      </p>
+      <p className="dim">
+        <b>Wallets come from the server</b>, from its <code>snipe.keys</code> file —
+        not from the Wallets box above, which the server never sees. They live
+        there permanently, so once a drop is queued you can close this page (or
+        turn the phone off) and it will still fire and report to Telegram. Keys
+        never travel to this panel; it only ever receives addresses and balances.
       </p>
 
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>

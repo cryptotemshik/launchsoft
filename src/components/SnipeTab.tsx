@@ -620,7 +620,15 @@ export default function SnipeTab() {
       </div>
 
       <div className="panel">
-        <h2>Wallets</h2>
+        <h2>Wallets — for firing from this browser</h2>
+        <p className="warn" style={{ marginTop: 0 }}>
+          <b>Using the remote runner below? Leave this empty.</b> These two are
+          separate: the server fires with its own wallets (the ones in{" "}
+          <code>snipe.keys</code> on the box), and never sees what you type here.
+          This box is only for minting straight from this tab, without a server —
+          which is slower, because your transaction travels from here rather than
+          from beside the sequencer.
+        </p>
         <p className="dim">
           Paste one private key per line — hidden from view, held in this
           tab&apos;s memory only, never written to disk or sent anywhere except
