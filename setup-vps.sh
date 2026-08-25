@@ -9,12 +9,19 @@
 # Safe to re-run: it skips what is already installed and never overwrites an
 # existing config, keys file or token.
 #
-#   curl -fsSL https://raw.githubusercontent.com/cryptotemshik/launchsoft/claude/pensive-ramanujan-w5cpew/setup-vps.sh -o setup-vps.sh
-#   less setup-vps.sh          # read it before running anything as root
+# The repository is private, so the usual route is to clone it first (which
+# brings this script with it) and run it from inside:
+#
+#   git clone https://<TOKEN>@github.com/cryptotemshik/launchsoft.git
+#   cd launchsoft
 #   bash setup-vps.sh
+#
+# Running it from anywhere else works too if GITHUB_TOKEN is exported, or if the
+# repo has been made public.
 set -euo pipefail
 
 REPO_URL="${REPO_URL:-https://github.com/cryptotemshik/launchsoft.git}"
+GITHUB_TOKEN="${GITHUB_TOKEN:-}"
 REPO_DIR="${REPO_DIR:-$HOME/launchsoft}"
 SEQUENCER="${SEQUENCER:-https://sequencer.mainnet.chain.robinhood.com}"
 PORT="${SNIPE_PORT:-8787}"
@@ -74,11 +81,27 @@ fi
 
 # ── 4. Code ─────────────────────────────────────────────────────────────────
 bold "4/6  Fetching the code"
-if [ -d "$REPO_DIR/.git" ]; then
+# Run from inside a clone (the normal case for a private repo) and that clone
+# is what we set up, wherever it happens to live.
+if [ -f "./package.json" ] && [ -d "./.git" ] && [ -f "./src/cli/server.ts" ]; then
+  REPO_DIR="$(pwd)"
+  git pull --ff-only >/dev/null 2>&1 || warn "couldn't fast-forward; keeping what's there"
+  ok "using this checkout: $REPO_DIR"
+elif [ -d "$REPO_DIR/.git" ]; then
   git -C "$REPO_DIR" pull --ff-only >/dev/null 2>&1 || warn "couldn't fast-forward; keeping what's there"
   ok "updated $REPO_DIR"
 else
-  git clone --quiet "$REPO_URL" "$REPO_DIR"
+  CLONE_URL="$REPO_URL"
+  [ -n "$GITHUB_TOKEN" ] && CLONE_URL="https://x-access-token:${GITHUB_TOKEN}@${REPO_URL#https://}"
+  if ! git clone --quiet "$CLONE_URL" "$REPO_DIR" 2>/dev/null; then
+    die "couldn't clone $REPO_URL — it is private. Either clone it yourself with a
+  GitHub token and re-run this script from inside that folder:
+
+    git clone https://<YOUR_TOKEN>@github.com/cryptotemshik/launchsoft.git
+    cd launchsoft && bash setup-vps.sh
+
+  or export GITHUB_TOKEN=<YOUR_TOKEN> and run this again."
+  fi
   ok "cloned into $REPO_DIR"
 fi
 cd "$REPO_DIR"
