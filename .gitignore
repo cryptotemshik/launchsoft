@@ -6,5 +6,6 @@ dist/
 # Headless snipe runner — never commit real keys or a live config.
 snipe.keys
 snipe.config.json
+snipe.env
 *.keys
 !*.keys.example
