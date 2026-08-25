@@ -63,6 +63,10 @@ export interface WalletPlan {
 
 export interface RunPlan {
   chain: string;
+  chainId: number;
+  /** OpenSea slug, so callers can build item/profile links without the registry. */
+  openSeaSlug: string;
+  explorerUrl: string;
   collection: `0x${string}`;
   name: string;
   totalSupply: string;
@@ -83,6 +87,33 @@ export interface WalletOutcome {
   txHash?: string;
   status: "mined" | "reverted" | "rejected" | "timeout" | "skipped";
   detail?: string;
+  /** Token ids this wallet actually received, decoded from the receipt. */
+  tokenIds?: string[];
+}
+
+/** ERC-721 Transfer(address,address,uint256). */
+const TRANSFER_TOPIC =
+  "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
+const ZERO_TOPIC =
+  "0x0000000000000000000000000000000000000000000000000000000000000000";
+
+/** Ids minted to `to` in this receipt — mints are Transfers out of the zero address. */
+function mintedIds(
+  logs: readonly { address: string; topics: readonly string[] }[],
+  collection: string,
+  to: string,
+): string[] {
+  const toTopic = `0x${to.slice(2).toLowerCase().padStart(64, "0")}`;
+  return logs
+    .filter(
+      (l) =>
+        l.address.toLowerCase() === collection.toLowerCase() &&
+        l.topics[0] === TRANSFER_TOPIC &&
+        l.topics[1] === ZERO_TOPIC &&
+        l.topics[2]?.toLowerCase() === toTopic &&
+        l.topics[3] !== undefined,
+    )
+    .map((l) => BigInt(l.topics[3]!).toString());
 }
 
 export interface RunResult {
@@ -251,6 +282,9 @@ export async function runSnipe(opts: RunOptions, hooks: RunHooks): Promise<RunRe
   const now = Math.floor(Date.now() / 1000);
   const plan: RunPlan = {
     chain: info.label,
+    chainId: info.id,
+    openSeaSlug: info.openSeaSlug,
+    explorerUrl: info.explorerUrl,
     collection: opts.collection,
     name: drop.name,
     totalSupply: drop.totalSupply.toString(),
@@ -375,10 +409,12 @@ export async function runSnipe(opts: RunOptions, hooks: RunHooks): Promise<RunRe
         return;
       }
       const ok = receipt.status === "success";
+      const ids = ok ? mintedIds(receipt.logs, opts.collection, address) : [];
       log(
-        `${ok ? "MINED     " : "REVERTED  "} ${address} — block ${receipt.blockNumber}, gas ${receipt.gasUsed}`,
+        `${ok ? "MINED     " : "REVERTED  "} ${address} — block ${receipt.blockNumber}, gas ${receipt.gasUsed}` +
+          (ids.length ? ` — tokens ${ids.join(", ")}` : ""),
       );
-      outcomes.push({ address, txHash, status: ok ? "mined" : "reverted" });
+      outcomes.push({ address, txHash, status: ok ? "mined" : "reverted", tokenIds: ids });
     }),
   );
 

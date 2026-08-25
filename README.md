@@ -516,13 +516,47 @@ the panel and press **connect**.
 | `SNIPE_HOST` | `127.0.0.1` | keep as-is unless you know why not |
 | `SNIPE_ORIGINS` | `*` | comma-separated allowed origins; set to your site to narrow |
 | `SNIPE_CONFIG` | `snipe.config.json` | config whose keys/defaults the server uses |
+| `SNIPE_ARM_LEAD_MS` | `120000` | how far ahead of a stage a job is armed |
+| `TELEGRAM_BOT_TOKEN` | — | enables run summaries (with the chat id) |
+| `TELEGRAM_CHAT_ID` | — | where to send them |
 
 Routes: `GET /api/ping` (unauthenticated liveness), `GET /api/status`,
-`POST /api/snipe`, `POST /api/abort`. Everything but ping needs
+`POST /api/queue`, `DELETE /api/queue?id=…`, `POST /api/abort`, and
+`POST /api/snipe` (queues one job immediately). Everything but ping needs
 `Authorization: Bearer $SNIPE_TOKEN`, compared in constant time. Keys never
 leave the server — the panel receives addresses and balances only.
 
 Under pm2: `pm2 start "npm run snipe:server" --name snipe-api && pm2 save`.
+
+### Queueing drops ahead of time
+
+Load a collection in the Snipe tab, press **+ QUEUE THIS DROP**, then load the
+next one and queue it too — ten drops hours in advance is the intended use. The
+queue table shows each job's stage, countdown and status; click a row for its
+wallets, outcomes and log tail.
+
+Jobs run **strictly one at a time**, soonest stage first, and that is not a
+simplification to fix later: every wallet's transactions are pre-signed against
+a specific nonce, so two jobs armed at once for the same wallets would sign the
+same nonce twice and the second would be rejected. The scheduler arms the next
+job only once the previous has settled, reading fresh nonces at arm time —
+which costs nothing, because arming happens `SNIPE_ARM_LEAD_MS` (2 min by
+default) before the stage opens. A job whose stage is further out than that
+simply waits in the queue.
+
+### Telegram summaries
+
+Set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` and every finished run posts a
+summary: total NFTs, how many wallets, then one line per wallet with its
+OpenSea profile, its minted token ids as direct item links, and the tx. Failed
+and skipped wallets are listed with the reason.
+
+To get the two values: message [@BotFather](https://t.me/BotFather) → `/newbot`
+for the token, then message your new bot once and read the chat id from
+`https://api.telegram.org/bot<TOKEN>/getUpdates`.
+
+A notification that fails to send is logged and otherwise ignored — it can
+never turn a successful mint into a failed run.
 
 ### Config
 

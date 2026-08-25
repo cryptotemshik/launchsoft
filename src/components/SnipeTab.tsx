@@ -772,6 +772,7 @@ export default function SnipeTab() {
 
       <RemoteRunner
         collection={target?.address}
+        collectionName={target?.name}
         stage={stage}
         quantity={quantity}
         gas={{ maxFeeGwei, tipGwei, limit: Number(gasLimitStr) || 250000 }}

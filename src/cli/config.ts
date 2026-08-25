@@ -31,6 +31,8 @@ export interface SnipeConfig {
   };
   /** "wait" holds until the stage opens; "now" fires immediately. */
   timing: "now" | "wait";
+  /** Optional Telegram bot for run summaries. Server-side only. */
+  telegram?: { botToken: string; chatId: string };
 }
 
 const DEFAULTS = {
@@ -76,7 +78,14 @@ export function loadConfig(path: string): SnipeConfig {
   const gas = { ...DEFAULTS.gas, ...(c.gas ?? {}) };
   if (!Number.isInteger(gas.limit) || gas.limit <= 0) fail("gas.limit must be a positive integer");
 
+  // Env wins over the file, so the bot token can stay out of the config
+  // entirely on a shared box.
+  const botToken = process.env.TELEGRAM_BOT_TOKEN ?? c.telegram?.botToken;
+  const chatId = process.env.TELEGRAM_CHAT_ID ?? c.telegram?.chatId;
+  const telegram = botToken && chatId ? { botToken, chatId } : undefined;
+
   return {
+    telegram,
     chainId: c.chainId,
     collection: c.collection as `0x${string}`,
     stage,

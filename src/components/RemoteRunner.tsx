@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { formatCountdown, unixToLocalAndUtc } from "../lib/convert";
 
 /**
  * Control panel for a snipe runner living next to the sequencer.
  *
- * What this is NOT: a path for the transaction. Pressing "fire" only *starts*
- * a run on the server; from that moment the server holds and fires on its own
- * clock, so a run started here is exactly as fast as one typed over SSH. The
- * browser can be closed once a run is holding.
+ * What this is NOT: a path for the transaction. Queueing a drop only tells the
+ * server what to do; the server arms it ahead of the stage and fires on its own
+ * clock, so a run queued here is exactly as fast as one typed over SSH — and
+ * the browser can be closed the moment a job is queued.
  *
  * Keys never come near this component — the server keeps them and reports only
  * addresses and balances.
@@ -40,24 +41,48 @@ interface Outcome {
   txHash?: string;
   status: string;
   detail?: string;
+  tokenIds?: string[];
 }
 
-interface StatusView {
-  running: boolean;
-  status?: string;
-  dryRun?: boolean;
+interface Job {
+  id: string;
+  label: string;
+  status: "queued" | "armed" | "done" | "error" | "aborted";
+  addedAt: number;
+  startTime?: number;
+  collection: string;
+  stage: string;
+  quantity: number;
+  dryRun: boolean;
   logs?: string[];
   plan?: RunPlan;
   outcomes?: Outcome[];
   error?: string;
 }
 
+interface StatusView {
+  running: boolean;
+  activeJobId: string | null;
+  armLeadMs: number;
+  jobs: Job[];
+}
+
 const URL_KEY = "launchpad.runner.url";
 const TOKEN_KEY = "launchpad.runner.token";
+
+const STATUS_CLASS: Record<Job["status"], string> = {
+  queued: "dim",
+  armed: "warn",
+  done: "ok",
+  error: "error",
+  aborted: "dim",
+};
 
 export interface RemoteRunnerProps {
   /** Collection currently loaded in the tab, if any. */
   collection?: `0x${string}`;
+  /** Its name, for a readable queue label. */
+  collectionName?: string;
   stage: "public" | "allowlist";
   quantity: number;
   gas: { maxFeeGwei: string; tipGwei: string; limit: number };
@@ -75,9 +100,16 @@ export default function RemoteRunner(props: RemoteRunnerProps) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<StatusView | null>(null);
+  const [openJob, setOpenJob] = useState<string | null>(null);
+  const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
   const pollRef = useRef<ReturnType<typeof setInterval>>();
 
   const base = url.trim().replace(/\/+$/, "");
+
+  useEffect(() => {
+    const t = setInterval(() => setNow(Math.floor(Date.now() / 1000)), 1000);
+    return () => clearInterval(t);
+  }, []);
 
   const call = useCallback(
     async (path: string, init?: RequestInit) => {
@@ -108,7 +140,7 @@ export default function RemoteRunner(props: RemoteRunnerProps) {
     }
   }, [call]);
 
-  // Poll while a run is in flight so the log tail stays live.
+  // Poll faster while something is armed so the log tail stays live.
   useEffect(() => {
     clearInterval(pollRef.current);
     if (!connected) return;
@@ -132,17 +164,18 @@ export default function RemoteRunner(props: RemoteRunnerProps) {
     }
   }
 
-  async function fire(dryRun: boolean) {
+  async function enqueue(dryRun: boolean) {
     if (!props.collection) {
-      setError("Read a collection above first — the runner mints the one loaded here.");
+      setError("Read a collection above first — the queue takes the one loaded here.");
       return;
     }
     setBusy(true);
     setError(null);
     try {
-      await call("/api/snipe", {
+      await call("/api/queue", {
         method: "POST",
         body: JSON.stringify({
+          label: props.collectionName || props.collection.slice(0, 10),
           collection: props.collection,
           stage: props.stage,
           quantity: props.quantity,
@@ -152,6 +185,18 @@ export default function RemoteRunner(props: RemoteRunnerProps) {
           dryRun,
         }),
       });
+      await refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function remove(id: string) {
+    setBusy(true);
+    try {
+      await call(`/api/queue?id=${encodeURIComponent(id)}`, { method: "DELETE" });
       await refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -172,17 +217,19 @@ export default function RemoteRunner(props: RemoteRunnerProps) {
     }
   }
 
-  const plan = status?.plan;
+  const jobs = status?.jobs ?? [];
+  const pending = jobs.filter((j) => j.status === "queued" || j.status === "armed");
 
   return (
     <div className="panel">
-      <h2>Remote runner (VPS)</h2>
+      <h2>Remote runner (VPS) — queue</h2>
       <p className="dim" style={{ marginTop: 0 }}>
-        Runs the snipe on a server next to the chain&apos;s sequencer instead of
-        in this tab. Pressing fire only <b>starts</b> the run — the server then
-        holds and fires on its own clock, so this is exactly as fast as starting
-        it over SSH, and you can close the browser once it&apos;s holding.
-        Private keys stay on the server; this panel only ever sees addresses.
+        Queue drops hours in advance on a server sitting next to the chain&apos;s
+        sequencer. Each job is armed ahead of its stage (nonces read, transactions
+        pre-signed, connections warmed) and fires on the server&apos;s own clock —
+        so this is exactly as fast as starting it over SSH, and you can close the
+        browser once a job is queued. Private keys stay on the server; this panel
+        only ever sees addresses.
       </p>
 
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
@@ -217,99 +264,172 @@ export default function RemoteRunner(props: RemoteRunnerProps) {
           />
           remember token in this browser
         </label>
-        {connected ? <span className="pill ok">● connected</span> : null}
+        {connected ? (
+          <span className="pill ok">
+            ● connected{pending.length ? ` · ${pending.length} pending` : ""}
+          </span>
+        ) : null}
       </div>
       {error ? <p className="error">{error}</p> : null}
 
       {connected ? (
         <>
           <div style={{ display: "flex", gap: 10, marginTop: 14, flexWrap: "wrap" }}>
-            <button className="secondary" disabled={busy || status?.running} onClick={() => void fire(true)}>
-              DRY RUN on server
+            <button className="secondary" disabled={busy} onClick={() => void enqueue(true)}>
+              + queue as DRY RUN
             </button>
-            <button className="primary" disabled={busy || status?.running} onClick={() => void fire(false)}>
-              ARM &amp; FIRE on server
+            <button className="primary" disabled={busy} onClick={() => void enqueue(false)}>
+              + QUEUE THIS DROP
             </button>
             {status?.running ? (
               <button className="danger" disabled={busy} onClick={() => void abort()}>
-                abort
+                abort running job
               </button>
             ) : null}
           </div>
           {!props.collection ? (
             <p className="hint dim" style={{ marginBottom: 0 }}>
-              Read a collection above — the runner uses the one loaded here, plus
-              the stage, quantity, gas and RPC settings on this page.
+              Read a collection above — the queue takes the one loaded here, plus
+              the stage, quantity, gas and RPC settings on this page. Load the
+              next collection and queue it too; repeat for as many as you like.
             </p>
-          ) : null}
-
-          {status?.status ? (
-            <p
-              className={
-                status.status === "error"
-                  ? "error"
-                  : status.running
-                    ? "warn"
-                    : status.status === "done"
-                      ? "ok"
-                      : "dim"
-              }
-              style={{ marginBottom: 4 }}
-            >
-              run: {status.status}
-              {status.dryRun ? " (dry run)" : ""}
-              {status.error ? ` — ${status.error}` : ""}
+          ) : (
+            <p className="hint dim" style={{ marginBottom: 0 }}>
+              Queues <b>{props.collectionName || props.collection}</b> ·{" "}
+              {props.stage} · {props.quantity}/wallet. Jobs run one at a time, in
+              stage order — the server arms each one{" "}
+              {status ? Math.round(status.armLeadMs / 1000) : 120}s before it opens.
             </p>
-          ) : null}
+          )}
 
-          {plan ? (
-            <dl className="kv" style={{ marginTop: 10 }}>
-              <dt>collection</dt>
-              <dd>
-                {plan.name} — {plan.totalSupply}/{plan.maxSupply}
-              </dd>
-              <dt>stage</dt>
-              <dd>
-                {plan.stage} · {plan.quantity}/wallet · max {plan.perWallet}
-              </dd>
-              <dt>endpoints</dt>
-              <dd>{plan.endpoints.join(", ")}</dd>
-              <dt>wallets</dt>
-              <dd>
-                {plan.wallets.map((w) => (
-                  <div key={w.address}>
-                    {w.address.slice(0, 10)}…{w.address.slice(-4)}{" "}
-                    <span className={w.note ? "warn" : "dim"}>
-                      {(Number(w.balanceWei) / 1e18).toFixed(4)} ETH
-                      {w.note ? ` — ${w.note}` : ""}
-                    </span>
-                  </div>
-                ))}
-              </dd>
-            </dl>
-          ) : null}
+          {jobs.length === 0 ? (
+            <p className="dim" style={{ marginTop: 14, marginBottom: 0 }}>
+              Queue is empty.
+            </p>
+          ) : (
+            <div className="table-wrap" style={{ marginTop: 14 }}>
+              <table className="projects">
+                <thead>
+                  <tr>
+                    <th>drop</th>
+                    <th>stage</th>
+                    <th>opens</th>
+                    <th>status</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {jobs.map((j) => {
+                    const opensIn = j.startTime ? j.startTime - now : null;
+                    const minted =
+                      j.outcomes?.filter((o) => o.status === "mined").reduce((n, o) => n + (o.tokenIds?.length ?? 0), 0) ??
+                      0;
+                    return (
+                      <tr
+                        key={j.id}
+                        className="project-row"
+                        onClick={() => setOpenJob(openJob === j.id ? null : j.id)}
+                      >
+                        <td>
+                          {j.label}
+                          {j.dryRun ? <span className="dim"> (dry)</span> : null}
+                        </td>
+                        <td className="dim">
+                          {j.stage} ×{j.quantity}
+                        </td>
+                        <td className="dim">
+                          {j.startTime
+                            ? opensIn && opensIn > 0
+                              ? `in ${formatCountdown(opensIn)}`
+                              : unixToLocalAndUtc(j.startTime).local
+                            : "—"}
+                        </td>
+                        <td>
+                          <span className={STATUS_CLASS[j.status]}>{j.status}</span>
+                          {j.status === "done" && minted > 0 ? (
+                            <span className="ok"> · {minted} NFT</span>
+                          ) : null}
+                        </td>
+                        <td>
+                          {j.status === "queued" ? (
+                            <button
+                              className="secondary"
+                              style={{ padding: "2px 10px", fontSize: 11 }}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                void remove(j.id);
+                              }}
+                            >
+                              remove
+                            </button>
+                          ) : null}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
 
-          {status?.outcomes && status.outcomes.length > 0 ? (
-            <dl className="kv">
-              <dt>result</dt>
-              <dd>
-                {status.outcomes.map((o) => (
-                  <div key={o.address + (o.txHash ?? "")}>
-                    <span className={o.status === "mined" ? "ok" : o.status === "skipped" ? "dim" : "error"}>
-                      {o.status}
-                    </span>{" "}
-                    {o.address.slice(0, 10)}…{o.address.slice(-4)}
-                    {o.detail ? <span className="dim"> — {o.detail}</span> : null}
-                  </div>
-                ))}
-              </dd>
-            </dl>
-          ) : null}
-
-          {status?.logs && status.logs.length > 0 ? (
-            <pre className="runner-log">{status.logs.slice(-14).join("\n")}</pre>
-          ) : null}
+          {openJob ? <JobDetail job={jobs.find((j) => j.id === openJob)} /> : null}
         </>
+      ) : null}
+    </div>
+  );
+}
+
+/** Expanded view for one queued/finished job: outcomes, then the log tail. */
+function JobDetail({ job }: { job?: Job }) {
+  if (!job) return null;
+  return (
+    <div style={{ marginTop: 14 }}>
+      {job.error ? <p className="error">{job.error}</p> : null}
+      {job.plan ? (
+        <dl className="kv">
+          <dt>collection</dt>
+          <dd>
+            {job.plan.name} — {job.plan.totalSupply}/{job.plan.maxSupply}
+          </dd>
+          <dt>endpoints</dt>
+          <dd>{job.plan.endpoints.join(", ")}</dd>
+          <dt>wallets</dt>
+          <dd>
+            {job.plan.wallets.map((w) => (
+              <div key={w.address}>
+                {w.address.slice(0, 10)}…{w.address.slice(-4)}{" "}
+                <span className={w.note ? "warn" : "dim"}>
+                  {(Number(w.balanceWei) / 1e18).toFixed(4)} ETH
+                  {w.note ? ` — ${w.note}` : ""}
+                </span>
+              </div>
+            ))}
+          </dd>
+        </dl>
+      ) : null}
+
+      {job.outcomes && job.outcomes.length > 0 ? (
+        <dl className="kv">
+          <dt>result</dt>
+          <dd>
+            {job.outcomes.map((o) => (
+              <div key={o.address + (o.txHash ?? "")}>
+                <span className={o.status === "mined" ? "ok" : o.status === "skipped" ? "dim" : "error"}>
+                  {o.status}
+                </span>{" "}
+                {o.address.slice(0, 10)}…{o.address.slice(-4)}
+                {o.tokenIds && o.tokenIds.length > 0 ? (
+                  <span className="dim"> — #{o.tokenIds.join(", #")}</span>
+                ) : null}
+                {o.detail ? <span className="dim"> — {o.detail}</span> : null}
+              </div>
+            ))}
+          </dd>
+        </dl>
+      ) : null}
+
+      {job.logs && job.logs.length > 0 ? (
+        <pre className="runner-log">{job.logs.slice(-14).join("\n")}</pre>
       ) : null}
     </div>
   );
