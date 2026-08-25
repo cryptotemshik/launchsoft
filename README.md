@@ -542,6 +542,36 @@ and the file keeps hand-written labels and comments.
 
 Both tabs share one connection — connect in either and the other is connected.
 
+### Funding the wallet set
+
+**SNIPE → FUNDING** fans ETH out to every stored wallet before a mint, and
+sweeps it back afterwards. Both run on the server: all transfers are signed
+together and blasted at once, so a hundred of them cost about one round-trip
+rather than a hundred.
+
+The two directions differ only in nonces, and that difference is the design:
+disperse sends N transactions from one wallet, so they take sequential nonces
+`n … n+N-1`; collect sends one transaction from each of N wallets, so every
+nonce is independent. Both are signed and fired in one go either way.
+
+Practical details:
+
+- **How much per wallet.** On this chain the binding cost is the gas
+  *reservation*, not the fee. A node checks the wallet holds
+  `gasLimit × maxFee` before accepting a transaction at all, while the fee
+  actually paid is tiny — real SeaDrop mints measured 107k–236k gas at a
+  ~0.022 gwei base fee, i.e. **0.0000025–0.0000053 ETH each**. With the default
+  250,000 limit at 2 gwei the reservation is **0.0005 ETH**, so **0.001 ETH per
+  wallet** is a comfortable float for a free mint. Add the mint price for a paid
+  one.
+- **Skip-if-funded** is on by default, so re-running after a partial failure
+  tops up only the wallets that still need it.
+- The payer is either a stored wallet or a one-off key pasted for that call
+  and never written to disk. A payer that is also a stored wallet is excluded
+  from its own target list.
+- Collect sends `balance − gas reserve` from each wallet and skips empty and
+  dust ones automatically; the only input is the destination.
+
 ### Queueing drops ahead of time
 
 Load a collection in the Snipe tab, press **+ QUEUE THIS DROP**, then load the

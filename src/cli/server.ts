@@ -28,8 +28,9 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { timingSafeEqual, randomUUID } from "node:crypto";
 import { writeFileSync } from "node:fs";
-import { createPublicClient, http as viemHttp, formatEther } from "viem";
+import { createPublicClient, http as viemHttp, formatEther, parseEther } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
+import { collect, disperse } from "./funding";
 import { getChainInfo } from "../chains";
 import { normalizePrivateKey } from "../lib/convert";
 import {
@@ -404,6 +405,91 @@ const server = createServer(async (req, res) => {
       writeKeys(kept);
       log(`wallets: removed ${address}`);
       json(res, 200, await walletsView());
+      return;
+    }
+
+    // ── Funding: fan money out to the wallet set, or sweep it back ──────────
+    if (url.pathname === "/api/disperse" && req.method === "POST") {
+      if (activeJobId) {
+        json(res, 409, { error: "a mint job is running — wait for it or abort first" });
+        return;
+      }
+      const body = await readBody(req);
+      const cfg = loadConfig(CONFIG_PATH);
+      const entries = loadKeyEntries(CONFIG_PATH, cfg.keysFile);
+      if (entries.length === 0) throw new Error("no wallets on the server to fund");
+
+      // The payer is either one of the stored wallets, or a one-off key that
+      // is used for this call and never written anywhere.
+      let fromKey: `0x${string}`;
+      if (typeof body.fromKey === "string" && body.fromKey.trim()) {
+        fromKey = normalizePrivateKey(body.fromKey);
+      } else if (typeof body.fromAddress === "string") {
+        const want = body.fromAddress.toLowerCase();
+        const hit = entries.find((e) => privateKeyToAccount(e.key).address.toLowerCase() === want);
+        if (!hit) throw new Error("that source wallet isn't on the server");
+        fromKey = hit.key;
+      } else {
+        throw new Error("supply either fromKey (a one-off payer) or fromAddress (a stored wallet)");
+      }
+
+      const amount = typeof body.amountEth === "string" ? body.amountEth : "";
+      if (!/^\d+(\.\d+)?$/.test(amount)) throw new Error("amountEth must be a plain number");
+      const amountWei = parseEther(amount);
+      if (amountWei <= 0n) throw new Error("amountEth must be greater than zero");
+
+      const payer = privateKeyToAccount(fromKey).address.toLowerCase();
+      const targets = entries
+        .map((e) => privateKeyToAccount(e.key).address)
+        // Never send a wallet its own money.
+        .filter((a) => a.toLowerCase() !== payer);
+      if (targets.length === 0) throw new Error("no targets — the only wallet stored is the payer");
+
+      const result = await disperse(
+        {
+          chainId: cfg.chainId,
+          extraRpcs: cfg.extraRpcs,
+          gas: { maxFeeGwei: cfg.gas.maxFeeGwei, tipGwei: cfg.gas.tipGwei },
+          fromKey,
+          targets,
+          amountWei,
+          skipIfAtLeastWei:
+            typeof body.skipIfAtLeastEth === "string" && body.skipIfAtLeastEth
+              ? parseEther(body.skipIfAtLeastEth)
+              : undefined,
+          dryRun: body.dryRun !== false,
+        },
+        (line) => log(`disperse: ${line}`),
+      );
+      json(res, 200, result);
+      return;
+    }
+
+    if (url.pathname === "/api/collect" && req.method === "POST") {
+      if (activeJobId) {
+        json(res, 409, { error: "a mint job is running — wait for it or abort first" });
+        return;
+      }
+      const body = await readBody(req);
+      const to = typeof body.to === "string" ? body.to : "";
+      if (!/^0x[0-9a-fA-F]{40}$/.test(to)) throw new Error("to must be a 0x address");
+
+      const cfg = loadConfig(CONFIG_PATH);
+      const entries = loadKeyEntries(CONFIG_PATH, cfg.keysFile);
+      if (entries.length === 0) throw new Error("no wallets on the server to sweep");
+
+      const result = await collect(
+        {
+          chainId: cfg.chainId,
+          extraRpcs: cfg.extraRpcs,
+          gas: { maxFeeGwei: cfg.gas.maxFeeGwei, tipGwei: cfg.gas.tipGwei },
+          keys: entries.map((e) => e.key),
+          to: to as `0x${string}`,
+          dryRun: body.dryRun !== false,
+        },
+        (line) => log(`collect: ${line}`),
+      );
+      json(res, 200, result);
       return;
     }
 

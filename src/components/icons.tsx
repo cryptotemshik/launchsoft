@@ -86,6 +86,15 @@ export const CrosshairIcon = (p: SVGProps<SVGSVGElement>) => (
   </svg>
 );
 
+export const CoinsIcon = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...base(p)}>
+    <ellipse cx="9" cy="6" rx="6" ry="3" />
+    <path d="M3 6v5c0 1.66 2.69 3 6 3s6-1.34 6-3V6" />
+    <path d="M9 14c-3.31 0-6 1.34-6 3v1c0 1.66 2.69 3 6 3s6-1.34 6-3" />
+    <path d="M15 10.5c3.31 0 6 1.34 6 3v4c0 1.66-2.69 3-6 3" />
+  </svg>
+);
+
 export const KeyIcon = (p: SVGProps<SVGSVGElement>) => (
   <svg {...base(p)}>
     <circle cx="8" cy="15" r="4" />

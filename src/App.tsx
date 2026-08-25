@@ -5,6 +5,7 @@ import DashboardTab from "./components/DashboardTab";
 import LaunchTab from "./components/LaunchTab";
 import LiveTab from "./components/LiveTab";
 import RevealTab from "./components/RevealTab";
+import FundingTab from "./components/FundingTab";
 import ServerWalletsTab from "./components/ServerWalletsTab";
 import SnipeTab from "./components/SnipeTab";
 import StatusTab from "./components/StatusTab";
@@ -16,6 +17,7 @@ import {
   CrosshairIcon,
   EyeIcon,
   GridIcon,
+  CoinsIcon,
   KeyIcon,
   PulseIcon,
   RocketIcon,
@@ -31,7 +33,8 @@ type Tab =
   | "live"
   | "wallets"
   | "snipe"
-  | "serverwallets";
+  | "serverwallets"
+  | "funding";
 
 const TAB_ICON = {
   launch: RocketIcon,
@@ -42,6 +45,7 @@ const TAB_ICON = {
   dashboard: GridIcon,
   snipe: CrosshairIcon,
   serverwallets: KeyIcon,
+  funding: CoinsIcon,
 } as const;
 
 export default function App() {
@@ -120,7 +124,7 @@ export default function App() {
         {/* Snipe is the entry point; the server's wallets belong with it. */}
         <div className="tab-group snipe-group">
           <button
-            className={`tab-mint ${tab === "snipe" || tab === "serverwallets" ? "active" : ""}`}
+            className={`tab-mint ${tab === "snipe" || tab === "serverwallets" || tab === "funding" ? "active" : ""}`}
             onClick={() => setTab("snipe")}
           >
             <CrosshairIcon />
@@ -135,6 +139,13 @@ export default function App() {
               <KeyIcon />
               WALLETS
             </button>
+            <button
+              className={tab === "funding" ? "active" : ""}
+              onClick={() => setTab("funding")}
+            >
+              <CoinsIcon />
+              FUNDING
+            </button>
           </div>
         </div>
       </div>
@@ -146,6 +157,7 @@ export default function App() {
       {tab === "wallets" ? <WalletsTab /> : null}
       {tab === "snipe" ? <SnipeTab /> : null}
       {tab === "serverwallets" ? <ServerWalletsTab /> : null}
+      {tab === "funding" ? <FundingTab /> : null}
       <div className="footer">
         {info.label} · explorer:{" "}
         <a href={info.explorerUrl} target="_blank" rel="noreferrer">
