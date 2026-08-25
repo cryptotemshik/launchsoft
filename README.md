@@ -539,16 +539,31 @@ talking to an older server fails in ways that read as bugs — a bulk delete
 against a pre-`apiVersion` server answers `address must be a 0x address`,
 because that server only ever understood one address in the query string.
 
-Two things keep that from being a mystery:
+Three things keep that from being a mystery:
 
 - Every response carries `apiVersion`. When it is behind the version the page
   was built with, all three panels say so and give the commands to run.
 - **update server** in the Snipe connection row does it without a terminal:
   `POST /api/update` fast-forwards the checkout the server is running from,
-  reinstalls dependencies if the lockfile moved, and restarts under pm2. It is
-  refused while a job is armed or running. Nothing from the caller reaches the
-  command line and the remote is whatever the box was cloned from, so the only
-  thing this can do is move that checkout to its own origin's latest commit.
+  reinstalls dependencies if the lockfile moved, and restarts under pm2.
+  Nothing from the caller reaches the command line and the remote is whatever
+  the box was cloned from, so the only thing this can do is move that checkout
+  to its own origin's latest commit.
+- **The server pulls its own updates** hourly, so nobody has to remember. Set
+  `SNIPE_AUTO_UPDATE=0` to turn it off, `SNIPE_AUTO_UPDATE_MS` to change the
+  interval.
+
+Both paths refuse to restart at a bad moment — while a job is running, while
+one is armed, or within `ARM_LEAD_MS + 10 min` of a queued drop opening — and
+both typecheck the pulled code before restarting. If it doesn't compile the
+checkout is reset to the commit it was on and nothing restarts, because a pm2
+crash loop on an unattended box means the next drop is simply missed:
+
+```
+auto-update failed: 778cb45 does not compile, so it was rolled back to dfb0f94
+and nothing restarted — src/a.ts(1,14): error TS2322: Type 'string' is not
+assignable to type 'number'.
+```
 
 By hand it is the same two commands:
 
@@ -701,6 +716,31 @@ The panel also hands these endpoints to the control server when you connect,
 so balances and nonces there stop queueing behind the same limit — the server
 probes each one for chain id before storing it and reports which host it reads
 through.
+
+### Measuring it yourself
+
+Published RPC benchmarks are run from the provider's regions against the
+provider's chosen methods. The number that decides a first-come-first-served
+race is different: how long a packet takes from *your* box to *this* chain's
+sequencer. Measure it where it matters:
+
+```bash
+npm run rpc:bench                                  # config + chain endpoints
+npm run rpc:bench -- https://your.rpc/… --samples 30
+```
+
+```
+endpoint                               connect  request p50  request p95  fastest  failed
+sequencer.mainnet.chain.robinhood.com  18ms     42ms         65ms         40ms     0
+rpc.mainnet.chain.robinhood.com        26ms     51ms         61ms         49ms     0
+```
+
+`connect` is the TCP+TLS handshake a cold request pays, and the reason the
+runner warms every endpoint before a stage opens. `request` is a round-trip on
+an already-open connection — what a pre-warmed blast actually costs at T-0, and
+the column to compare endpoints on. p95 matters more than the average: an
+endpoint that is quick nine times in ten and slow on the tenth loses the drop
+on the tenth.
 
 ## Allow-list detection (Snipe tab)
 

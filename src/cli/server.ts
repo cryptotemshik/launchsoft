@@ -62,6 +62,15 @@ const ORIGINS = (process.env.SNIPE_ORIGINS ?? "*").split(",").map((s) => s.trim(
 const CONFIG_PATH = process.env.SNIPE_CONFIG ?? "snipe.config.json";
 /** How far ahead of a stage a job is armed (read nonces, pre-sign, warm). */
 const ARM_LEAD_MS = Number(process.env.SNIPE_ARM_LEAD_MS ?? 120_000);
+/** Set to 0 to stop the server pulling its own updates. */
+const AUTO_UPDATE = process.env.SNIPE_AUTO_UPDATE !== "0";
+const AUTO_UPDATE_MS = Number(process.env.SNIPE_AUTO_UPDATE_MS ?? 3_600_000);
+/**
+ * How close to a queued drop is too close to restart. A job arms ARM_LEAD_MS
+ * before its stage; leaving only that would mean updating seconds before the
+ * pre-signing starts, which is the one moment worth protecting.
+ */
+const UPDATE_BLACKOUT_MS = ARM_LEAD_MS + 600_000;
 
 if (!TOKEN || TOKEN.length < 16) {
   console.error(
@@ -279,6 +288,21 @@ async function selfUpdate(): Promise<UpdateResult> {
     await run("npm", ["install", "--silent"], { cwd: dir, timeout: 600_000 });
   }
 
+  // Restarting into code that doesn't compile leaves pm2 in a crash loop with
+  // nothing serving, which on an unattended box means the next drop is simply
+  // missed. Check first, and put the checkout back if it fails.
+  try {
+    await run("npx", ["tsc", "--noEmit"], { cwd: dir, timeout: 300_000 });
+  } catch (e) {
+    const err = e as { stdout?: string; stderr?: string };
+    const first = `${err.stdout ?? ""}${err.stderr ?? ""}`.split("\n").find((l) => l.includes("error"));
+    await run("git", ["reset", "--hard", before], { cwd: dir }).catch(() => {});
+    throw new Error(
+      `${after} does not compile, so it was rolled back to ${before} and nothing restarted` +
+        (first ? ` — ${first.trim()}` : ""),
+    );
+  }
+
   // Answer before the restart tears this process down; pm2 brings it back and
   // the tunnel is a separate process, so the URL and token do not change.
   setTimeout(() => {
@@ -287,6 +311,57 @@ async function selfUpdate(): Promise<UpdateResult> {
   }, 400);
 
   return { before, after, changed: true, detail, restarting: true };
+}
+
+/**
+ * Why an update must not happen right now, or null if it may.
+ *
+ * A restart costs a few seconds of downtime, which is nothing except in the
+ * window around a drop — so the rule is simply "only when the box has nothing
+ * to do and nothing coming up soon".
+ */
+function updateBlockedBecause(): string | null {
+  if (activeJobId) return "a job is running";
+  if (jobs.some((j) => j.status === "armed")) return "a job is armed and about to fire";
+  const soon = jobs.find(
+    (j) =>
+      j.status === "queued" &&
+      j.startTime !== undefined &&
+      j.startTime * 1000 - Date.now() <= UPDATE_BLACKOUT_MS,
+  );
+  if (soon) return `job ${soon.id} (${soon.label}) opens too soon`;
+  return null;
+}
+
+/**
+ * Pull updates on a timer so the box keeps in step with the published site
+ * without anyone opening a terminal — the panel's button does the same thing,
+ * but only while someone is looking at it.
+ */
+function startAutoUpdate() {
+  if (!AUTO_UPDATE) {
+    log("auto-update off (SNIPE_AUTO_UPDATE=0)");
+    return;
+  }
+  const every =
+    AUTO_UPDATE_MS >= 60_000
+      ? `${Math.round(AUTO_UPDATE_MS / 60_000)} min`
+      : `${Math.round(AUTO_UPDATE_MS / 1000)}s`;
+  log(`auto-update every ${every} when idle`);
+  const timer = setInterval(() => {
+    const blocked = updateBlockedBecause();
+    if (blocked) {
+      log(`auto-update skipped — ${blocked}`);
+      return;
+    }
+    void selfUpdate()
+      .then((r) => {
+        if (r.changed) log(`auto-update: ${r.before} → ${r.after} (${r.detail})`);
+      })
+      .catch((e) => log(`auto-update failed: ${e instanceof Error ? e.message : e}`));
+  }, AUTO_UPDATE_MS);
+  // Never hold the process open for this alone.
+  timer.unref?.();
 }
 
 // ── Read endpoint ────────────────────────────────────────────────────────────
@@ -642,6 +717,7 @@ const server = createServer(async (req, res) => {
         running: activeJobId !== null,
         activeJobId,
         armLeadMs: ARM_LEAD_MS,
+        autoUpdate: AUTO_UPDATE ? AUTO_UPDATE_MS : null,
         // Hosts only — the full URLs carry provider API keys.
         rpcHosts: cfg.extraRpcs.map(rpcHost),
         readRpc: info ? rpcHost(readRpc(cfg, info)) : null,
@@ -655,12 +731,9 @@ const server = createServer(async (req, res) => {
      * running — a restart mid-mint would lose it.
      */
     if (url.pathname === "/api/update" && req.method === "POST") {
-      if (activeJobId) {
-        json(res, 409, { error: "a job is running — wait for it or abort first" });
-        return;
-      }
-      if (jobs.some((j) => j.status === "armed")) {
-        json(res, 409, { error: "a job is armed and about to fire — update after it runs" });
+      const blocked = updateBlockedBecause();
+      if (blocked) {
+        json(res, 409, { error: `${blocked} — a restart now could cost you the mint` });
         return;
       }
       const result = await selfUpdate();
@@ -1062,4 +1135,5 @@ server.listen(PORT, HOST, () => {
   if (HOST !== "127.0.0.1" && HOST !== "localhost") {
     log("WARNING binding to a public interface — prefer 127.0.0.1 behind a Cloudflare Tunnel");
   }
+  startAutoUpdate();
 });

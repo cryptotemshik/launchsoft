@@ -12,6 +12,7 @@
     "test:watch": "vitest",
     "snipe": "tsx src/cli/snipe.ts",
     "snipe:server": "tsx src/cli/server.ts",
+    "rpc:bench": "tsx src/cli/bench.ts",
     "deploy:cf": "npm run build && npx -y wrangler pages deploy"
   },
   "dependencies": {
