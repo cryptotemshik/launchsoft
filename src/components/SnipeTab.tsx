@@ -140,7 +140,7 @@ export default function SnipeTab() {
   const [maxQuantity, setMaxQuantity] = useState(false);
   const [maxFeeGwei, setMaxFeeGwei] = useState("2");
   const [tipGwei, setTipGwei] = useState("0.05");
-  const [gasLimitStr, setGasLimitStr] = useState("250000");
+  const [gasLimitStr, setGasLimitStr] = useState("500000");
   const [baseFeeWei, setBaseFeeWei] = useState<bigint | null>(null);
   const [balances, setBalances] = useState<Map<string, bigint>>(new Map());
 
@@ -813,7 +813,7 @@ export default function SnipeTab() {
         collectionName={target?.name}
         stage={stage}
         quantity={maxQuantity ? "max" : quantity}
-        gas={{ maxFeeGwei, tipGwei, limit: Number(gasLimitStr) || 250000 }}
+        gas={{ maxFeeGwei, tipGwei, limit: Number(gasLimitStr) || 500000 }}
         extraRpcs={customRpcs}
         timing={timing}
       />

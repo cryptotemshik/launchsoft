@@ -310,9 +310,11 @@ export default function FundingTab() {
           not the fee: a node checks the wallet holds{" "}
           <code>gas limit × max fee</code> before it will even accept the
           transaction, while the fee actually paid is a few millionths of an ETH.
-          With the default 250,000 limit at 2 gwei that reservation is 0.0005 ETH,
-          so <b>0.001 ETH per wallet</b> is a comfortable float. Add the mint
-          price on top for a paid drop.
+          With the default 500,000 limit at 2 gwei that reservation is 0.001 ETH,
+          so <b>0.002 ETH per wallet</b> is a comfortable float. Add the mint
+          price on top for a paid drop. The limit is a ceiling, not a charge —
+          raising it costs nothing but the float, and buys headroom on a
+          contract whose mint is heavier than usual.
         </p>
       </div>
 

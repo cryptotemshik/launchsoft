@@ -8,7 +8,7 @@
   "gas": {
     "maxFeeGwei": "2",
     "tipGwei": "0.05",
-    "limit": 250000
+    "limit": 500000
   },
   "timing": "wait",
 

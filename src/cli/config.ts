@@ -44,7 +44,7 @@ const DEFAULTS = {
   stage: "public" as const,
   quantity: 1,
   extraRpcs: [] as string[],
-  gas: { maxFeeGwei: "2", tipGwei: "0.05", limit: 250_000 },
+  gas: { maxFeeGwei: "2", tipGwei: "0.05", limit: 500_000 },
   timing: "wait" as const,
 };
 

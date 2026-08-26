@@ -652,9 +652,11 @@ Practical details:
   `gasLimit × maxFee` before accepting a transaction at all, while the fee
   actually paid is tiny — real SeaDrop mints measured 107k–236k gas at a
   ~0.022 gwei base fee, i.e. **0.0000025–0.0000053 ETH each**. With the default
-  250,000 limit at 2 gwei the reservation is **0.0005 ETH**, so **0.001 ETH per
+  500,000 limit at 2 gwei the reservation is **0.001 ETH**, so **0.002 ETH per
   wallet** is a comfortable float for a free mint. Add the mint price for a paid
-  one.
+  one. The limit is a ceiling on gas the transaction may use, not an amount
+  charged: what it buys is headroom, so a contract with a heavier mint than the
+  measured range still goes through instead of running out of gas.
 - **Skip-if-funded** is on by default, so re-running after a partial failure
   tops up only the wallets that still need it.
 - The payer is either a stored wallet or a one-off key pasted for that call
