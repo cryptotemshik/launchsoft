@@ -64,7 +64,7 @@ import { startTelegramBot } from "./telegramBot";
 import { loadUpcoming, removeUpcoming } from "./upcomingStore";
 import { sortByDate } from "../lib/upcoming";
 import { enrichDrops, measureBlockRate, scanPublicDrops } from "./dropScanner";
-import { blocksForHours, classify, sortForScan } from "../lib/dropScan";
+import { blocksForHours, classify, mergeScans, sortForScan, type ScannedDrop } from "../lib/dropScan";
 import { API_VERSION } from "../lib/apiVersion";
 import { mapWithLimit } from "../lib/rpcRead";
 import { makeReadClient } from "../lib/readClient";
@@ -431,8 +431,24 @@ function startProfitBuild(): Promise<Record<string, unknown>> {
 const scanCache = new Map<number, { at: number; body: Record<string, unknown> }>();
 const scanInflight = new Map<number, Promise<Record<string, unknown>>>();
 const SCAN_TTL_MS = Number(process.env.SNIPE_SCAN_TTL_MS ?? 60_000);
+/**
+ * The measured block rate, held for a while.
+ *
+ * It costs two block headers, and it does not move meaningfully between one
+ * refresh and the next — paying for it every few seconds would double the cost
+ * of a live refresh whose whole point is being nearly free.
+ */
+let blockRate: { at: number; perHour: number } | null = null;
+const BLOCK_RATE_TTL_MS = 10 * 60_000;
 /** A week of this chain is ~6M blocks; beyond that the wait stops being useful. */
 const MAX_SCAN_HOURS = 168;
+
+/**
+ * How far behind the tip a cached scan may be and still be worth topping up
+ * rather than redoing. An hour of blocks reads as fast as a minute of them;
+ * beyond that the saving disappears and a clean read is simpler to trust.
+ */
+const INCREMENTAL_LIMIT_HOURS = 2;
 
 async function startScan(hours: number): Promise<Record<string, unknown>> {
   const run = (async () => {
@@ -444,31 +460,71 @@ async function startScan(hours: number): Promise<Record<string, unknown>> {
 
     const tip = await client.getBlockNumber();
     // Measured, not assumed: a hardcoded rate turns "last 24 hours" into a
-    // lie the day the chain changes pace.
-    const blocksPerHour = await measureBlockRate(client as never, tip);
+    // lie the day the chain changes pace. Cached, because it barely moves.
+    if (!blockRate || Date.now() - blockRate.at > BLOCK_RATE_TTL_MS) {
+      blockRate = { at: Date.now(), perHour: await measureBlockRate(client as never, tip) };
+    }
+    const blocksPerHour = blockRate.perHour;
     const span = blocksForHours(hours, blocksPerHour);
-    const fromBlock = tip > span ? tip - span : 0n;
+    const windowFrom = tip > span ? tip - span : 0n;
+
+    // Top up rather than re-read, when there is something to top up from.
+    // A live refresh every few seconds then costs one small log query instead
+    // of a three-megabyte one — the difference between a scanner you can leave
+    // running and one you can't.
+    const prior = scanCache.get(hours);
+    const priorTo = prior ? BigInt((prior.body.toBlock as number) ?? 0) : 0n;
+    const behind = tip - priorTo;
+    const incremental =
+      prior != null &&
+      priorTo > 0n &&
+      priorTo < tip &&
+      behind < blocksForHours(INCREMENTAL_LIMIT_HOURS, blocksPerHour);
 
     const scan = await scanPublicDrops(client as never, {
-      fromBlock,
+      fromBlock: incremental ? priorTo + 1n : windowFrom,
       toBlock: tip,
       onNote: (note) => log(`scan: ${note}`),
     });
 
+    let drops: ScannedDrop[];
+    let toEnrich: ScannedDrop[];
+    let events = scan.events;
+
+    if (incremental) {
+      const merged = mergeScans(
+        (prior!.body.drops as ScannedDrop[]) ?? [],
+        scan.drops,
+        Number(windowFrom),
+      );
+      drops = merged.drops;
+      const fresh = new Set(merged.fresh.map((c) => c.toLowerCase()));
+      toEnrich = drops.filter((d) => fresh.has(d.contract.toLowerCase()));
+      events = ((prior!.body.events as number) ?? 0) + scan.events;
+    } else {
+      drops = scan.drops;
+      toEnrich = drops;
+    }
+
     // Only what is still ahead or running gets per-collection reads — the
     // whole point of the event carrying its struct is that the filter is free.
     const now = Math.floor(Date.now() / 1000);
-    const worth = scan.drops.filter((d) => classify(d, now) !== "ended");
+    const worth = toEnrich.filter((d) => classify(d, now) !== "ended");
     const enriched = await enrichDrops(client as never, worth);
-    const drops = sortForScan([...enriched, ...scan.drops.filter((d) => classify(d, now) === "ended")], now);
+
+    const byContract = new Map(drops.map((d) => [d.contract.toLowerCase(), d]));
+    for (const e of enriched) byContract.set(e.contract.toLowerCase(), e);
 
     const body = {
-      drops,
+      drops: sortForScan([...byContract.values()], now),
       hours,
-      events: scan.events,
-      collections: scan.drops.length,
+      events,
+      collections: byContract.size,
       enriched: enriched.length,
-      fromBlock: scan.fromBlock,
+      /** Reading only the new blocks — the client says so, and it is cheap. */
+      incremental,
+      newDrops: incremental ? enriched.length : 0,
+      fromBlock: Number(windowFrom),
       toBlock: scan.toBlock,
       blocksPerHour: Math.round(blocksPerHour),
       chain: info.label,
@@ -478,7 +534,10 @@ async function startScan(hours: number): Promise<Record<string, unknown>> {
       tookMs: Date.now() - started,
     };
     scanCache.set(hours, { at: Date.now(), body });
-    log(`scan: ${hours}h · ${scan.events} events · ${drops.length} collections · ${body.tookMs}ms`);
+    log(
+      `scan: ${hours}h ${incremental ? `+${scan.events} new events (${behind} blocks)` : `${scan.events} events`}` +
+        ` · ${byContract.size} collections · ${body.tookMs}ms`,
+    );
     return body as Record<string, unknown>;
   })().finally(() => scanInflight.delete(hours));
 

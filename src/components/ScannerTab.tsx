@@ -10,7 +10,7 @@
  * The reading happens on the server, through the same endpoints everything else
  * uses. Nothing here talks to a chain directly.
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { formatEther } from "viem";
 import { useRunnerApi } from "../lib/runnerClient";
 import {
@@ -23,11 +23,15 @@ import {
 } from "../lib/dropScan";
 import { openSeaCollectionUrlBySlug } from "../chains";
 import { setPendingTarget } from "../lib/snipeTarget";
+import { sndFeedTick } from "../lib/sound";
 import Addr from "./Addr";
 import StaleServer from "./StaleServer";
 
 interface ScanView {
   drops: ScannedDrop[];
+  /** True when the server topped the last scan up instead of re-reading it. */
+  incremental?: boolean;
+  newDrops?: number;
   hours: number;
   events: number;
   collections: number;
@@ -48,6 +52,22 @@ const WINDOWS = [
   { hours: 24, label: "24h" },
   { hours: 72, label: "3d" },
   { hours: 168, label: "7d" },
+] as const;
+
+/**
+ * Auto-refresh intervals.
+ *
+ * A refresh reads only the blocks since the last one: one small log query,
+ * about 85 Alchemy compute units. Ten seconds of that is ~22M units a month —
+ * a rounding error against any paid plan — which is why the fastest option can
+ * be this fast without a warning attached to it.
+ */
+const INTERVALS = [
+  { secs: 0, label: "off" },
+  { secs: 10, label: "10s" },
+  { secs: 30, label: "30s" },
+  { secs: 60, label: "1m" },
+  { secs: 300, label: "5m" },
 ] as const;
 
 const STATES: { key: DropState | "all"; label: string }[] = [
@@ -91,6 +111,12 @@ export default function ScannerTab({ onSnipe }: { onSnipe?: (contract: string) =
   const [sort, setSort] = useState<SortKey>("start");
   const [desc, setDesc] = useState(false);
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
+  const [every, setEvery] = useState(0);
+  const [nextIn, setNextIn] = useState(0);
+  // Contracts that appeared in the most recent refresh, so a new arrival is
+  // visible without hunting for it.
+  const [justIn, setJustIn] = useState<Set<string>>(new Set());
+  const seen = useRef<Set<string> | null>(null);
 
   const load = useCallback(
     async (h: number, fresh = false) => {
@@ -101,6 +127,17 @@ export default function ScannerTab({ onSnipe }: { onSnipe?: (contract: string) =
         const r = (await call(
           `/api/scan?hours=${h}${fresh ? "&fresh=1" : ""}`,
         )) as unknown as ScanView;
+        // What is new since the last look. On the first scan everything is
+        // new, which is not news — so the baseline is set silently.
+        const ids = new Set(r.drops.map((d) => d.contract.toLowerCase()));
+        if (seen.current) {
+          const arrived = [...ids].filter((c) => !seen.current!.has(c));
+          if (arrived.length > 0) {
+            setJustIn(new Set(arrived));
+            sndFeedTick();
+          }
+        }
+        seen.current = ids;
         setView(r);
         setNow(Math.floor(Date.now() / 1000));
       } catch (e) {
@@ -128,6 +165,29 @@ export default function ScannerTab({ onSnipe }: { onSnipe?: (contract: string) =
     const t = setInterval(() => setNow(Math.floor(Date.now() / 1000)), 1000);
     return () => clearInterval(t);
   }, []);
+
+  /**
+   * The refresh loop.
+   *
+   * Paused while the tab is hidden: a scanner left open in a background tab
+   * for a week would otherwise spend its budget on drops nobody is looking at,
+   * and the first refresh on return catches up anyway.
+   */
+  useEffect(() => {
+    if (!every || !base || !token) {
+      setNextIn(0);
+      return;
+    }
+    setNextIn(every);
+    const t = setInterval(() => {
+      setNextIn((n) => {
+        if (n > 1) return n - 1;
+        if (document.visibilityState === "visible") void load(hours);
+        return every;
+      });
+    }, 1000);
+    return () => clearInterval(t);
+  }, [every, hours, base, token, load]);
 
   const rows = useMemo(() => {
     const all = view?.drops ?? [];
@@ -219,7 +279,7 @@ export default function ScannerTab({ onSnipe }: { onSnipe?: (contract: string) =
             className="secondary"
             disabled={busy || !base || !token}
             onClick={() => void load(hours, true)}
-            title="Ignore the cached result and read the chain again"
+            title="Ignore the cached result and read the whole window again"
           >
             {busy ? <span className="spin">SCANNING</span> : "re-scan"}
           </button>
@@ -230,6 +290,32 @@ export default function ScannerTab({ onSnipe }: { onSnipe?: (contract: string) =
               {view.cachedAt
                 ? ` · ${Math.max(0, Math.round((Date.now() - view.cachedAt) / 1000))}s ago`
                 : ""}
+            </span>
+          ) : null}
+        </div>
+        <div className="range-picker" style={{ marginTop: 4 }}>
+          <span className="gb-label" style={{ alignSelf: "center", marginRight: 4 }}>
+            AUTO
+          </span>
+          {INTERVALS.map((i) => (
+            <button
+              key={i.secs}
+              className={every === i.secs ? "secondary active-chip" : "secondary"}
+              disabled={!base || !token}
+              onClick={() => setEvery(i.secs)}
+              title={
+                i.secs
+                  ? "Reads only the blocks since the last look — one small query"
+                  : "No automatic refreshing"
+              }
+            >
+              {i.label}
+            </button>
+          ))}
+          {every ? (
+            <span className="pill">
+              next in <b>{nextIn}s</b>
+              {view?.incremental ? " · incremental" : ""}
             </span>
           ) : null}
         </div>
@@ -293,7 +379,10 @@ export default function ScannerTab({ onSnipe }: { onSnipe?: (contract: string) =
                   const sold = isSoldOut(d);
                   const away = d.startTime ? d.startTime - now : null;
                   return (
-                    <tr key={d.contract} className="project-row">
+                    <tr
+                      key={d.contract}
+                      className={`project-row${justIn.has(d.contract.toLowerCase()) ? " feed-row" : ""}`}
+                    >
                       <td data-label="opens">
                         <span className={`cell-name ${STATE_CLASS[st]}`}>
                           {st === "live" ? "LIVE" : st === "ended" ? "ended" : st === "pending" ? "no date" : countdown(away ?? 0)}

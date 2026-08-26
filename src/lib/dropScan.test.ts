@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   applyFilter,
+  mergeScans,
   blocksForHours,
   classify,
   isSoldOut,
@@ -163,5 +164,66 @@ describe("applyFilter", () => {
   it("combines filters", () => {
     const out = applyFilter(rows, { freeOnly: true, hideSoldOut: true }, NOW);
     expect(out.map((r) => r.contract)).toEqual(["0x1"]);
+  });
+});
+
+describe("mergeScans", () => {
+  it("adds collections the earlier scan had never seen", () => {
+    const { drops, fresh } = mergeScans(
+      [drop({ contract: "0x1", block: 100 })],
+      [drop({ contract: "0x2", block: 110 })],
+      0,
+    );
+    expect(drops.map((d) => d.contract).sort()).toEqual(["0x1", "0x2"]);
+    expect(fresh).toEqual(["0x2"]);
+  });
+
+  it("replaces a stage that has been reconfigured since", () => {
+    const { drops, fresh } = mergeScans(
+      [drop({ contract: "0x1", block: 100, priceWei: "1000" })],
+      [drop({ contract: "0x1", block: 200, priceWei: "9000" })],
+      0,
+    );
+    expect(drops).toHaveLength(1);
+    expect(drops[0].priceWei).toBe("9000");
+    expect(fresh).toEqual(["0x1"]);
+  });
+
+  it("ignores an older configuration arriving late", () => {
+    const { drops, fresh } = mergeScans(
+      [drop({ contract: "0x1", block: 200, priceWei: "9000" })],
+      [drop({ contract: "0x1", block: 100, priceWei: "1000" })],
+      0,
+    );
+    expect(drops[0].priceWei).toBe("9000");
+    expect(fresh).toEqual([]);
+  });
+
+  it("keeps what enrichment already learned about a reconfigured collection", () => {
+    // The name doesn't change when a price does, and re-reading it on every
+    // refresh would undo the point of merging.
+    const { drops } = mergeScans(
+      [drop({ contract: "0x1", block: 100, name: "Known", maxSupply: 500, minted: 12 })],
+      [drop({ contract: "0x1", block: 200, priceWei: "77" })],
+      0,
+    );
+    expect(drops[0]).toMatchObject({ name: "Known", maxSupply: 500, priceWei: "77" });
+  });
+
+  it("drops rows that have slid out of the window", () => {
+    // A window measured backwards from now moves; without this, a 24h scan
+    // refreshed for a week would still be showing last Tuesday.
+    const { drops } = mergeScans(
+      [drop({ contract: "0xold", block: 10 }), drop({ contract: "0xin", block: 500 })],
+      [],
+      100,
+    );
+    expect(drops.map((d) => d.contract)).toEqual(["0xin"]);
+  });
+
+  it("reports nothing fresh when the slice was empty", () => {
+    const { drops, fresh } = mergeScans([drop({ contract: "0x1", block: 100 })], [], 0);
+    expect(drops).toHaveLength(1);
+    expect(fresh).toEqual([]);
   });
 });

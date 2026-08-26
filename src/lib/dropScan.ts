@@ -104,6 +104,41 @@ export function latestPerContract(
 }
 
 /**
+ * Fold a fresh slice of events into an existing scan.
+ *
+ * This is what makes live refreshing cheap. Re-reading the whole window every
+ * few seconds costs a three-megabyte log query; reading only the blocks since
+ * the last look costs one small request, and the two results merge by the same
+ * rule discovery already uses — newest configuration per collection wins.
+ *
+ * @param minBlock the window's new lower edge. A window measured backwards
+ *   from now slides, so rows that have fallen out the far end are dropped
+ *   here rather than lingering forever.
+ */
+export function mergeScans(
+  prior: readonly ScannedDrop[],
+  incoming: readonly ScannedDrop[],
+  minBlock: number,
+): { drops: ScannedDrop[]; fresh: `0x${string}`[] } {
+  const by = new Map<string, ScannedDrop>();
+  for (const d of prior) {
+    if (d.block >= minBlock) by.set(d.contract.toLowerCase(), d);
+  }
+
+  const fresh: `0x${string}`[] = [];
+  for (const d of incoming) {
+    const key = d.contract.toLowerCase();
+    const prev = by.get(key);
+    if (prev && prev.block >= d.block) continue;
+    // A collection nobody had seen, or one whose stage has been reconfigured:
+    // either way its name and supply need reading again.
+    by.set(key, { ...d, name: prev?.name, maxSupply: prev?.maxSupply, minted: prev?.minted });
+    fresh.push(d.contract);
+  }
+  return { drops: [...by.values()], fresh };
+}
+
+/**
  * How many blocks cover a span of hours, from a measured rate.
  *
  * Deliberately not a constant: Robinhood Chain runs about 35,600 blocks an
