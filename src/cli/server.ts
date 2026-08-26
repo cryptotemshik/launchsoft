@@ -53,6 +53,9 @@ import {
 } from "./config";
 import { runSnipe, type RunOptions, type RunResult } from "./runner";
 import { formatMintReport, sendTelegram, type MintedWallet } from "../lib/telegram";
+import { startTelegramBot } from "./telegramBot";
+import { loadUpcoming, removeUpcoming } from "./upcomingStore";
+import { sortByDate } from "../lib/upcoming";
 import { API_VERSION } from "../lib/apiVersion";
 import { mapWithLimit } from "../lib/rpcRead";
 import { makeReadClient } from "../lib/readClient";
@@ -986,6 +989,24 @@ const server = createServer(async (req, res) => {
      * pairing every departure of a token with the seller's balance rise in
      * that block. No marketplace API, so nothing to key or to break.
      */
+    // Drops someone added through the bot. Read-only from here: they are
+    // entered on a phone, where the bot is, and this is the window onto them.
+    if (url.pathname === "/api/upcoming" && req.method === "GET") {
+      json(res, 200, { upcoming: sortByDate(loadUpcoming(CONFIG_PATH)) });
+      return;
+    }
+
+    if (url.pathname === "/api/upcoming" && req.method === "DELETE") {
+      const id = url.searchParams.get("id") ?? "";
+      const { removed, list } = removeUpcoming(CONFIG_PATH, id);
+      json(res, removed ? 200 : 404, {
+        removed: removed?.name,
+        upcoming: sortByDate(list),
+        ...(removed ? {} : { error: `no upcoming mint with id ${id}` }),
+      });
+      return;
+    }
+
     if (url.pathname === "/api/profit" && req.method === "GET") {
       const cfg = loadConfig(CONFIG_PATH);
       const info = getChainInfo(cfg.chainId);
@@ -1448,6 +1469,9 @@ server.listen(PORT, HOST, () => {
   try {
     const cfg = loadConfig(CONFIG_PATH);
     log(cfg.telegram ? "telegram notifications ON" : "telegram notifications off (no token/chat id)");
+    // The same bot, now also listening: /add collects a drop that exists
+    // nowhere but Twitter yet, and the site reads the list back.
+    if (cfg.telegram) startTelegramBot(cfg.telegram, CONFIG_PATH, log);
   } catch {
     log("config not readable yet — queue requests will report the error");
   }

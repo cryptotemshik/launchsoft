@@ -1663,6 +1663,22 @@ tr.row-selected td {
   }
 }
 
+/* A drop whose date nobody has announced. Deliberately quiet — it is a gap in
+   what we know, not a status worth shouting. */
+.pill-tba {
+  display: inline-block;
+  padding: 2px 9px;
+  border-radius: 999px;
+  border: 1px dashed var(--line);
+  color: var(--faint);
+  font-size: 11px;
+  font-family: var(--mono);
+  letter-spacing: 0.06em;
+}
+.ledger-table .cell-sub.warn {
+  color: var(--warn);
+}
+
 /* A row of filters that wraps rather than scrolls: after a scan there can be
    a dozen collections, and a hidden one is a filter nobody uses. */
 .wallet-picker-chips {

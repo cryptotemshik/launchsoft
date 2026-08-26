@@ -2,6 +2,7 @@ import { useState } from "react";
 import Landing from "./components/Landing";
 import ConnectBar from "./components/ConnectBar";
 import DashboardTab from "./components/DashboardTab";
+import UpcomingTab from "./components/UpcomingTab";
 import LaunchTab from "./components/LaunchTab";
 import RevealTab from "./components/RevealTab";
 import FundingTab from "./components/FundingTab";
@@ -17,6 +18,7 @@ import {
   EyeIcon,
   GridIcon,
   CoinsIcon,
+  CalendarIcon,
   KeyIcon,
   PulseIcon,
   RocketIcon,
@@ -31,7 +33,8 @@ type Tab =
   | "wallets"
   | "snipe"
   | "serverwallets"
-  | "funding";
+  | "funding"
+  | "upcoming";
 
 const TAB_ICON = {
   launch: RocketIcon,
@@ -42,6 +45,7 @@ const TAB_ICON = {
   snipe: CrosshairIcon,
   serverwallets: KeyIcon,
   funding: CoinsIcon,
+  upcoming: CalendarIcon,
 } as const;
 
 export default function App() {
@@ -103,6 +107,7 @@ export default function App() {
         {([
           ["wallets", "TRACKER"],
           ["dashboard", "DASHBOARD"],
+          ["upcoming", "UPCOMING"],
         ] as const).map(([t, label]) => {
           const Icon = TAB_ICON[t];
           return (
@@ -152,6 +157,7 @@ export default function App() {
       {tab === "snipe" ? <SnipeTab /> : null}
       {tab === "serverwallets" ? <ServerWalletsTab /> : null}
       {tab === "funding" ? <FundingTab /> : null}
+      {tab === "upcoming" ? <UpcomingTab /> : null}
       <div className="footer">
         {info.label} · explorer:{" "}
         <a href={info.explorerUrl} target="_blank" rel="noreferrer">
