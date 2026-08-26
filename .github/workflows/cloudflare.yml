@@ -36,6 +36,9 @@ jobs:
       - run: npm run build
       - uses: cloudflare/wrangler-action@v3
         with:
+          # Left to itself the action installs 3.90.0, several majors behind
+          # what this repo is developed against.
+          wranglerVersion: "4.126.0"
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           command: pages deploy dist --project-name=launchpad --branch=main
