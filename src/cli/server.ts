@@ -37,7 +37,14 @@ import { privateKeyToAccount } from "viem/accounts";
 import { collect, disperse } from "./funding";
 import { scanChain } from "./holdings";
 import { costByCollection, loadMints, recordMint } from "./ledger";
-import { blockTimes, costByMintTx, priceTransfers, readMintTxs, summarise } from "./profit";
+import {
+  blockTimes,
+  clearProfitCaches,
+  costByMintTx,
+  priceTransfers,
+  readMintTxs,
+  summarise,
+} from "./profit";
 import { loadCollections, rememberCollection } from "./collections";
 import { sweepNfts, type Holding } from "./nftSweep";
 import { getChainInfo } from "../chains";
@@ -241,6 +248,192 @@ function jobView(j: Job) {
     error: j.error,
   };
 }
+
+/**
+ * Build the profit report.
+ *
+ * Split out of the route because it no longer answers a request directly: it
+ * takes hundreds of round trips and the tunnel in front of this server gives
+ * up on a request after a hundred seconds. So the route starts this in the
+ * background and hands back what it has, and the panel asks again in a moment.
+ */
+async function buildProfitReport(): Promise<Record<string, unknown>> {
+  const cfg = loadConfig(CONFIG_PATH);
+  const info = getChainInfo(cfg.chainId);
+  if (!info) throw new Error(`chain ${cfg.chainId} isn't in the registry`);
+
+  const started = Date.now();
+  const addresses = loadKeyEntries(CONFIG_PATH, cfg.keysFile).map(
+    (e) => privateKeyToAccount(e.key).address,
+  );
+  const costs = costByCollection(loadMints(CONFIG_PATH));
+  const known = loadCollections(CONFIG_PATH);
+
+  const client = makeReadClient(info.chain, cfg.extraRpcs);
+
+  // One scan covers every collection these wallets have ever touched, so
+  // a drop shows up here whether or not it was minted through this server
+  // — the ledger only supplies what it cost.
+  const scan = await scanChain(client as never, addresses);
+  const [sales, mintTxs] = await Promise.all([
+    priceTransfers(client as never, scan.sent, addresses),
+    // What the mints cost, read from their own transactions. The ledger
+    // only covers runs this server made, so on its own it left every
+    // earlier drop showing no mints and no spend at all.
+    readMintTxs(client as never, scan.minted),
+  ]);
+  const minted = costByMintTx(mintTxs);
+  const salesByCollection = new Map<string, typeof sales>();
+  for (const sale of sales) {
+    const key = sale.collection.toLowerCase();
+    salesByCollection.set(key, [...(salesByCollection.get(key) ?? []), sale]);
+  }
+
+  const seen = new Set<string>([
+    ...scan.collections.map((c) => c.collection.toLowerCase()),
+    ...costs.keys(),
+    ...known.map((k) => k.address.toLowerCase()),
+  ]);
+
+  const reports = [...seen].map((key) => {
+    const held = scan.collections.find((c) => c.collection.toLowerCase() === key);
+    const cost = costs.get(key);
+    const address = (held?.collection ??
+      cost?.collection ??
+      known.find((k) => k.address.toLowerCase() === key)!.address) as `0x${string}`;
+    const mine = salesByCollection.get(key) ?? [];
+    const chain = minted.get(key);
+    // The chain is the better source where it has anything: it sees mints
+    // this server never made. The ledger still supplies the one figure the
+    // chain cannot — gas burnt by attempts that reverted and left no token
+    // — and takes over entirely where the chain found no mints at all.
+    const spend = chain
+      ? {
+          gasWei: chain.gasWei + (cost?.failedGasWei ?? 0n),
+          priceWei: chain.priceWei,
+          tokens: chain.tokens,
+          wallets: chain.wallets,
+        }
+      : {
+          gasWei: cost?.gasWei ?? 0n,
+          priceWei: cost?.priceWei ?? 0n,
+          tokens: cost?.tokens ?? 0,
+          wallets: cost?.wallets ?? 0,
+        };
+    const report = summarise(
+      address,
+      spend,
+      mine,
+      held?.totalTokens ?? 0,
+      held?.name ?? cost?.collectionName,
+    );
+    return {
+      ...report,
+      cost: {
+        gasWei: report.cost.gasWei.toString(),
+        priceWei: report.cost.priceWei.toString(),
+        tokens: report.cost.tokens,
+        wallets: report.cost.wallets,
+      },
+      revenueWei: report.revenueWei.toString(),
+      netWei: report.netWei.toString(),
+      sales: report.sales.map((x) => ({
+        ...x,
+        blockNumber: x.blockNumber.toString(),
+        proceedsWei: x.proceedsWei.toString(),
+      })),
+      unpricedSales: report.unpricedSales,
+      runs: cost?.runs ?? 0,
+      lastAt: cost?.lastAt,
+    };
+  });
+  // Biggest position first — that is the one worth reading.
+  reports.sort((a, b) => b.heldTokens + b.soldTokens - (a.heldTokens + a.soldTokens));
+
+  // Every spend and every receipt, stamped with when it happened, so the
+  // dashboard can re-cut the same figures by time — last hour, last week —
+  // and draw a profit line without asking the chain again.
+  const times = await blockTimes(client as never, [
+    ...mintTxs.map((t) => t.blockNumber),
+    ...sales.map((s) => s.blockNumber),
+  ]);
+  const events = [
+    ...mintTxs.map((t) => ({
+      collection: t.collection.toLowerCase(),
+      kind: "mint" as const,
+      at: times.get(String(t.blockNumber)) ?? 0,
+      block: t.blockNumber.toString(),
+      // Signed: a mint takes money out, a sale puts it back.
+      wei: (-(t.gasWei + t.priceWei)).toString(),
+      tokens: t.tokens,
+      wallet: t.wallet,
+      txHash: t.txHash,
+    })),
+    ...sales.map((s) => ({
+      collection: s.collection.toLowerCase(),
+      kind: "sale" as const,
+      at: times.get(String(s.blockNumber)) ?? 0,
+      block: s.blockNumber.toString(),
+      wei: s.proceedsWei.toString(),
+      tokens: 1,
+      wallet: s.wallet,
+      txHash: s.txHash,
+      tokenId: s.tokenId,
+      priced: s.priced,
+    })),
+  ].sort((a, b) => a.at - b.at || Number(BigInt(a.block) - BigInt(b.block)));
+
+  const body = {
+    chain: info.label,
+    explorerUrl: info.explorerUrl,
+    openSeaSlug: info.openSeaSlug,
+    wallets: addresses.length,
+    collections: reports,
+    events,
+    now: Math.floor(Date.now() / 1000),
+    tookMs: Date.now() - started,
+  };
+  return body;
+}
+
+/** Whether a report is being built right now, so two panels don't start two. */
+let profitBuilding: Promise<Record<string, unknown>> | null = null;
+
+/** Start one if none is running, and remember the result when it lands. */
+function startProfitBuild(): Promise<Record<string, unknown>> {
+  if (profitBuilding) return profitBuilding;
+  const started = Date.now();
+  profitBuilding = buildProfitReport()
+    .then((body) => {
+      profitCache = { at: Date.now(), body };
+      log(`profit: report built in ${Date.now() - started}ms`);
+      return body;
+    })
+    .catch((e) => {
+      log(`profit: build failed — ${e instanceof Error ? e.message : e}`);
+      throw e;
+    })
+    .finally(() => {
+      profitBuilding = null;
+    });
+  return profitBuilding;
+}
+
+/**
+ * The last profit report, and when it was built.
+ *
+ * Reading it costs hundreds of round trips; nothing it reports on changes by
+ * the second, and two panels asking at once should not mean two full scans.
+ */
+let profitCache: { at: number; body: Record<string, unknown> } | null = null;
+const PROFIT_TTL_MS = Number(process.env.SNIPE_PROFIT_TTL_MS ?? 60_000);
+/**
+ * How long a request waits for a build before answering "still working".
+ *
+ * Well under the tunnel's hundred-second limit, and long enough that a warm
+ * report comes back on the first ask rather than the second.
+ */
+const PROFIT_WAIT_MS = Number(process.env.SNIPE_PROFIT_WAIT_MS ?? 8_000);
 
 /** Merge the on-disk defaults with whatever the panel supplied. */
 function buildRequest(body: Record<string, unknown>): Omit<RunOptions, "keys"> {
@@ -1092,140 +1285,36 @@ const server = createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/profit" && req.method === "GET") {
-      const cfg = loadConfig(CONFIG_PATH);
-      const info = getChainInfo(cfg.chainId);
-      if (!info) throw new Error(`chain ${cfg.chainId} isn't in the registry`);
-
-      const started = Date.now();
-      const addresses = loadKeyEntries(CONFIG_PATH, cfg.keysFile).map(
-        (e) => privateKeyToAccount(e.key).address,
-      );
-      const costs = costByCollection(loadMints(CONFIG_PATH));
-      const known = loadCollections(CONFIG_PATH);
-
-      const client = makeReadClient(info.chain, cfg.extraRpcs);
-
-      // One scan covers every collection these wallets have ever touched, so
-      // a drop shows up here whether or not it was minted through this server
-      // — the ledger only supplies what it cost.
-      const scan = await scanChain(client as never, addresses);
-      const [sales, mintTxs] = await Promise.all([
-        priceTransfers(client as never, scan.sent, addresses),
-        // What the mints cost, read from their own transactions. The ledger
-        // only covers runs this server made, so on its own it left every
-        // earlier drop showing no mints and no spend at all.
-        readMintTxs(client as never, scan.minted),
-      ]);
-      const minted = costByMintTx(mintTxs);
-      const salesByCollection = new Map<string, typeof sales>();
-      for (const sale of sales) {
-        const key = sale.collection.toLowerCase();
-        salesByCollection.set(key, [...(salesByCollection.get(key) ?? []), sale]);
+      // Reading every wallet's whole history takes far longer than the hundred
+      // seconds a Cloudflare tunnel allows a request, and this server does one
+      // thing at a time — which is why a Dashboard left open used to stall the
+      // Snipe tab and then fail anyway. So the work happens in the background:
+      // the first ask starts it and says so, the next ask gets the answer.
+      const fresh = url.searchParams.get("fresh") === "1";
+      if (fresh && !profitBuilding) {
+        clearProfitCaches();
+        profitCache = null;
       }
-
-      const seen = new Set<string>([
-        ...scan.collections.map((c) => c.collection.toLowerCase()),
-        ...costs.keys(),
-        ...known.map((k) => k.address.toLowerCase()),
+      if (profitCache && Date.now() - profitCache.at < PROFIT_TTL_MS) {
+        json(res, 200, { ...profitCache.body, cachedAt: profitCache.at });
+        return;
+      }
+      const building = startProfitBuild();
+      // Give it a few seconds first: with the caches warm it is usually done
+      // well inside that, and then there is nothing to come back for.
+      const quick = await Promise.race([
+        building.then(() => "done" as const).catch(() => "failed" as const),
+        new Promise<"slow">((r) => setTimeout(() => r("slow"), PROFIT_WAIT_MS)),
       ]);
-
-      const reports = [...seen].map((key) => {
-        const held = scan.collections.find((c) => c.collection.toLowerCase() === key);
-        const cost = costs.get(key);
-        const address = (held?.collection ??
-          cost?.collection ??
-          known.find((k) => k.address.toLowerCase() === key)!.address) as `0x${string}`;
-        const mine = salesByCollection.get(key) ?? [];
-        const chain = minted.get(key);
-        // The chain is the better source where it has anything: it sees mints
-        // this server never made. The ledger still supplies the one figure the
-        // chain cannot — gas burnt by attempts that reverted and left no token
-        // — and takes over entirely where the chain found no mints at all.
-        const spend = chain
-          ? {
-              gasWei: chain.gasWei + (cost?.failedGasWei ?? 0n),
-              priceWei: chain.priceWei,
-              tokens: chain.tokens,
-              wallets: chain.wallets,
-            }
-          : {
-              gasWei: cost?.gasWei ?? 0n,
-              priceWei: cost?.priceWei ?? 0n,
-              tokens: cost?.tokens ?? 0,
-              wallets: cost?.wallets ?? 0,
-            };
-        const report = summarise(
-          address,
-          spend,
-          mine,
-          held?.totalTokens ?? 0,
-          held?.name ?? cost?.collectionName,
-        );
-        return {
-          ...report,
-          cost: {
-            gasWei: report.cost.gasWei.toString(),
-            priceWei: report.cost.priceWei.toString(),
-            tokens: report.cost.tokens,
-            wallets: report.cost.wallets,
-          },
-          revenueWei: report.revenueWei.toString(),
-          netWei: report.netWei.toString(),
-          sales: report.sales.map((x) => ({
-            ...x,
-            blockNumber: x.blockNumber.toString(),
-            proceedsWei: x.proceedsWei.toString(),
-          })),
-          unpricedSales: report.unpricedSales,
-          runs: cost?.runs ?? 0,
-          lastAt: cost?.lastAt,
-        };
-      });
-      // Biggest position first — that is the one worth reading.
-      reports.sort((a, b) => b.heldTokens + b.soldTokens - (a.heldTokens + a.soldTokens));
-
-      // Every spend and every receipt, stamped with when it happened, so the
-      // dashboard can re-cut the same figures by time — last hour, last week —
-      // and draw a profit line without asking the chain again.
-      const times = await blockTimes(client as never, [
-        ...mintTxs.map((t) => t.blockNumber),
-        ...sales.map((s) => s.blockNumber),
-      ]);
-      const events = [
-        ...mintTxs.map((t) => ({
-          collection: t.collection.toLowerCase(),
-          kind: "mint" as const,
-          at: times.get(String(t.blockNumber)) ?? 0,
-          block: t.blockNumber.toString(),
-          // Signed: a mint takes money out, a sale puts it back.
-          wei: (-(t.gasWei + t.priceWei)).toString(),
-          tokens: t.tokens,
-          wallet: t.wallet,
-          txHash: t.txHash,
-        })),
-        ...sales.map((s) => ({
-          collection: s.collection.toLowerCase(),
-          kind: "sale" as const,
-          at: times.get(String(s.blockNumber)) ?? 0,
-          block: s.blockNumber.toString(),
-          wei: s.proceedsWei.toString(),
-          tokens: 1,
-          wallet: s.wallet,
-          txHash: s.txHash,
-          tokenId: s.tokenId,
-          priced: s.priced,
-        })),
-      ].sort((a, b) => a.at - b.at || Number(BigInt(a.block) - BigInt(b.block)));
-
-      json(res, 200, {
-        chain: info.label,
-        explorerUrl: info.explorerUrl,
-        openSeaSlug: info.openSeaSlug,
-        wallets: addresses.length,
-        collections: reports,
-        events,
-        now: Math.floor(Date.now() / 1000),
-        tookMs: Date.now() - started,
+      if (quick === "done" && profitCache) {
+        json(res, 200, { ...profitCache.body, cachedAt: profitCache.at });
+        return;
+      }
+      if (quick === "failed") throw new Error("couldn't read the chain — see the server log");
+      json(res, 202, {
+        building: true,
+        // Something to show while it works, if there is anything at all.
+        ...(profitCache ? { ...profitCache.body, cachedAt: profitCache.at, stale: true } : {}),
       });
       return;
     }

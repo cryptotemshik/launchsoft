@@ -48,6 +48,12 @@ interface ProfitEvent {
 }
 
 interface ProfitView {
+  /** True while the server is still reading; the rest may be missing. */
+  building?: boolean;
+  /** Set when what came back is the previous report, not a new one. */
+  stale?: boolean;
+  /** When the report was built, if it came from the server's cache. */
+  cachedAt?: number;
   chain: string;
   explorerUrl: string;
   openSeaSlug?: string;
@@ -97,13 +103,36 @@ export default function MintProfitPanel() {
   const [sort, setSort] = useState<SortKey>("net");
   const [desc, setDesc] = useState(true);
   const [widened, setWidened] = useState(false);
+  const [waiting, setWaiting] = useState(false);
 
-  const load = useCallback(async () => {
+  /**
+   * Ask for the report, and keep asking while the server builds it.
+   *
+   * Reading a hundred wallets' whole history takes longer than the tunnel
+   * allows a single request to live, so the server does it in the background
+   * and answers "building" until it is done. Waiting quietly through that is
+   * the difference between a panel that looks broken and one that is working.
+   */
+  const load = useCallback(async (fresh = false) => {
     setBusy(true);
     setError(null);
     try {
       save();
-      const next = (await call("/api/profit")) as unknown as ProfitView;
+      let next = (await call(
+        `/api/profit${fresh ? "?fresh=1" : ""}`,
+      )) as unknown as ProfitView;
+      // Up to five minutes: a first read of a long history is genuinely slow,
+      // and giving up early would throw away work that is nearly done.
+      for (let i = 0; next.building && i < 60; i++) {
+        setWaiting(true);
+        await new Promise((r) => setTimeout(r, 5_000));
+        next = (await call("/api/profit")) as unknown as ProfitView;
+      }
+      setWaiting(false);
+      if (next.building) {
+        setError("The server is still reading the chain — press refresh in a minute.");
+        return;
+      }
       setView(next);
       // A day is the useful default, but a day that happens to be quiet would
       // show an empty panel and read as broken. So when the default window is
@@ -122,6 +151,7 @@ export default function MintProfitPanel() {
       );
     } finally {
       setBusy(false);
+      setWaiting(false);
     }
   }, [call, save]);
 
@@ -304,16 +334,34 @@ export default function MintProfitPanel() {
       </div>
       <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap", marginTop: 8 }}>
         <button className="secondary" onClick={() => void load()} disabled={busy || !base || !token}>
-          {busy ? "reading the chain…" : view ? "refresh" : "load"}
+          {waiting ? "reading the chain…" : busy ? "…" : view ? "refresh" : "load"}
         </button>
+        {view && !busy ? (
+          <button
+            className="secondary"
+            style={{ padding: "3px 12px", fontSize: 11, width: "auto" }}
+            onClick={() => void load(true)}
+            title="Ignore everything cached and read the chain again"
+          >
+            re-read
+          </button>
+        ) : null}
         {view ? (
           <span className="pill ok">
             ● {view.wallets ?? 0} wallets · {(view.collections ?? []).length} collection
             {(view.collections ?? []).length === 1 ? "" : "s"} ·{" "}
             {((view.tookMs ?? 0) / 1000).toFixed(1)}s
+            {view.cachedAt ? ` · read ${Math.max(0, Math.round((Date.now() - view.cachedAt) / 1000))}s ago` : ""}
           </span>
         ) : null}
       </div>
+      {waiting ? (
+        <p className="dim hint">
+          Reading every wallet&apos;s history — the first run after a restart
+          takes a minute or two. It is fast after that, and the page can be left
+          alone until it lands.
+        </p>
+      ) : null}
       {error ? <p className="error">{error}</p> : null}
       <StaleServer version={serverVersion} />
 

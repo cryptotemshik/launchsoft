@@ -24,6 +24,51 @@
 import { formatEther, getAddress, type PublicClient } from "viem";
 import { mapWithLimit } from "../lib/rpcRead";
 
+/**
+ * Caches for facts that cannot change.
+ *
+ * A block's timestamp, a transaction's cost and a wallet's balance at a block
+ * in the past are all settled history: once read, re-reading them can only
+ * return the same answer. Yet the profit report re-read every one of them on
+ * every load — several hundred round trips, on a single-threaded server, while
+ * every other request waited behind them. That is what made the panel feel
+ * like it had stopped connecting.
+ *
+ * So they are remembered for the life of the process. A first load still pays
+ * in full; every load after it pays only for what has happened since. The caps
+ * are there so a very long history cannot grow the process without bound —
+ * they are far above a realistic drop's worth of blocks.
+ */
+const blockTimeCache = new Map<string, number>();
+const txCostCache = new Map<string, { valueWei: bigint; gasWei: bigint }>();
+const balanceRiseCache = new Map<string, { rise: bigint; priced: boolean }>();
+const CACHE_CAP = 50_000;
+
+/** Forget the oldest entries once a cache grows past its cap. */
+function trim<K, V>(cache: Map<K, V>): void {
+  if (cache.size <= CACHE_CAP) return;
+  const over = cache.size - CACHE_CAP;
+  let i = 0;
+  for (const k of cache.keys()) {
+    cache.delete(k);
+    if (++i >= over) break;
+  }
+}
+
+/**
+ * Empty every cache.
+ *
+ * The server calls this when someone asks for a genuinely fresh report, and
+ * the tests call it between cases — the caches are keyed by real hashes and
+ * block numbers, which never repeat with different contents in the wild, but
+ * a fixture reusing `0xtx1` for two different transactions certainly does.
+ */
+export function clearProfitCaches(): void {
+  blockTimeCache.clear();
+  txCostCache.clear();
+  balanceRiseCache.clear();
+}
+
 export interface MintCost {
   /** Wei spent on gas across every mint transaction. */
   gasWei: bigint;
@@ -109,7 +154,10 @@ export async function priceTransfers(
   }
 
   const keys = [...pairs.keys()];
-  const deltas = await mapWithLimit(keys, async (key) => {
+  // The balance a wallet held at a block that has already passed does not
+  // change, so a sale priced once stays priced.
+  const unknown = keys.filter((k) => !balanceRiseCache.has(k));
+  const deltas = await mapWithLimit(unknown, async (key) => {
     const { wallet, blockNumber } = pairs.get(key)!;
     try {
       const [after, before] = await Promise.all([
@@ -126,7 +174,15 @@ export async function priceTransfers(
     }
   });
 
-  const riseByKey = new Map(keys.map((k, i) => [k, deltas[i]]));
+  unknown.forEach((k, i) => {
+    // An unpriced sale is not cached — a node with archive state may answer
+    // next time, and caching "unknown" would make that permanent.
+    if (deltas[i].priced) balanceRiseCache.set(k, deltas[i]);
+  });
+  trim(balanceRiseCache);
+  const riseByKey = new Map(
+    keys.map((k) => [k, balanceRiseCache.get(k) ?? { rise: 0n, priced: false }]),
+  );
   const countByKey = new Map<string, number>();
   for (const t of external) {
     const k = `${t.wallet.toLowerCase()}@${t.blockNumber}`;
@@ -194,22 +250,31 @@ export async function readMintTxs(
   if (mints.length === 0) return [];
 
   const hashes = [...new Set(mints.map((m) => m.txHash).filter(Boolean))];
-  const costs = await mapWithLimit(hashes, async (hash) => {
+  // A mined transaction's value and gas are settled — read each hash once,
+  // ever.
+  const missing = hashes.filter((h) => !txCostCache.has(h));
+  const costs = await mapWithLimit(missing, async (hash) => {
     try {
       const [tx, receipt] = await Promise.all([
         client.getTransaction({ hash: hash as `0x${string}` }),
         client.getTransactionReceipt({ hash: hash as `0x${string}` }),
       ]);
       const gasPrice = receipt.effectiveGasPrice ?? tx.gasPrice ?? 0n;
-      return { valueWei: tx.value ?? 0n, gasWei: receipt.gasUsed * gasPrice };
+      return { valueWei: tx.value ?? 0n, gasWei: receipt.gasUsed * gasPrice, ok: true };
     } catch {
       // A pruned node may not have the transaction any more. Counting it as
       // free would overstate profit, but inventing a number is worse — so it
       // contributes nothing and the token still counts as minted.
-      return { valueWei: 0n, gasWei: 0n };
+      return { valueWei: 0n, gasWei: 0n, ok: false };
     }
   });
-  const byHash = new Map(hashes.map((h, i) => [h, costs[i]]));
+  missing.forEach((h, i) => {
+    if (costs[i].ok) txCostCache.set(h, { valueWei: costs[i].valueWei, gasWei: costs[i].gasWei });
+  });
+  trim(txCostCache);
+  const byHash = new Map(
+    hashes.map((h) => [h, txCostCache.get(h) ?? { valueWei: 0n, gasWei: 0n }]),
+  );
 
   // Group by transaction and collection: one row per (tx, collection).
   const rows = new Map<string, MintTx>();
@@ -283,7 +348,10 @@ export async function blockTimes(
   blocks: readonly bigint[],
 ): Promise<Map<string, number>> {
   const unique = [...new Set(blocks.map(String))];
-  const times = await mapWithLimit(unique, async (n) => {
+  // Only the ones nobody has looked up yet — a block's timestamp is fixed the
+  // moment the block exists, so a second read can only cost time.
+  const missing = unique.filter((n) => !blockTimeCache.has(n));
+  const times = await mapWithLimit(missing, async (n) => {
     try {
       const b = await client.getBlock({ blockNumber: BigInt(n) });
       return Number(b.timestamp);
@@ -291,7 +359,12 @@ export async function blockTimes(
       return 0;
     }
   });
-  return new Map(unique.map((n, i) => [n, times[i]]));
+  missing.forEach((n, i) => {
+    // A failed read is not cached: it can succeed next time.
+    if (times[i] > 0) blockTimeCache.set(n, times[i]);
+  });
+  trim(blockTimeCache);
+  return new Map(unique.map((n) => [n, blockTimeCache.get(n) ?? 0]));
 }
 
 /** Assemble the report. Pure arithmetic — the reading already happened. */

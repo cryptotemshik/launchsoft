@@ -1,5 +1,7 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  blockTimes,
+  clearProfitCaches,
   eth,
   priceMints,
   priceTransfers,
@@ -14,6 +16,10 @@ const BUYER = "0x9999999999999999999999999999999999999999" as const;
 const COLL = "0xcccccccccccccccccccccccccccccccccccccccc" as const;
 
 const ETH = 1_000_000_000_000_000_000n;
+
+// The caches key on hashes and block numbers, which are unique in the wild but
+// reused across these fixtures.
+beforeEach(clearProfitCaches);
 
 /** A client whose balances are looked up as `wallet@block`. */
 function clientWith(balances: Record<string, bigint>) {
@@ -270,5 +276,78 @@ describe("priceMints", () => {
       (await priceMints({ getTransaction } as never, [])).size,
     ).toBe(0);
     expect(getTransaction).not.toHaveBeenCalled();
+  });
+});
+
+describe("caching settled history", () => {
+  it("reads a transaction once and remembers what it cost", async () => {
+    const getTransaction = vi.fn(async () => ({ value: 2n * ETH, gasPrice: 0n }));
+    const getTransactionReceipt = vi.fn(async () => ({ gasUsed: 0n, effectiveGasPrice: 0n }));
+    const client = { getTransaction, getTransactionReceipt } as never;
+    const mint = {
+      wallet: W1,
+      collection: COLL,
+      tokenId: "1",
+      blockNumber: 10n,
+      txHash: "0xtx1",
+    };
+
+    const first = await priceMints(client, [mint]);
+    const second = await priceMints(client, [mint]);
+
+    expect(getTransaction).toHaveBeenCalledTimes(1);
+    expect(second.get(COLL.toLowerCase())!.priceWei).toBe(first.get(COLL.toLowerCase())!.priceWei);
+  });
+
+  it("prices a sale once and does not ask the node again", async () => {
+    const getBalance = vi.fn(async ({ blockNumber }: { blockNumber: bigint }) =>
+      blockNumber === 100n ? 5n * ETH : 4n * ETH,
+    );
+    const client = { getBalance } as never;
+
+    const first = await priceTransfers(client, [out()], [W1]);
+    const second = await priceTransfers(client, [out()], [W1]);
+
+    expect(getBalance).toHaveBeenCalledTimes(2); // the block and the one before
+    expect(second[0].proceedsWei).toBe(first[0].proceedsWei);
+    expect(second[0].proceedsWei).toBe(1n * ETH);
+  });
+
+  it("does not remember a sale it could not price", async () => {
+    // A node without archive state today may have it tomorrow — caching
+    // "unknown" would make a temporary gap permanent.
+    let archive = false;
+    const client = {
+      getBalance: async ({ blockNumber }: { blockNumber: bigint }) => {
+        if (!archive) throw new Error("metadata is not found");
+        return blockNumber === 100n ? 3n * ETH : 1n * ETH;
+      },
+    } as never;
+
+    expect((await priceTransfers(client, [out()], [W1]))[0].priced).toBe(false);
+    archive = true;
+    const after = await priceTransfers(client, [out()], [W1]);
+    expect(after[0].priced).toBe(true);
+    expect(after[0].proceedsWei).toBe(2n * ETH);
+  });
+
+  it("reads a block's timestamp once", async () => {
+    const getBlock = vi.fn(async () => ({ timestamp: 1_700_000_000n }));
+    const client = { getBlock } as never;
+
+    await blockTimes(client, [7n, 7n, 8n]);
+    const again = await blockTimes(client, [7n, 8n]);
+
+    expect(getBlock).toHaveBeenCalledTimes(2); // 7 and 8, not four calls
+    expect(again.get("7")).toBe(1_700_000_000);
+  });
+
+  it("forgets everything when asked, so a fresh report really is fresh", async () => {
+    const getBlock = vi.fn(async () => ({ timestamp: 1n }));
+    const client = { getBlock } as never;
+    await blockTimes(client, [1n]);
+    clearProfitCaches();
+    await blockTimes(client, [1n]);
+    expect(getBlock).toHaveBeenCalledTimes(2);
   });
 });
