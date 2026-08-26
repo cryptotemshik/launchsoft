@@ -346,7 +346,7 @@ export default function FundingTab() {
           </label>
           {connected ? (
             <span className="pill ok">
-              ● {wallets.length} wallets · {total.toFixed(4)} ETH total
+              {wallets.length} wallets · {total.toFixed(4)} ETH total
               {empty ? ` · ${empty} empty` : ""}
             </span>
           ) : null}

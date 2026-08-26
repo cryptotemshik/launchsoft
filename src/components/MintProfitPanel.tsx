@@ -349,7 +349,7 @@ export default function MintProfitPanel() {
         ) : null}
         {view ? (
           <span className="pill ok">
-            ● {view.wallets ?? 0} wallets · {(view.collections ?? []).length} collection
+            {view.wallets ?? 0} wallets · {(view.collections ?? []).length} collection
             {(view.collections ?? []).length === 1 ? "" : "s"} ·{" "}
             {((view.tookMs ?? 0) / 1000).toFixed(1)}s
             {view.cachedAt ? ` · read ${Math.max(0, Math.round((Date.now() - view.cachedAt) / 1000))}s ago` : ""}

@@ -300,7 +300,7 @@ export function Steps({ steps }: { steps: StepView[] }) {
           <span style={{ flex: 1 }}>
             {s.label}
             {s.status === "running" && s.progress !== undefined ? (
-              <div className="progressbar">
+              <div className={`progressbar${s.progress >= 1 ? " full" : ""}`}>
                 <div style={{ width: `${Math.round(s.progress * 100)}%` }} />
               </div>
             ) : null}

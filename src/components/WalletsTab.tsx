@@ -149,7 +149,7 @@ export default function WalletsTab() {
           </button>
           {perm === "granted" ? (
             <span className="pill ok" style={{ alignSelf: "center" }}>
-              ● notifications on
+              notifications on
             </span>
           ) : perm === "unsupported" ? (
             <span className="dim" style={{ alignSelf: "center" }}>
@@ -230,7 +230,8 @@ export default function WalletsTab() {
           </p>
         ) : (
           <ul className="feed">
-            {events.map((e) => (
+            {/* Sixty rendered rows is plenty of feed; memory keeps 200. */}
+            {events.slice(0, 60).map((e) => (
               <li key={e.id} className="feed-row">
                 <span className={`ev-pill ${KIND_CLASS[e.kind]}`}>{e.kind}</span>
                 <span className="feed-main">

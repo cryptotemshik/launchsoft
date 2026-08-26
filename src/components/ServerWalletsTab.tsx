@@ -190,7 +190,7 @@ export default function ServerWalletsTab() {
           </label>
           {connected ? (
             <span className="pill ok">
-              ● connected{view?.chain ? ` · ${view.chain}` : ""}
+              connected{view?.chain ? ` · ${view.chain}` : ""}
             </span>
           ) : null}
         </div>

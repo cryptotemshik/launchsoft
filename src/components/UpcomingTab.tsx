@@ -163,7 +163,7 @@ export default function UpcomingTab() {
           </button>
           {list ? (
             <span className="pill ok">
-              ● {dated} scheduled
+              {dated} scheduled
               {undated ? ` · ${undated} undated` : ""}
             </span>
           ) : null}

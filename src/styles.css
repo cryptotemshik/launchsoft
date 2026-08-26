@@ -314,7 +314,7 @@ h1 .cursor {
   border-radius: var(--radius);
   padding: 20px;
   margin-bottom: 12px;
-  animation: rise 0.35s ease both;
+  animation: rise 0.3s cubic-bezier(0.16, 1, 0.3, 1) backwards;
 }
 @keyframes rise {
   from {
@@ -322,6 +322,11 @@ h1 .cursor {
     transform: translateY(6px);
   }
 }
+/* Cards enter with a small stagger — first mount and tab switches alike. */
+.panel:nth-of-type(2) { animation-delay: 40ms; }
+.panel:nth-of-type(3) { animation-delay: 80ms; }
+.panel:nth-of-type(4) { animation-delay: 120ms; }
+.panel:nth-of-type(5) { animation-delay: 160ms; }
 .panel h2 {
   margin: 0 0 16px;
   font-size: 11px;
@@ -609,7 +614,7 @@ ul.errors {
   justify-content: center;
   padding: 16px;
   z-index: 50;
-  animation: rise 0.2s ease both;
+  animation: rise 0.2s cubic-bezier(0.16, 1, 0.3, 1) backwards;
 }
 .modal {
   background: var(--panel);
@@ -934,6 +939,84 @@ tr.project-detail td {
   }
   table.collapsible td[data-label=""]::before {
     content: none;
+  }
+}
+
+/* ── Micro-animations ────────────────────────────────────────────────────── */
+/* A new feed row slides down 8px and flashes its left edge green for 1.2s. */
+.feed-row {
+  animation: feedIn 0.3s cubic-bezier(0.16, 1, 0.3, 1) backwards;
+  position: relative;
+}
+.feed-row::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--green);
+  opacity: 0;
+  animation: edgeFlash 1.2s ease-out;
+}
+@keyframes feedIn {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+}
+@keyframes edgeFlash {
+  0% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+/* The seconds of a countdown dip for a beat as they change. */
+.tick {
+  animation: tickDip 0.06s ease;
+}
+@keyframes tickDip {
+  50% { opacity: 0.35; }
+}
+
+/* A transaction that just confirmed: the button fills bright for a moment. */
+.btn-confirmed {
+  background: var(--green) !important;
+  border-color: var(--green) !important;
+  color: var(--green-ink) !important;
+  box-shadow: var(--glow-green);
+}
+
+/* At 100% the mint progress bar pulses its glow once. */
+.progressbar.full > div {
+  animation: fullPulse 0.9s ease-out 1;
+}
+@keyframes fullPulse {
+  30% { box-shadow: var(--glow-green); }
+  100% { box-shadow: none; }
+}
+
+/* The live dot on pills — the one loop allowed besides the header caret. */
+.pill.ok::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--green);
+  animation: livePulse 2s ease-in-out infinite;
+}
+@keyframes livePulse {
+  0%, 100% { opacity: 1; box-shadow: 0 0 4px rgba(0, 230, 118, 0.8); }
+  50% { opacity: 0.45; box-shadow: none; }
+}
+
+/* Motion is a garnish: whoever asked for less gets none of it. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
   }
 }
 

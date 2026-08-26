@@ -418,7 +418,7 @@ export default function RemoteRunner(props: RemoteRunnerProps) {
         </label>
         {connected ? (
           <span className="pill ok">
-            ● connected{pending.length ? ` · ${pending.length} pending` : ""}
+            connected{pending.length ? ` · ${pending.length} pending` : ""}
           </span>
         ) : null}
         {connected ? (
@@ -549,9 +549,13 @@ export default function RemoteRunner(props: RemoteRunnerProps) {
                                 <span
                                   className={`cell-sub ${opensIn !== null && opensIn > 0 && opensIn < 3600 ? "warn" : "dim"}`}
                                 >
-                                  {opensIn !== null && opensIn > 0
-                                    ? `in ${formatCountdown(opensIn)}`
-                                    : "open now"}
+                                  {opensIn !== null && opensIn > 0 ? (
+                                    <span key={opensIn} className="tick">
+                                      in {formatCountdown(opensIn)}
+                                    </span>
+                                  ) : (
+                                    "open now"
+                                  )}
                                 </span>
                               ) : null}
                             </>

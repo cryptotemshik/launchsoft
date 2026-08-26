@@ -10,6 +10,7 @@ import { useEffect, useState } from "react";
 import { formatGwei } from "viem";
 import { makeReadClient } from "../lib/readClient";
 import { useCustomRpcs } from "../lib/customRpc";
+import { useAnimatedNumber } from "../lib/useAnimatedNumber";
 import { useActiveChain } from "../signer";
 import { CHAINS_BY_ID, DEFAULT_CHAIN_ID } from "../chains";
 
@@ -45,6 +46,10 @@ export default function GasBlock() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [info.id, urls.join(",")]);
 
+  // The block counter ticks up through the gap rather than jumping — the
+  // motion is the point: it reads as a heartbeat.
+  const shownBlock = useAnimatedNumber(block === null ? null : Number(block));
+
   /** Gwei with just enough places for a chain whose base fee is ~0.01. */
   const gwei = gas === null ? "—" : Number(formatGwei(gas)).toPrecision(2).replace(/\.?0+$/, "");
 
@@ -54,7 +59,7 @@ export default function GasBlock() {
       <b>{gwei}</b>
       <span className="gb-sep"> · </span>
       <span className="gb-label">BLOCK</span>{" "}
-      <b>{block === null ? "—" : block.toLocaleString("en-US")}</b>
+      <b>{shownBlock === null ? "—" : shownBlock.toLocaleString("en-US")}</b>
     </span>
   );
 }
