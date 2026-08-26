@@ -235,10 +235,10 @@ export default function DashboardTab() {
         </div>
         {addError ? <p className="error">{addError}</p> : null}
         {projects.length === 0 ? (
-          <p className="dim">
-            Nothing tracked yet. Launches made here appear automatically; any
-            other collection can be added by address or link.
-          </p>
+          <div className="empty-state">
+            NO COLLECTIONS TRACKED —{" "}
+            <span className="es-action">ADD ONE BY ADDRESS OR LINK ↑</span>
+          </div>
         ) : (
           <div className="table-wrap">
             <table className="projects">

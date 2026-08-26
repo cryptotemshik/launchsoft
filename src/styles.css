@@ -776,7 +776,11 @@ tr.project-detail td {
 
 /* ── Landing / cover ─────────────────────────────────────────────────────── */
 .app-enter {
-  animation: appIn 0.5s ease both;
+  /* `backwards`, not `both`: `both` would keep a computed transform (even an
+     identity one) after the animation ends, and a transformed ancestor
+     becomes the containing block for every fixed descendant — which pinned
+     the mobile bottom bar to the page instead of the screen. */
+  animation: appIn 0.5s ease backwards;
 }
 @keyframes appIn {
   from {
@@ -889,6 +893,92 @@ tr.project-detail td {
   letter-spacing: 0.08em;
 }
 
+/* ── Card collapse (mobile tables) ───────────────────────────────────────
+   A table that opts in with .collapsible and data-label on its cells turns
+   into stacked label/value cards under 640px — reading down beats pinching
+   sideways on a phone. Tables without labels keep their horizontal scroll. */
+@media (max-width: 640px) {
+  table.collapsible thead {
+    display: none;
+  }
+  table.collapsible,
+  table.collapsible tbody {
+    display: block;
+  }
+  table.collapsible tr {
+    display: block;
+    border-bottom: 1px solid var(--border);
+    padding: 10px 12px;
+  }
+  table.collapsible td {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 12px;
+    border: none !important;
+    padding: 3px 0;
+    white-space: normal;
+    text-align: right;
+  }
+  table.collapsible td:empty {
+    display: none;
+  }
+  table.collapsible td::before {
+    content: attr(data-label);
+    color: var(--text-dim);
+    font-size: 10px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    text-align: left;
+    flex: none;
+  }
+  table.collapsible td[data-label=""]::before {
+    content: none;
+  }
+}
+
+/* ── Empty states / skeletons ────────────────────────────────────────────── */
+/* Never an unexplained blank: what this screen is, plus one action. */
+.empty-state {
+  text-align: center;
+  color: var(--text-dim);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding: 34px 16px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  margin-top: 14px;
+}
+.empty-state .es-action {
+  color: var(--green);
+}
+
+/* Loading is the shape of the answer, dimmed and breathing — not a spinner. */
+.skeleton {
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  animation: skel 1.2s ease-in-out infinite;
+}
+@keyframes skel {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
+}
+.skeleton-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 14px;
+}
+.skeleton-rows .skeleton {
+  height: 38px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .skeleton {
+    animation: none;
+  }
+}
+
 /* ── Mobile ─────────────────────────────────────────────────────────────── */
 @media (max-width: 640px) {
   #root {
@@ -900,19 +990,44 @@ tr.project-detail td {
   h1 {
     font-size: 19px;
   }
+  /* The nav becomes a bottom bar: thumb-reach, 44px targets, scrollable
+     sideways when nine destinations don't fit on one phone width. */
   .tabs {
-    gap: 5px;
-    border-radius: var(--radius);
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 40;
+    margin: 0;
+    padding: 6px 8px calc(6px + env(safe-area-inset-bottom));
+    border: none;
+    border-top: 1px solid var(--border);
+    border-radius: 0;
+    background: var(--panel);
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    gap: 2px;
   }
   .tabs button {
-    flex: 1 1 40%;
+    flex: none;
+    flex-direction: column;
     justify-content: center;
     text-align: center;
-    padding: 11px 8px;
+    gap: 4px;
+    min-height: 48px;
+    min-width: 64px;
+    padding: 6px 10px;
+    font-size: 9px;
   }
   .tabs button.tab-mint {
     margin-left: 0;
-    flex-basis: 100%;
+  }
+  /* Flattened menu entries keep the desktop menu's width: 100% otherwise. */
+  .tab-menu button {
+    width: auto;
+  }
+  #root {
+    padding-bottom: 110px;
   }
   .tab-group.snipe-group {
     margin-left: 0;
@@ -971,23 +1086,6 @@ tr.project-detail td {
   .grid button.secondary,
   .grid button.danger {
     width: 100%;
-  }
-  /* Landing: recede the floating cards so the copy stays legible. */
-  .nft-card {
-    opacity: 0.22;
-    filter: blur(1.6px);
-  }
-  .nft-card:nth-child(3),
-  .nft-card:nth-child(5) {
-    display: none;
-  }
-  .landing-title {
-      }
-  .landing-tag,
-  .landing-note {
-      }
-  .landing-chips .chip {
-    background: rgba(2, 8, 4, 0.65);
   }
 }
 

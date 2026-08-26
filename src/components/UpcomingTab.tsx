@@ -173,7 +173,7 @@ export default function UpcomingTab() {
 
         {list && list.length > 0 ? (
           <div className="table-wrap">
-            <table className="ledger-table">
+            <table className="ledger-table collapsible">
               <thead>
                 <tr>
                   {header("name", "collection")}
@@ -188,18 +188,18 @@ export default function UpcomingTab() {
                   const near = m.at !== undefined ? until(m.at, now) : null;
                   return (
                     <tr key={m.id} className="project-row">
-                      <td>
+                      <td data-label="collection">
                         <span className="cell-name">{m.name}</span>
                       </td>
-                      <td>
+                      <td data-label="twitter">
                         <a href={m.twitter} target="_blank" rel="noreferrer">
                           {twitterHandle(m.twitter)}
                         </a>
                       </td>
-                      <td className="num">
+                      <td className="num" data-label="supply">
                         {m.supply ? m.supply.toLocaleString("en-US") : <span className="dim">?</span>}
                       </td>
-                      <td>
+                      <td data-label="expected">
                         {m.at === undefined ? (
                           <span className="pill-tba">TBA</span>
                         ) : (
@@ -230,9 +230,9 @@ export default function UpcomingTab() {
         ) : null}
 
         {list && list.length === 0 ? (
-          <p className="dim hint">
-            Nothing on the list. Open the Telegram bot and send <code>/add</code>.
-          </p>
+          <div className="empty-state">
+            NO UPCOMING MINTS — <span className="es-action">SEND /ADD TO THE TELEGRAM BOT</span>
+          </div>
         ) : null}
 
         <p className="dim hint" style={{ marginBottom: 0 }}>

@@ -506,12 +506,12 @@ export default function RemoteRunner(props: RemoteRunnerProps) {
           )}
 
           {jobs.length === 0 ? (
-            <p className="dim" style={{ marginTop: 14, marginBottom: 0 }}>
-              Queue is empty.
-            </p>
+            <div className="empty-state">
+              QUEUE EMPTY — <span className="es-action">READ A COLLECTION ABOVE AND QUEUE IT →</span>
+            </div>
           ) : (
             <div className="table-wrap" style={{ marginTop: 14 }}>
-              <table className="ledger-table">
+              <table className="ledger-table collapsible">
                 <thead>
                   <tr>
                     <th>opens</th>
@@ -536,7 +536,7 @@ export default function RemoteRunner(props: RemoteRunnerProps) {
                         className={`project-row${isOpen ? " row-open" : ""}`}
                         onClick={() => setOpenJob(isOpen ? null : j.id)}
                       >
-                        <td>
+                        <td data-label="opens">
                           {j.startTime ? (
                             <>
                               <span className="cell-name">
@@ -559,7 +559,7 @@ export default function RemoteRunner(props: RemoteRunnerProps) {
                             <span className="dim">as soon as due</span>
                           )}
                         </td>
-                        <td>
+                        <td data-label="drop">
                           {/* Straight through to the collection — stopPropagation
                               so following the link does not also toggle the row. */}
                           <a
@@ -574,7 +574,7 @@ export default function RemoteRunner(props: RemoteRunnerProps) {
                           </a>
                           {j.dryRun ? <span className="cell-sub dim">dry run</span> : null}
                         </td>
-                        <td className="num">
+                        <td className="num" data-label="price">
                           {j.drop ? (
                             BigInt(j.drop.priceWei) === 0n ? (
                               <span className="ok">free</span>
@@ -585,7 +585,7 @@ export default function RemoteRunner(props: RemoteRunnerProps) {
                             <span className="dim">?</span>
                           )}
                         </td>
-                        <td className="num">
+                        <td className="num" data-label="supply">
                           {j.drop ? (
                             <>
                               <span className="cell-name">{Number(j.drop.maxSupply).toLocaleString("en-US")}</span>
@@ -597,17 +597,17 @@ export default function RemoteRunner(props: RemoteRunnerProps) {
                             <span className="dim">?</span>
                           )}
                         </td>
-                        <td className="dim">
+                        <td className="dim" data-label="stage">
                           {j.stage} ×{j.quantity}
                           {j.wallets?.length ? ` · ${j.wallets.length}w` : ""}
                         </td>
-                        <td>
+                        <td data-label="status">
                           <span className={STATUS_CLASS[j.status]}>{j.status}</span>
                           {j.status === "done" && minted > 0 ? (
                             <span className="ok"> · {minted} NFT</span>
                           ) : null}
                         </td>
-                        <td className="num">
+                        <td className="num" data-label="">
                           {j.status === "queued" ? (
                             <button
                               className="secondary"

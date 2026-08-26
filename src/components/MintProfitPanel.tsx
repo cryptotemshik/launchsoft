@@ -357,11 +357,23 @@ export default function MintProfitPanel() {
         ) : null}
       </div>
       {waiting ? (
-        <p className="dim hint">
-          Reading every wallet&apos;s history — the first run after a restart
-          takes a minute or two. It is fast after that, and the page can be left
-          alone until it lands.
-        </p>
+        <>
+          <p className="dim hint">
+            Reading every wallet&apos;s history — the first run after a restart
+            takes a minute or two. It is fast after that, and the page can be
+            left alone until it lands.
+          </p>
+          {!view ? (
+            // The shape of the answer, dimmed and breathing, instead of a
+            // spinner over nothing.
+            <div className="skeleton-rows" aria-hidden>
+              <div className="skeleton" style={{ height: 64, width: "40%" }} />
+              <div className="skeleton" />
+              <div className="skeleton" />
+              <div className="skeleton" />
+            </div>
+          ) : null}
+        </>
       ) : null}
       {error ? <p className="error">{error}</p> : null}
       <StaleServer version={serverVersion} />
