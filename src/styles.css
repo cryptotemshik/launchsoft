@@ -324,23 +324,19 @@ h1 .cursor {
 }
 .panel h2 {
   margin: 0 0 16px;
-  font-family: var(--display);
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--text);
-  letter-spacing: 0.01em;
-  text-transform: none;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-dim);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
   display: flex;
   align-items: center;
   gap: 9px;
 }
 .panel h2::before {
-  content: "";
-  width: 3px;
-  height: 15px;
-  border-radius: 2px;
-  background: var(--green);
-  box-shadow: var(--glow-green);
+  content: "▸";
+  color: var(--green);
+  font-size: 10px;
 }
 
 /* ── Forms ───────────────────────────────────────────────────────────────── */
@@ -364,9 +360,12 @@ h1 .cursor {
   grid-column: 1 / -1;
 }
 .field label {
-  color: var(--dim);
-  font-size: 12px;
-  font-weight: 500;
+  color: var(--text-dim);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  transition: color 0.15s;
 }
 .field .hint {
   color: var(--faint);
@@ -377,8 +376,8 @@ h1 .cursor {
 input,
 textarea,
 select {
-  background: rgba(3, 14, 8, 0.7);
-  border: 1px solid var(--line);
+  background: var(--bg);
+  border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   color: var(--text);
   font-family: var(--mono);
@@ -397,8 +396,12 @@ input:focus,
 textarea:focus,
 select:focus {
   outline: none;
-  border-color: var(--line-strong);
-  box-shadow: 0 0 0 3px rgba(0, 230, 118, 0.14);
+  border-color: var(--green);
+  box-shadow: none;
+}
+/* The label lights up with its field — eye lands where the cursor is. */
+.field:focus-within > label {
+  color: var(--green);
 }
 input[type="checkbox"] {
   width: auto;
@@ -415,15 +418,17 @@ input[type="file"] {
 /* ── Buttons ─────────────────────────────────────────────────────────────── */
 button.primary,
 button.secondary,
-button.danger {
-  font-family: var(--sans);
-  font-size: 14px;
-  font-weight: 600;
-  letter-spacing: 0.01em;
-  border-radius: var(--radius-sm);
-  padding: 11px 22px;
+button.danger,
+button.ghost {
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  border-radius: var(--radius);
+  padding: 11px 20px;
   cursor: pointer;
-  transition: transform 0.06s, filter 0.15s, box-shadow 0.15s, background 0.15s;
+  transition: transform 0.06s, box-shadow 0.15s, background 0.15s, color 0.15s;
 }
 button.primary:active,
 button.secondary:active,
@@ -432,23 +437,33 @@ button.danger:active {
 }
 button.primary {
   position: relative;
-  overflow: hidden;
   background: var(--green);
-  border: 1px solid rgba(0, 230, 118, 0.6);
+  border: 1px solid var(--green);
   color: var(--green-ink);
-  box-shadow: var(--glow-green);
 }
 button.primary:hover {
-  filter: brightness(1.08);
   box-shadow: var(--glow-green);
 }
+button.primary:active {
+  background: var(--green-deep);
+  border-color: var(--green-deep);
+}
 button.secondary {
-  background: rgba(0, 230, 118, 0.06);
-  border: 1px solid rgba(0, 230, 118, 0.4);
-  color: var(--green-bright);
+  background: transparent;
+  border: 1px solid var(--green);
+  color: var(--green);
 }
 button.secondary:hover {
-  background: rgba(0, 230, 118, 0.14);
+  background: rgba(0, 230, 118, 0.08);
+}
+button.ghost {
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+}
+button.ghost:hover {
+  text-decoration: underline;
+  color: var(--text);
 }
 button.danger {
   background: rgba(255, 82, 82, 0.07);
@@ -458,15 +473,63 @@ button.danger {
 button.danger:hover {
   background: rgba(255, 82, 82, 0.16);
 }
-button:disabled {
-  opacity: 0.4;
+button.primary:disabled,
+button.secondary:disabled,
+button.danger:disabled {
+  background: var(--panel-2);
+  border-color: var(--border);
+  color: var(--text-dim);
   cursor: not-allowed;
   box-shadow: none;
-  filter: none;
+}
+button:disabled {
+  cursor: not-allowed;
+  box-shadow: none;
 }
 :focus-visible {
-  outline: 2px solid rgba(0, 230, 118, 0.7);
+  outline: 1px solid var(--green);
   outline-offset: 2px;
+}
+
+/* One-line terminal spinner for busy buttons: braille frames, pure CSS. */
+.spin::before {
+  content: "⠋";
+  display: inline-block;
+  margin-right: 8px;
+  animation: braille 0.8s steps(1) infinite;
+}
+@keyframes braille {
+  0% { content: "⠋"; }
+  10% { content: "⠙"; }
+  20% { content: "⠹"; }
+  30% { content: "⠸"; }
+  40% { content: "⠼"; }
+  50% { content: "⠴"; }
+  60% { content: "⠦"; }
+  70% { content: "⠧"; }
+  80% { content: "⠇"; }
+  90% { content: "⠏"; }
+}
+
+/* Click-to-copy addresses — a button that dresses as text. */
+button.addr {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  font-family: var(--mono);
+  color: inherit;
+  cursor: pointer;
+  border-bottom: 1px dashed var(--border);
+}
+button.addr:hover {
+  border-bottom-color: var(--green);
+}
+.addr-copied {
+  color: var(--green);
+  font-size: 10px;
+  letter-spacing: 0.12em;
 }
 
 /* ── Text helpers ────────────────────────────────────────────────────────── */
@@ -550,7 +613,7 @@ ul.errors {
 }
 .modal {
   background: var(--panel);
-  border: 1px solid var(--line-strong);
+  border: 1px solid var(--green);
   border-radius: var(--radius);
   max-width: 640px;
   width: 100%;
@@ -561,9 +624,11 @@ ul.errors {
 }
 .modal h3 {
   margin: 0 0 16px;
-  font-family: var(--display);
-  font-size: 18px;
-  color: var(--text);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-dim);
 }
 .modal dl {
   display: grid;
@@ -609,9 +674,9 @@ ul.errors {
 
 .progressbar {
   height: 6px;
-  border-radius: var(--radius);
+  border-radius: 0;
   overflow: hidden;
-  background: rgba(3, 14, 8, 0.8);
+  background: var(--border-dim);
   margin-top: 6px;
 }
 .progressbar > div {
@@ -633,14 +698,14 @@ table.projects {
 }
 table.projects th {
   text-align: left;
-  color: var(--faint);
-  font-weight: 600;
-  font-size: 11px;
-  letter-spacing: 0.06em;
+  color: var(--text-dim);
+  font-weight: 700;
+  font-size: 10px;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
   padding: 11px 12px;
-  background: var(--surface-2);
-  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
   cursor: pointer;
   user-select: none;
   white-space: nowrap;
@@ -650,7 +715,7 @@ table.projects th:hover {
 }
 table.projects td {
   padding: 12px;
-  border-bottom: 1px solid var(--line);
+  border-bottom: 1px solid var(--border-dim);
   white-space: nowrap;
   font-family: var(--mono);
 }
@@ -662,7 +727,7 @@ tr.project-row {
   transition: background 0.12s;
 }
 tr.project-row:hover td {
-  background: rgba(0, 230, 118, 0.05);
+  background: var(--panel-2);
 }
 tr.project-row.expanded td {
   background: rgba(0, 230, 118, 0.08);

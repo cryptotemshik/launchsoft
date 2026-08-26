@@ -159,7 +159,7 @@ export default function UpcomingTab() {
             onClick={() => void load()}
             disabled={busy || !base || !token}
           >
-            {busy ? "…" : list ? "refresh" : "load"}
+            {busy ? <span className="spin">BUSY</span> : list ? "refresh" : "load"}
           </button>
           {list ? (
             <span className="pill ok">

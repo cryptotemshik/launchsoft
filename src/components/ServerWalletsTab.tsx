@@ -182,7 +182,7 @@ export default function ServerWalletsTab() {
         </div>
         <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap", marginTop: 8 }}>
           <button className="secondary" onClick={() => void connect()} disabled={busy || !base || !token}>
-            {busy ? "…" : connected ? "refresh" : "connect"}
+            {busy ? <span className="spin">BUSY</span> : connected ? "refresh" : "connect"}
           </button>
           <label className="dim" style={{ display: "flex", alignItems: "center", gap: 6 }}>
             <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} />

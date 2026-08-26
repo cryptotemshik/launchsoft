@@ -10,6 +10,7 @@ import { useActiveChain } from "../signer";
 import { formatEthShort } from "../lib/profit";
 import { useRunnerApi } from "../lib/runnerClient";
 import StaleServer from "./StaleServer";
+import Addr from "./Addr";
 
 /**
  * Control panel for a snipe runner living next to the sequencer.
@@ -405,7 +406,7 @@ export default function RemoteRunner(props: RemoteRunnerProps) {
       </div>
       <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap", marginTop: 8 }}>
         <button className="secondary" onClick={() => void connect()} disabled={busy || !base || !token}>
-          {busy ? "…" : connected ? "refresh" : "connect"}
+          {busy ? <span className="spin">BUSY</span> : connected ? "refresh" : "connect"}
         </button>
         <label className="dim" style={{ display: "flex", alignItems: "center", gap: 6 }}>
           <input
@@ -712,7 +713,7 @@ function JobDetail({ job, chain }: { job?: Job; chain: ChainInfo }) {
           <dd>
             {job.plan.wallets.map((w) => (
               <div key={w.address}>
-                {w.address.slice(0, 10)}…{w.address.slice(-4)}{" "}
+                <Addr value={w.address} head={10} />{" "}
                 <span className={w.note ? "warn" : "dim"}>
                   {(Number(w.balanceWei) / 1e18).toFixed(4)} ETH
                   {w.note ? ` — ${w.note}` : ""}
@@ -732,7 +733,7 @@ function JobDetail({ job, chain }: { job?: Job; chain: ChainInfo }) {
                 <span className={o.status === "mined" ? "ok" : o.status === "skipped" ? "dim" : "error"}>
                   {o.status}
                 </span>{" "}
-                {o.address.slice(0, 10)}…{o.address.slice(-4)}
+                <Addr value={o.address} head={10} />
                 {o.tokenIds && o.tokenIds.length > 0 ? (
                   <span className="dim"> — #{o.tokenIds.join(", #")}</span>
                 ) : null}
@@ -831,7 +832,7 @@ function WalletPicker({
                 }}
               />
               <span className="mono-break">
-                {w.address.slice(0, 8)}…{w.address.slice(-4)}
+                <Addr value={w.address} head={8} />
               </span>
               <span className={Number(w.balance ?? 0) > 0 ? "dim" : "warn"}>
                 {w.balance === null ? "—" : `${Number(w.balance).toFixed(4)}`}

@@ -15,6 +15,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRunnerApi } from "../lib/runnerClient";
 import { formatEthShort } from "../lib/profit";
 import StaleServer from "./StaleServer";
+import Addr from "./Addr";
 
 interface CollectionProfit {
   collection: string;
@@ -334,7 +335,7 @@ export default function MintProfitPanel() {
       </div>
       <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap", marginTop: 8 }}>
         <button className="secondary" onClick={() => void load()} disabled={busy || !base || !token}>
-          {waiting ? "reading the chain…" : busy ? "…" : view ? "refresh" : "load"}
+          {waiting ? <span className="spin">READING CHAIN</span> : busy ? <span className="spin">BUSY</span> : view ? "refresh" : "load"}
         </button>
         {view && !busy ? (
           <button
@@ -640,7 +641,7 @@ function SaleList({
         {sales.map((s) => (
           <li key={`${s.txHash}-${s.tokenId}`} className="feed-row">
             <span className="feed-main">
-              #{s.tokenId} from {s.wallet.slice(0, 8)}…{s.wallet.slice(-4)}
+              #{s.tokenId} from <Addr value={s.wallet} head={8} />
             </span>
             <span className="feed-meta dim">
               {formatEthShort(BigInt(s.wei))} ETH ·{" "}

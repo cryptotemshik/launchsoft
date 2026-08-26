@@ -94,7 +94,7 @@ export default function ConnectBar({ onHome }: { onHome?: () => void }) {
                   disabled={isPending}
                   onClick={() => connect({ connector: connectors[0] })}
                 >
-                  {isPending ? "connecting…" : "connect wallet"}
+                  {isPending ? <span className="spin">CONNECTING</span> : "connect wallet"}
                 </button>
                 {error ? <span className="error">{error.message}</span> : null}
               </>
