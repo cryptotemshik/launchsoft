@@ -11,7 +11,7 @@
  * uses. Nothing here talks to a chain directly.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { formatEther } from "viem";
+import { formatEther, parseEther } from "viem";
 import { useRunnerApi } from "../lib/runnerClient";
 import {
   applyFilter,
@@ -21,6 +21,7 @@ import {
   type DropState,
   type ScannedDrop,
 } from "../lib/dropScan";
+import { twitterUrl, type CollectionSocials } from "../lib/socials";
 import { openSeaCollectionUrlBySlug } from "../chains";
 import { setPendingTarget } from "../lib/snipeTarget";
 import { sndFeedTick } from "../lib/sound";
@@ -77,7 +78,17 @@ const STATES: { key: DropState | "all"; label: string }[] = [
   { key: "all", label: "everything" },
 ];
 
-type SortKey = "start" | "name" | "price" | "supply";
+type SortKey = "start" | "name" | "price" | "supply" | "wallet";
+
+/**
+ * How often the table is allowed to reorder itself.
+ *
+ * The countdowns tick every second, but re-sorting on every tick made rows
+ * jump under the cursor and the column widths breathe with them. Ordering is a
+ * property of the minute, not of the second, so it moves on its own slower
+ * clock while the numbers stay live.
+ */
+const REORDER_MS = 20_000;
 
 /** A countdown a person reads at a glance, not a stopwatch. */
 function countdown(secs: number): string {
@@ -98,6 +109,14 @@ const STATE_CLASS: Record<DropState, string> = {
   ended: "dim",
 };
 
+/** A typed number box that stays empty rather than falling back to zero. */
+function numberOrUndefined(v: string): number | undefined {
+  const t = v.trim();
+  if (!t) return undefined;
+  const n = Number(t);
+  return Number.isFinite(n) && n >= 0 ? n : undefined;
+}
+
 export default function ScannerTab({ onSnipe }: { onSnipe?: (contract: string) => void }) {
   const { url, setUrl, token, setToken, base, call, save, serverVersion } = useRunnerApi();
   const [view, setView] = useState<ScanView | null>(null);
@@ -107,12 +126,19 @@ export default function ScannerTab({ onSnipe }: { onSnipe?: (contract: string) =
   const [state, setState] = useState<DropState | "all">("soon");
   const [hideSoldOut, setHideSoldOut] = useState(true);
   const [freeOnly, setFreeOnly] = useState(false);
+  const [withTwitter, setWithTwitter] = useState(false);
+  const [maxPrice, setMaxPrice] = useState("");
+  const [minSupply, setMinSupply] = useState("");
+  const [maxSupply, setMaxSupply] = useState("");
+  const [minPerWallet, setMinPerWallet] = useState("");
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<SortKey>("start");
   const [desc, setDesc] = useState(false);
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
+  const [orderAt, setOrderAt] = useState(() => Math.floor(Date.now() / 1000));
   const [every, setEvery] = useState(0);
   const [nextIn, setNextIn] = useState(0);
+  const [socials, setSocials] = useState<Record<string, CollectionSocials>>({});
   // Contracts that appeared in the most recent refresh, so a new arrival is
   // visible without hunting for it.
   const [justIn, setJustIn] = useState<Set<string>>(new Set());
@@ -129,7 +155,10 @@ export default function ScannerTab({ onSnipe }: { onSnipe?: (contract: string) =
         )) as unknown as ScanView;
         // What is new since the last look. On the first scan everything is
         // new, which is not news — so the baseline is set silently.
-        const ids = new Set(r.drops.map((d) => d.contract.toLowerCase()));
+        // A response missing its drops is a server that answered something
+        // else; showing an empty scan beats throwing a `.map of undefined`.
+        const found = r.drops ?? [];
+        const ids = new Set(found.map((d) => d.contract.toLowerCase()));
         if (seen.current) {
           const arrived = [...ids].filter((c) => !seen.current!.has(c));
           if (arrived.length > 0) {
@@ -138,8 +167,10 @@ export default function ScannerTab({ onSnipe }: { onSnipe?: (contract: string) =
           }
         }
         seen.current = ids;
-        setView(r);
-        setNow(Math.floor(Date.now() / 1000));
+        setView({ ...r, drops: found });
+        const t = Math.floor(Date.now() / 1000);
+        setNow(t);
+        setOrderAt(t);
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         setError(
@@ -160,10 +191,15 @@ export default function ScannerTab({ onSnipe }: { onSnipe?: (contract: string) =
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Countdowns would otherwise go stale while the tab sits open.
+  // Countdowns would otherwise go stale while the tab sits open. The ordering
+  // clock runs alongside it, far slower, so the table stops moving underfoot.
   useEffect(() => {
     const t = setInterval(() => setNow(Math.floor(Date.now() / 1000)), 1000);
-    return () => clearInterval(t);
+    const o = setInterval(() => setOrderAt(Math.floor(Date.now() / 1000)), REORDER_MS);
+    return () => {
+      clearInterval(t);
+      clearInterval(o);
+    };
   }, []);
 
   /**
@@ -189,25 +225,123 @@ export default function ScannerTab({ onSnipe }: { onSnipe?: (contract: string) =
     return () => clearInterval(t);
   }, [every, hours, base, token, load]);
 
+  const filter = useMemo(
+    () => ({
+      state,
+      hideSoldOut,
+      freeOnly,
+      search,
+      maxPriceWei: (() => {
+        const t = maxPrice.trim();
+        if (!t) return undefined;
+        try {
+          return parseEther(t as `${number}`);
+        } catch {
+          return undefined;
+        }
+      })(),
+      minSupply: numberOrUndefined(minSupply),
+      maxSupply: numberOrUndefined(maxSupply),
+      minPerWallet: numberOrUndefined(minPerWallet),
+    }),
+    [state, hideSoldOut, freeOnly, search, maxPrice, minSupply, maxSupply, minPerWallet],
+  );
+
   const rows = useMemo(() => {
     const all = view?.drops ?? [];
-    const filtered = applyFilter(all, { state, hideSoldOut, freeOnly, search }, now);
-    if (sort === "start") return desc ? sortForScan(filtered, now).reverse() : sortForScan(filtered, now);
+    let filtered = applyFilter(all, filter, orderAt);
+    // Held apart from applyFilter because it is the one condition that depends
+    // on something read off-chain, and a row whose lookup has not landed yet
+    // must not be claimed to have no account.
+    if (withTwitter) {
+      filtered = filtered.filter((d) => socials[d.contract.toLowerCase()]?.twitter);
+    }
+    if (sort === "start") {
+      const s = sortForScan(filtered, orderAt);
+      return desc ? s.reverse() : s;
+    }
     const dir = desc ? -1 : 1;
     return [...filtered].sort((a, b) => {
       if (sort === "name") return dir * (a.name ?? a.contract).localeCompare(b.name ?? b.contract);
       if (sort === "price") return dir * (Number(a.priceWei) - Number(b.priceWei));
+      if (sort === "wallet")
+        return dir * ((a.maxPerWallet || Infinity) - (b.maxPerWallet || Infinity));
       return dir * ((a.maxSupply ?? 0) - (b.maxSupply ?? 0));
     });
-  }, [view, state, hideSoldOut, freeOnly, search, sort, desc, now]);
+  }, [view, filter, withTwitter, socials, sort, desc, orderAt]);
+
+  /**
+   * Who the collections on screen are.
+   *
+   * Each answer is a two-megabyte page fetch on the server, so this asks only
+   * about the rows actually being looked at, and only about the ones it has no
+   * answer for yet. The server replies immediately with what it has cached and
+   * reads the rest in the background, which is what the second ask collects.
+   */
+  const wanted = useMemo(
+    () =>
+      rows
+        .slice(0, 40)
+        .map((d) => d.contract)
+        .filter((c) => !(c.toLowerCase() in socials)),
+    [rows, socials],
+  );
+
+  useEffect(() => {
+    if (!base || !token || wanted.length === 0) return;
+    let alive = true;
+    let timer: ReturnType<typeof setTimeout>;
+    const ask = async (round: number) => {
+      try {
+        const r = (await call(`/api/socials?contracts=${wanted.join(",")}`)) as unknown as {
+          known?: Record<string, CollectionSocials>;
+          pending?: string[];
+        };
+        if (!alive) return;
+        if (r.known && Object.keys(r.known).length > 0) {
+          setSocials((prev) => ({ ...prev, ...r.known }));
+        }
+        // Background reads finish in a second or two; a handful of rounds is
+        // plenty, and stopping is better than asking forever about a page
+        // OpenSea will not serve.
+        if (r.pending?.length && round < 6) timer = setTimeout(() => void ask(round + 1), 3000);
+      } catch {
+        // An older server has no such route. The column then says nothing,
+        // which is exactly what it should say when nothing is known.
+      }
+    };
+    // Debounced: typing in a filter changes `rows` on every keystroke.
+    timer = setTimeout(() => void ask(0), 400);
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+    };
+  }, [wanted, base, token, call]);
 
   const counts = useMemo(() => {
     const all = view?.drops ?? [];
-    const of = (s: DropState) => all.filter((d) => classify(d, now) === s).length;
+    const of = (s: DropState) => all.filter((d) => classify(d, orderAt) === s).length;
     return { live: of("live"), soon: of("soon"), upcoming: of("upcoming"), all: all.length };
-    // `now` moves every second but these only change on a state boundary;
-    // recomputing a few hundred classifications a second is cheap enough.
-  }, [view, now]);
+  }, [view, orderAt]);
+
+  const bounded =
+    maxPrice.trim() !== "" ||
+    minSupply.trim() !== "" ||
+    maxSupply.trim() !== "" ||
+    minPerWallet.trim() !== "" ||
+    search.trim() !== "" ||
+    freeOnly ||
+    withTwitter;
+
+  function clearBounds() {
+    setMaxPrice("");
+    setMinSupply("");
+    setMaxSupply("");
+    setMinPerWallet("");
+    setSearch("");
+    setFreeOnly(false);
+    setWithTwitter(false);
+  }
 
   function header(key: SortKey, label: string, className = "") {
     return (
@@ -261,115 +395,201 @@ export default function ScannerTab({ onSnipe }: { onSnipe?: (contract: string) =
           </div>
         </div>
 
-        <div className="range-picker">
-          {WINDOWS.map((w) => (
+        {/* How much chain to read. Nothing here changes what is shown — only
+            what has been fetched — which is why it sits apart from the filters
+            below it. */}
+        <div className="scan-bar">
+          <span className="bar-label">WINDOW</span>
+          <div className="chip-group">
+            {WINDOWS.map((w) => (
+              <button
+                key={w.hours}
+                className={hours === w.hours ? "secondary active-chip" : "secondary"}
+                disabled={busy || !base || !token}
+                onClick={() => {
+                  setHours(w.hours);
+                  void load(w.hours);
+                }}
+              >
+                {w.label}
+              </button>
+            ))}
             <button
-              key={w.hours}
-              className={hours === w.hours ? "secondary active-chip" : "secondary"}
+              className="secondary"
               disabled={busy || !base || !token}
-              onClick={() => {
-                setHours(w.hours);
-                void load(w.hours);
-              }}
+              onClick={() => void load(hours, true)}
+              title="Ignore the cached result and read the whole window again"
             >
-              {w.label}
+              {busy ? <span className="spin">SCANNING</span> : "re-scan"}
             </button>
-          ))}
-          <button
-            className="secondary"
-            disabled={busy || !base || !token}
-            onClick={() => void load(hours, true)}
-            title="Ignore the cached result and read the whole window again"
-          >
-            {busy ? <span className="spin">SCANNING</span> : "re-scan"}
-          </button>
-          {view ? (
-            <span className="pill ok">
-              {view.collections} found · {view.enriched} read ·{" "}
-              {(view.tookMs / 1000).toFixed(1)}s
-              {view.cachedAt
-                ? ` · ${Math.max(0, Math.round((Date.now() - view.cachedAt) / 1000))}s ago`
-                : ""}
-            </span>
-          ) : null}
+          </div>
+
+          <span className="bar-label bar-gap">AUTO</span>
+          <div className="chip-group">
+            {INTERVALS.map((i) => (
+              <button
+                key={i.secs}
+                className={every === i.secs ? "secondary active-chip" : "secondary"}
+                disabled={!base || !token}
+                onClick={() => setEvery(i.secs)}
+                title={
+                  i.secs
+                    ? "Reads only the blocks since the last look — one small query"
+                    : "No automatic refreshing"
+                }
+              >
+                {i.label}
+              </button>
+            ))}
+          </div>
+
+          <div className="bar-tail">
+            {every ? (
+              <span className="pill">
+                next in <b>{nextIn}s</b>
+                {view?.incremental ? " · incremental" : ""}
+              </span>
+            ) : null}
+            {view ? (
+              <span className="pill ok">
+                {view.collections} found · {view.enriched} read ·{" "}
+                {(view.tookMs / 1000).toFixed(1)}s
+                {view.cachedAt
+                  ? ` · ${Math.max(0, Math.round((Date.now() - view.cachedAt) / 1000))}s ago`
+                  : ""}
+              </span>
+            ) : null}
+          </div>
         </div>
-        <div className="range-picker" style={{ marginTop: 4 }}>
-          <span className="gb-label" style={{ alignSelf: "center", marginRight: 4 }}>
-            AUTO
-          </span>
-          {INTERVALS.map((i) => (
-            <button
-              key={i.secs}
-              className={every === i.secs ? "secondary active-chip" : "secondary"}
-              disabled={!base || !token}
-              onClick={() => setEvery(i.secs)}
-              title={
-                i.secs
-                  ? "Reads only the blocks since the last look — one small query"
-                  : "No automatic refreshing"
-              }
-            >
-              {i.label}
-            </button>
-          ))}
-          {every ? (
-            <span className="pill">
-              next in <b>{nextIn}s</b>
-              {view?.incremental ? " · incremental" : ""}
-            </span>
-          ) : null}
-        </div>
+
         {error ? <p className="error">{error}</p> : null}
         <StaleServer version={serverVersion} />
 
         {view ? (
-          <>
-            <div className="wallet-picker-chips">
-              {STATES.map((s) => (
+          /* Filters: what of the scan to show. Every one of them stacks with
+             every other, so a row survives only by satisfying all of them. */
+          <div className="scan-filters">
+            <div className="scan-bar">
+              <span className="bar-label">SHOW</span>
+              <div className="chip-group">
+                {STATES.map((s) => (
+                  <button
+                    key={s.key}
+                    className={state === s.key ? "secondary active-chip" : "secondary"}
+                    onClick={() => setState(s.key)}
+                  >
+                    {s.label} (
+                    {s.key === "all" ? counts.all : counts[s.key as keyof typeof counts]})
+                  </button>
+                ))}
+              </div>
+              <div className="bar-tail">
                 <button
-                  key={s.key}
-                  className={state === s.key ? "secondary active-chip" : "secondary"}
-                  onClick={() => setState(s.key)}
+                  className={hideSoldOut ? "secondary active-chip" : "secondary"}
+                  onClick={() => setHideSoldOut(!hideSoldOut)}
+                  title="A drop can sell out through its allow-list while its public start is still ahead"
                 >
-                  {s.label} ({s.key === "all" ? counts.all : counts[s.key as keyof typeof counts]})
+                  hide sold out
                 </button>
-              ))}
-              <button
-                className={hideSoldOut ? "secondary active-chip" : "secondary"}
-                onClick={() => setHideSoldOut(!hideSoldOut)}
-                title="A drop can sell out through its allow-list while its public start is still ahead"
-              >
-                hide sold out
-              </button>
-              <button
-                className={freeOnly ? "secondary active-chip" : "secondary"}
-                onClick={() => setFreeOnly(!freeOnly)}
-              >
-                free only
-              </button>
+                <button
+                  className={freeOnly ? "secondary active-chip" : "secondary"}
+                  onClick={() => setFreeOnly(!freeOnly)}
+                >
+                  free only
+                </button>
+                <button
+                  className={withTwitter ? "secondary active-chip" : "secondary"}
+                  onClick={() => setWithTwitter(!withTwitter)}
+                  title="Only collections with an account connected on OpenSea"
+                >
+                  has twitter
+                </button>
+              </div>
             </div>
 
-            <div className="field" style={{ marginTop: 10 }}>
-              <label>search</label>
-              <input
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder="name or contract address"
-              />
+            <div className="filter-grid">
+              <div className="field">
+                <label>max price</label>
+                <input
+                  inputMode="decimal"
+                  value={maxPrice}
+                  onChange={(e) => setMaxPrice(e.target.value)}
+                  placeholder="any"
+                />
+              </div>
+              <div className="field">
+                <label>supply from</label>
+                <input
+                  inputMode="numeric"
+                  value={minSupply}
+                  onChange={(e) => setMinSupply(e.target.value)}
+                  placeholder="any"
+                />
+              </div>
+              <div className="field">
+                <label>supply to</label>
+                <input
+                  inputMode="numeric"
+                  value={maxSupply}
+                  onChange={(e) => setMaxSupply(e.target.value)}
+                  placeholder="any"
+                />
+              </div>
+              <div className="field">
+                <label>per wallet ≥</label>
+                <input
+                  inputMode="numeric"
+                  value={minPerWallet}
+                  onChange={(e) => setMinPerWallet(e.target.value)}
+                  placeholder="any"
+                />
+              </div>
+              <div className="field filter-search">
+                <label>search</label>
+                <input
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="name or contract address"
+                />
+              </div>
             </div>
-          </>
+
+            <div className="filter-status">
+              <span className="dim">
+                {rows.length} of {view.collections} shown
+              </span>
+              {bounded ? (
+                <button className="secondary link-btn" onClick={clearBounds}>
+                  clear filters
+                </button>
+              ) : null}
+            </div>
+          </div>
         ) : null}
 
         {view && rows.length > 0 ? (
           <div className="table-wrap">
-            <table className="ledger-table collapsible">
+            <table className="ledger-table collapsible scan-table">
+              {/* Fixed widths, so a long collection name or a countdown ticking
+                  from "1h 00m" to "59m 59s" cannot re-measure the whole table
+                  under the reader. */}
+              <colgroup>
+                <col style={{ width: 140 }} />
+                <col />
+                <col style={{ width: 128 }} />
+                <col style={{ width: 92 }} />
+                <col style={{ width: 104 }} />
+                <col style={{ width: 84 }} />
+                <col style={{ width: 78 }} />
+              </colgroup>
               <thead>
                 <tr>
                   {header("start", "opens")}
                   {header("name", "collection")}
+                  <th>twitter</th>
                   {header("price", "price", "num")}
                   {header("supply", "supply", "num")}
-                  <th className="num">per wallet</th>
+                  {header("wallet", "per wallet", "num")}
                   <th />
                 </tr>
               </thead>
@@ -378,14 +598,21 @@ export default function ScannerTab({ onSnipe }: { onSnipe?: (contract: string) =
                   const st = classify(d, now);
                   const sold = isSoldOut(d);
                   const away = d.startTime ? d.startTime - now : null;
+                  const soc = socials[d.contract.toLowerCase()];
                   return (
                     <tr
                       key={d.contract}
                       className={`project-row${justIn.has(d.contract.toLowerCase()) ? " feed-row" : ""}`}
                     >
                       <td data-label="opens">
-                        <span className={`cell-name ${STATE_CLASS[st]}`}>
-                          {st === "live" ? "LIVE" : st === "ended" ? "ended" : st === "pending" ? "no date" : countdown(away ?? 0)}
+                        <span className={`cell-name cd ${STATE_CLASS[st]}`}>
+                          {st === "live"
+                            ? "LIVE"
+                            : st === "ended"
+                              ? "ended"
+                              : st === "pending"
+                                ? "no date"
+                                : countdown(away ?? 0)}
                         </span>
                         <span className="cell-sub dim">
                           {d.startTime
@@ -398,12 +625,13 @@ export default function ScannerTab({ onSnipe }: { onSnipe?: (contract: string) =
                             : "not scheduled"}
                         </span>
                       </td>
-                      <td data-label="collection">
+                      <td data-label="collection" className="cell-clip">
                         <a
                           className="cell-name"
                           href={openSeaCollectionUrlBySlug(view.openSeaSlug, d.contract)}
                           target="_blank"
                           rel="noreferrer"
+                          title={d.name ?? d.contract}
                         >
                           {d.name ?? `${d.contract.slice(0, 10)}…`}
                         </a>
@@ -411,6 +639,40 @@ export default function ScannerTab({ onSnipe }: { onSnipe?: (contract: string) =
                           <Addr value={d.contract} head={8} />
                           {sold ? <span className="pill-tba"> SOLD OUT</span> : null}
                         </span>
+                      </td>
+                      <td data-label="twitter" className="cell-clip">
+                        {soc === undefined ? (
+                          /* Not looked up yet — which is not the same claim as
+                             "has none", so it does not say so. */
+                          <span className="faint" title="looking this one up">
+                            ···
+                          </span>
+                        ) : soc.twitter ? (
+                          <a
+                            className="cell-name tw-handle"
+                            href={twitterUrl(soc.twitter)}
+                            target="_blank"
+                            rel="noreferrer"
+                            title={`@${soc.twitter}`}
+                          >
+                            @{soc.twitter}
+                          </a>
+                        ) : (
+                          <span className="faint" title="no account connected on OpenSea">
+                            —
+                          </span>
+                        )}
+                        {soc?.site ? (
+                          <a
+                            className="cell-sub dim"
+                            href={soc.site}
+                            target="_blank"
+                            rel="noreferrer"
+                            title={soc.site}
+                          >
+                            {soc.site.replace(/^https?:\/\/(www\.)?/, "").replace(/\/$/, "")}
+                          </a>
+                        ) : null}
                       </td>
                       <td className="num" data-label="price">
                         {BigInt(d.priceWei) === 0n ? (
@@ -474,7 +736,9 @@ export default function ScannerTab({ onSnipe }: { onSnipe?: (contract: string) =
             {view.fromBlock.toLocaleString("en-US")}–{view.toBlock.toLocaleString("en-US")} at about{" "}
             {view.blocksPerHour.toLocaleString("en-US")} blocks an hour, {view.events} stage
             configurations across {view.collections} collections. Allow-list stages are never
-            reported here: this event describes the public stage alone.
+            reported here: this event describes the public stage alone. Twitter comes from the
+            marketplace, not the chain — nothing on-chain carries it — so a dash means no account
+            is connected there.
           </p>
         ) : null}
       </div>

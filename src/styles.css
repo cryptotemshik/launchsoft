@@ -283,14 +283,21 @@ h1 .cursor {
   position: relative;
   display: inline-flex;
 }
-/* Snipe sits at the far right; its group inherits that placement. */
-.tab-group.snipe-group {
+/* Launch and Snipe both sit at the far right, in that order. The gap is
+   opened once, in front of the first of them; the second follows immediately,
+   so the pair reads as one block of actions rather than two stray buttons. */
+.tab-group.launch-group {
   margin-left: auto;
 }
+.tab-group.snipe-group {
+  margin-left: 0;
+}
+.tab-group.launch-group .tab-menu,
 .tab-group.snipe-group .tab-menu {
   left: auto;
   right: 0;
 }
+.tabs .tab-group.launch-group button.tab-mint,
 .tabs .tab-group.snipe-group button.tab-mint {
   margin-left: 0;
 }
@@ -1142,6 +1149,7 @@ tr.project-detail td {
   #root {
     padding-bottom: 110px;
   }
+  .tab-group.launch-group,
   .tab-group.snipe-group {
     margin-left: 0;
   }
@@ -1827,4 +1835,115 @@ button.secondary.active-chip {
 .token-ids a:hover {
   color: var(--green-bright);
   border-bottom-color: var(--green-bright);
+}
+
+/* ── Scanner controls ────────────────────────────────────────────────────
+   Two bars that look alike but answer different questions: the first decides
+   how much chain to read, the second decides what of it to show. Keeping them
+   apart — a label on the left of each, a rule between them — is the whole
+   reason the state chips are not sitting in the same row as the windows. */
+.scan-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0 4px;
+}
+.scan-bar .bar-label {
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  color: var(--faint);
+  font-family: var(--mono);
+}
+.scan-bar .bar-gap {
+  margin-left: 10px;
+}
+.scan-bar .chip-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.scan-bar button {
+  padding: 4px 12px;
+  font-size: 12px;
+  width: auto;
+}
+/* Status and the toggles that are not part of a group: pushed to the far end,
+   so the eye reads groups on the left and state on the right. */
+.scan-bar .bar-tail {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.scan-filters {
+  margin-top: 14px;
+  padding-top: 4px;
+  border-top: 1px solid var(--line);
+}
+.filter-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 10px;
+  margin-top: 10px;
+}
+.filter-grid .filter-search {
+  grid-column: 1 / -1;
+}
+.filter-status {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 8px;
+  font-size: 12px;
+}
+button.secondary.link-btn {
+  width: auto;
+  padding: 2px 10px;
+  font-size: 11px;
+}
+
+/* ── The scan table ──────────────────────────────────────────────────────
+   Fixed columns. Everything in here changes width as it updates — a countdown
+   crossing an hour, a name arriving from enrichment, a supply filling in — and
+   with automatic layout each of those re-measured all seven columns and shoved
+   the table sideways out of its panel. */
+.scan-table {
+  table-layout: fixed;
+}
+.scan-table .cell-clip {
+  overflow: hidden;
+}
+.scan-table .cell-clip .cell-name,
+.scan-table .cell-clip .cell-sub {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The countdown reserves its widest form, so ticking never nudges the column. */
+.scan-table .cd {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+.scan-table .tw-handle {
+  font-size: 12px;
+}
+.faint {
+  color: var(--faint);
+}
+
+@media (max-width: 640px) {
+  /* Cards, not columns: fixed widths would fight the collapsed layout. */
+  .scan-table {
+    table-layout: auto;
+  }
+  .scan-table .cell-clip .cell-name,
+  .scan-table .cell-clip .cell-sub {
+    white-space: normal;
+  }
+  .scan-bar .bar-tail {
+    margin-left: 0;
+  }
 }

@@ -227,3 +227,42 @@ describe("mergeScans", () => {
     expect(fresh).toEqual([]);
   });
 });
+
+describe("applyFilter — the combinable bounds", () => {
+  const rows = [
+    drop({ contract: "0xsmall", maxSupply: 100, maxPerWallet: 1, priceWei: "0" }),
+    drop({ contract: "0xmid", maxSupply: 5_000, maxPerWallet: 10, priceWei: "1000" }),
+    drop({ contract: "0xhuge", maxSupply: 100_000, maxPerWallet: 0, priceWei: "9000" }),
+  ];
+
+  it("bounds supply from both ends", () => {
+    expect(applyFilter(rows, { minSupply: 1_000, maxSupply: 10_000 }, NOW).map((r) => r.contract))
+      .toEqual(["0xmid"]);
+  });
+
+  it("treats an unset supply cap as unbounded above, not as zero", () => {
+    expect(applyFilter([drop({ maxSupply: undefined })], { maxSupply: 10 }, NOW)).toHaveLength(0);
+  });
+
+  it("counts a zero per-wallet cap as unlimited, so it passes any minimum", () => {
+    // SeaDrop writes 0 for "as many as you like". Read literally it would be
+    // the strictest limit on the chain instead of the loosest.
+    expect(applyFilter(rows, { minPerWallet: 5 }, NOW).map((r) => r.contract)).toEqual([
+      "0xmid",
+      "0xhuge",
+    ]);
+    expect(applyFilter(rows, { maxPerWallet: 10 }, NOW).map((r) => r.contract)).toEqual([
+      "0xsmall",
+      "0xmid",
+    ]);
+  });
+
+  it("stacks price, supply and per-wallet together", () => {
+    const out = applyFilter(
+      rows,
+      { maxPriceWei: 5_000n, minSupply: 1_000, minPerWallet: 2 },
+      NOW,
+    );
+    expect(out.map((r) => r.contract)).toEqual(["0xmid"]);
+  });
+});

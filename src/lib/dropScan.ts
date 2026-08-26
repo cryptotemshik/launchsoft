@@ -159,6 +159,14 @@ export interface ScanFilter {
   /** Wei, inclusive. */
   maxPriceWei?: bigint;
   minSupply?: number;
+  /** Inclusive. Supply above this is treated as unbounded, so it never bites. */
+  maxSupply?: number;
+  /**
+   * Inclusive, and zero means "no cap" on this chain — an unlimited stage
+   * therefore satisfies every minimum rather than failing all of them.
+   */
+  minPerWallet?: number;
+  maxPerWallet?: number;
   /** Matches name or contract, case-insensitive. */
   search?: string;
 }
@@ -175,6 +183,12 @@ export function applyFilter(
     if (filter.freeOnly && BigInt(d.priceWei) !== 0n) return false;
     if (filter.maxPriceWei !== undefined && BigInt(d.priceWei) > filter.maxPriceWei) return false;
     if (filter.minSupply !== undefined && (d.maxSupply ?? 0) < filter.minSupply) return false;
+    if (filter.maxSupply !== undefined && (d.maxSupply ?? Infinity) > filter.maxSupply) return false;
+    // A zero cap is SeaDrop's way of saying "as many as you like", so it is the
+    // largest per-wallet allowance there is, not the smallest.
+    const perWallet = d.maxPerWallet || Infinity;
+    if (filter.minPerWallet !== undefined && perWallet < filter.minPerWallet) return false;
+    if (filter.maxPerWallet !== undefined && perWallet > filter.maxPerWallet) return false;
     if (q && !`${d.name ?? ""} ${d.contract}`.toLowerCase().includes(q)) return false;
     return true;
   });

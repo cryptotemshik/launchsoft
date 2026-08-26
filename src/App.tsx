@@ -92,17 +92,35 @@ export default function App() {
         }}
       />
       <div className="tabs">
-        {/* Launch is the entry point; Reveal and Status are its later stages,
-            so they live in a hover menu under it instead of as sibling tabs. */}
-        <div className="tab-group">
+        {([
+          ["wallets", "TRACKER"],
+          ["upcoming", "UPCOMING"],
+          ["scanner", "SCANNER"],
+        ] as const).map(([t, label]) => {
+          const Icon = TAB_ICON[t];
+          return (
+            <button
+              key={t}
+              className={tab === t ? "active" : ""}
+              onClick={() => setTab(t)}
+            >
+              <Icon />
+              {label}
+            </button>
+          );
+        })}
+        {/* The two things this app is for — starting a drop and taking one —
+            sit together at the right, both painted as actions rather than as
+            destinations. Their later stages hang beneath them. */}
+        <div className="tab-group launch-group">
           <button
             // `group-active` marks "a child of mine is open": the desktop
             // dropdown paints it like active, the mobile bar — where the
             // children are visible as their own tabs — leaves it alone, so
             // two tabs never look selected at once.
-            className={
+            className={`tab-mint ${
               tab === "launch" ? "active" : tab === "reveal" || tab === "status" ? "group-active" : ""
-            }
+            }`}
             onClick={() => setTab("launch")}
           >
             <RocketIcon />
@@ -125,25 +143,8 @@ export default function App() {
             })}
           </div>
         </div>
-        {([
-          ["wallets", "TRACKER"],
-          ["dashboard", "DASHBOARD"],
-          ["upcoming", "UPCOMING"],
-          ["scanner", "SCANNER"],
-        ] as const).map(([t, label]) => {
-          const Icon = TAB_ICON[t];
-          return (
-            <button
-              key={t}
-              className={tab === t ? "active" : ""}
-              onClick={() => setTab(t)}
-            >
-              <Icon />
-              {label}
-            </button>
-          );
-        })}
-        {/* Snipe is the entry point; the server's wallets belong with it. */}
+        {/* Snipe is the entry point; the server's wallets belong with it, and
+            so does the dashboard that reports what they did. */}
         <div className="tab-group snipe-group">
           <button
             className={`tab-mint ${
@@ -156,6 +157,13 @@ export default function App() {
             <ChevronDownIcon className="tab-chevron" width={13} height={13} />
           </button>
           <div className="tab-menu">
+            <button
+              className={tab === "dashboard" ? "active" : ""}
+              onClick={() => setTab("dashboard")}
+            >
+              <GridIcon />
+              DASHBOARD
+            </button>
             <button
               className={tab === "serverwallets" ? "active" : ""}
               onClick={() => setTab("serverwallets")}
