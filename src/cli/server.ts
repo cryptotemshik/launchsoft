@@ -63,6 +63,8 @@ import { formatMintReport, sendTelegram, type MintedWallet } from "../lib/telegr
 import { startTelegramBot } from "./telegramBot";
 import { loadUpcoming, removeUpcoming } from "./upcomingStore";
 import { sortByDate } from "../lib/upcoming";
+import { enrichDrops, measureBlockRate, scanPublicDrops } from "./dropScanner";
+import { blocksForHours, classify, sortForScan } from "../lib/dropScan";
 import { API_VERSION } from "../lib/apiVersion";
 import { mapWithLimit } from "../lib/rpcRead";
 import { makeReadClient } from "../lib/readClient";
@@ -417,6 +419,71 @@ function startProfitBuild(): Promise<Record<string, unknown>> {
       profitBuilding = null;
     });
   return profitBuilding;
+}
+
+/**
+ * Scan results, keyed by window length.
+ *
+ * A scan is two round trips and a few seconds; a minute of cache means a
+ * panel that re-renders, or a second person looking, costs nothing. Anything
+ * longer would start hiding drops that were configured while you watched.
+ */
+const scanCache = new Map<number, { at: number; body: Record<string, unknown> }>();
+const scanInflight = new Map<number, Promise<Record<string, unknown>>>();
+const SCAN_TTL_MS = Number(process.env.SNIPE_SCAN_TTL_MS ?? 60_000);
+/** A week of this chain is ~6M blocks; beyond that the wait stops being useful. */
+const MAX_SCAN_HOURS = 168;
+
+async function startScan(hours: number): Promise<Record<string, unknown>> {
+  const run = (async () => {
+    const started = Date.now();
+    const cfg = loadConfig(CONFIG_PATH);
+    const info = getChainInfo(cfg.chainId);
+    if (!info) throw new Error(`chain ${cfg.chainId} isn't in the registry`);
+    const client = makeReadClient(info.chain, cfg.extraRpcs);
+
+    const tip = await client.getBlockNumber();
+    // Measured, not assumed: a hardcoded rate turns "last 24 hours" into a
+    // lie the day the chain changes pace.
+    const blocksPerHour = await measureBlockRate(client as never, tip);
+    const span = blocksForHours(hours, blocksPerHour);
+    const fromBlock = tip > span ? tip - span : 0n;
+
+    const scan = await scanPublicDrops(client as never, {
+      fromBlock,
+      toBlock: tip,
+      onNote: (note) => log(`scan: ${note}`),
+    });
+
+    // Only what is still ahead or running gets per-collection reads — the
+    // whole point of the event carrying its struct is that the filter is free.
+    const now = Math.floor(Date.now() / 1000);
+    const worth = scan.drops.filter((d) => classify(d, now) !== "ended");
+    const enriched = await enrichDrops(client as never, worth);
+    const drops = sortForScan([...enriched, ...scan.drops.filter((d) => classify(d, now) === "ended")], now);
+
+    const body = {
+      drops,
+      hours,
+      events: scan.events,
+      collections: scan.drops.length,
+      enriched: enriched.length,
+      fromBlock: scan.fromBlock,
+      toBlock: scan.toBlock,
+      blocksPerHour: Math.round(blocksPerHour),
+      chain: info.label,
+      explorerUrl: info.explorerUrl,
+      openSeaSlug: info.openSeaSlug,
+      now,
+      tookMs: Date.now() - started,
+    };
+    scanCache.set(hours, { at: Date.now(), body });
+    log(`scan: ${hours}h · ${scan.events} events · ${drops.length} collections · ${body.tookMs}ms`);
+    return body as Record<string, unknown>;
+  })().finally(() => scanInflight.delete(hours));
+
+  scanInflight.set(hours, run);
+  return run;
 }
 
 /**
@@ -1268,6 +1335,24 @@ const server = createServer(async (req, res) => {
      */
     // Drops someone added through the bot. Read-only from here: they are
     // entered on a phone, where the bot is, and this is the window onto them.
+    // ── Scanner: drops configured on-chain but not yet announced ──────────
+    if (url.pathname === "/api/scan" && req.method === "GET") {
+      const hours = Math.min(
+        MAX_SCAN_HOURS,
+        Math.max(1, Number(url.searchParams.get("hours") ?? 24) || 24),
+      );
+      const fresh = url.searchParams.get("fresh") === "1";
+      const hit = scanCache.get(hours);
+      if (!fresh && hit && Date.now() - hit.at < SCAN_TTL_MS) {
+        json(res, 200, { ...hit.body, cachedAt: hit.at });
+        return;
+      }
+      // Two panels asking at once should cost one scan, not two.
+      const inflight = scanInflight.get(hours);
+      json(res, 200, await (inflight ?? startScan(hours)));
+      return;
+    }
+
     if (url.pathname === "/api/upcoming" && req.method === "GET") {
       json(res, 200, { upcoming: sortByDate(loadUpcoming(CONFIG_PATH)) });
       return;

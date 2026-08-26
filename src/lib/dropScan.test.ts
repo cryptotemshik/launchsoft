@@ -1,0 +1,167 @@
+import { describe, expect, it } from "vitest";
+import {
+  applyFilter,
+  blocksForHours,
+  classify,
+  isSoldOut,
+  latestPerContract,
+  sortForScan,
+  type ScannedDrop,
+} from "./dropScan";
+
+const NOW = 1_800_000_000;
+const HOUR = 3600;
+
+const drop = (over: Partial<ScannedDrop> = {}): ScannedDrop => ({
+  contract: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  priceWei: "0",
+  startTime: NOW + HOUR,
+  endTime: NOW + 2 * HOUR,
+  maxPerWallet: 3,
+  feeBps: 500,
+  block: 100,
+  ...over,
+});
+
+describe("classify", () => {
+  it("calls a stage live between its start and end", () => {
+    expect(classify({ startTime: NOW - 60, endTime: NOW + 60 }, NOW)).toBe("live");
+  });
+
+  it("treats a missing end as open-ended rather than over", () => {
+    expect(classify({ startTime: NOW - 60, endTime: 0 }, NOW)).toBe("live");
+  });
+
+  it("separates the next day from the rest of the future", () => {
+    expect(classify({ startTime: NOW + 3 * HOUR, endTime: 0 }, NOW)).toBe("soon");
+    expect(classify({ startTime: NOW + 40 * HOUR, endTime: 0 }, NOW)).toBe("upcoming");
+  });
+
+  it("calls a stage with no start pending, not upcoming", () => {
+    // A configured-but-unscheduled stage is a real state on this contract, and
+    // showing it as "upcoming" would imply a date nobody has set.
+    expect(classify({ startTime: 0, endTime: 0 }, NOW)).toBe("pending");
+  });
+
+  it("calls a finished window ended", () => {
+    expect(classify({ startTime: NOW - 2 * HOUR, endTime: NOW - HOUR }, NOW)).toBe("ended");
+  });
+});
+
+describe("isSoldOut", () => {
+  it("is true only when the count is known and has reached the cap", () => {
+    expect(isSoldOut({ maxSupply: 100, minted: 100 })).toBe(true);
+    expect(isSoldOut({ maxSupply: 100, minted: 99 })).toBe(false);
+  });
+
+  it("is false while supply is unknown — an unread drop is not a sold-out one", () => {
+    expect(isSoldOut({})).toBe(false);
+    expect(isSoldOut({ maxSupply: 100 })).toBe(false);
+    expect(isSoldOut({ minted: 100 })).toBe(false);
+  });
+});
+
+describe("latestPerContract", () => {
+  it("keeps the newest configuration when a creator edits a stage", () => {
+    const out = latestPerContract([
+      drop({ block: 10, priceWei: "1000" }),
+      drop({ block: 30, priceWei: "3000" }),
+      drop({ block: 20, priceWei: "2000" }),
+    ]);
+    expect(out).toHaveLength(1);
+    expect(out[0].priceWei).toBe("3000");
+  });
+
+  it("keys on the address case-insensitively", () => {
+    const out = latestPerContract([
+      drop({ contract: "0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", block: 1 }),
+      drop({ contract: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", block: 2 }),
+    ]);
+    expect(out).toHaveLength(1);
+    expect(out[0].block).toBe(2);
+  });
+
+  it("keeps distinct collections apart", () => {
+    const out = latestPerContract([
+      drop({ contract: "0x1111111111111111111111111111111111111111" }),
+      drop({ contract: "0x2222222222222222222222222222222222222222" }),
+    ]);
+    expect(out).toHaveLength(2);
+  });
+});
+
+describe("sortForScan", () => {
+  it("puts live first, then what starts soonest, and ended last", () => {
+    const rows = sortForScan(
+      [
+        drop({ contract: "0x4", startTime: NOW - 5 * HOUR, endTime: NOW - HOUR }),
+        drop({ contract: "0x3", startTime: NOW + 40 * HOUR, endTime: 0 }),
+        drop({ contract: "0x1", startTime: NOW - 60, endTime: NOW + 60 }),
+        drop({ contract: "0x2", startTime: NOW + 2 * HOUR, endTime: 0 }),
+      ],
+      NOW,
+    );
+    expect(rows.map((r) => r.contract)).toEqual(["0x1", "0x2", "0x3", "0x4"]);
+  });
+
+  it("orders finished drops by most recently configured", () => {
+    const rows = sortForScan(
+      [
+        drop({ contract: "0xold", startTime: NOW - 99 * HOUR, endTime: NOW - 98 * HOUR, block: 5 }),
+        drop({ contract: "0xnew", startTime: NOW - 99 * HOUR, endTime: NOW - 98 * HOUR, block: 50 }),
+      ],
+      NOW,
+    );
+    expect(rows[0].contract).toBe("0xnew");
+  });
+});
+
+describe("blocksForHours", () => {
+  it("converts by the measured rate", () => {
+    expect(blocksForHours(24, 35_651)).toBe(855_624n);
+    expect(blocksForHours(1, 35_651)).toBe(35_651n);
+  });
+
+  it("never asks for a zero-block range", () => {
+    expect(blocksForHours(0, 35_651)).toBe(1n);
+  });
+});
+
+describe("applyFilter", () => {
+  const rows = [
+    drop({ contract: "0x1", name: "Free Live", priceWei: "0", startTime: NOW - 60, endTime: NOW + 60, maxSupply: 1000, minted: 10 }),
+    drop({ contract: "0x2", name: "Paid Soon", priceWei: "5000000000000000", startTime: NOW + 2 * HOUR, endTime: 0, maxSupply: 500, minted: 0 }),
+    drop({ contract: "0x3", name: "Gone", priceWei: "0", startTime: NOW + 3 * HOUR, endTime: 0, maxSupply: 100, minted: 100 }),
+  ];
+
+  it("filters by state", () => {
+    expect(applyFilter(rows, { state: "live" }, NOW).map((r) => r.contract)).toEqual(["0x1"]);
+  });
+
+  it("hides sold-out drops whose start is still in the future", () => {
+    // The row this exists for: the chain says "starts in 3 hours" about a
+    // collection that has nothing left.
+    expect(applyFilter(rows, { hideSoldOut: true }, NOW).map((r) => r.contract)).toEqual(["0x1", "0x2"]);
+  });
+
+  it("filters free-only and by maximum price", () => {
+    expect(applyFilter(rows, { freeOnly: true }, NOW)).toHaveLength(2);
+    expect(applyFilter(rows, { maxPriceWei: 1_000_000_000_000_000n }, NOW)).toHaveLength(2);
+    expect(applyFilter(rows, { maxPriceWei: 5_000_000_000_000_000n }, NOW)).toHaveLength(3);
+  });
+
+  it("filters by minimum supply, counting unknown supply as too small", () => {
+    expect(applyFilter(rows, { minSupply: 600 }, NOW).map((r) => r.contract)).toEqual(["0x1"]);
+    expect(applyFilter([drop({ maxSupply: undefined })], { minSupply: 1 }, NOW)).toHaveLength(0);
+  });
+
+  it("searches name and address alike", () => {
+    expect(applyFilter(rows, { search: "paid" }, NOW).map((r) => r.contract)).toEqual(["0x2"]);
+    expect(applyFilter(rows, { search: "0x3" }, NOW).map((r) => r.contract)).toEqual(["0x3"]);
+  });
+
+  it("combines filters", () => {
+    const out = applyFilter(rows, { freeOnly: true, hideSoldOut: true }, NOW);
+    expect(out.map((r) => r.contract)).toEqual(["0x1"]);
+  });
+});

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { usePublicClient } from "wagmi";
 import { encodeFunctionData, formatGwei, parseGwei, zeroAddress, type Hex } from "viem";
 import { privateKeyToAccount, type PrivateKeyAccount } from "viem/accounts";
+import { clearPendingTarget, readPendingTarget } from "../lib/snipeTarget";
 import { useActiveChain } from "../signer";
 import { CHAINS_BY_ID, DEFAULT_CHAIN_ID } from "../chains";
 import { seaDropAbi, tokenAbi } from "../contracts/seadrop";
@@ -123,7 +124,7 @@ export default function SnipeTab() {
   const chainInfo = useActiveChain() ?? CHAINS_BY_ID.get(DEFAULT_CHAIN_ID);
   const wagmiClient = usePublicClient({ chainId: chainInfo?.id });
 
-  const [input, setInput] = useState("");
+  const [input, setInput] = useState(() => readPendingTarget() ?? "");
   const [target, setTarget] = useState<SnipeTarget | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -304,6 +305,17 @@ export default function SnipeTab() {
   useEffect(() => {
     if (stagePerWallet > 0) setQuantity((q) => Math.min(Math.max(1, q), stagePerWallet));
   }, [stagePerWallet]);
+
+  // A collection handed over from the scanner arrives in `input` — read it
+  // without making the user press the button they just pressed next door,
+  // then forget the handoff so coming back here later starts clean.
+  useEffect(() => {
+    if (!readPendingTarget() || !publicClient || !chainInfo) return;
+    clearPendingTarget();
+    void load();
+    // Once, for whatever was handed over at mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [publicClient, chainInfo]);
 
   async function load() {
     const parsed = parseCollectionInput(input);

@@ -107,3 +107,11 @@ export const CalendarIcon = (p: SVGProps<SVGSVGElement>) => (
     <path d="M3 10h18M8 3v4M16 3v4" />
   </svg>
 );
+
+export const RadarIcon = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...base(p)}>
+    <circle cx="12" cy="12" r="9" />
+    <circle cx="12" cy="12" r="4" />
+    <path d="M12 12l6-4" />
+  </svg>
+);

@@ -3,6 +3,7 @@ import Landing from "./components/Landing";
 import ConnectBar from "./components/ConnectBar";
 import DashboardTab from "./components/DashboardTab";
 import UpcomingTab from "./components/UpcomingTab";
+import ScannerTab from "./components/ScannerTab";
 import LaunchTab from "./components/LaunchTab";
 import RevealTab from "./components/RevealTab";
 import FundingTab from "./components/FundingTab";
@@ -21,6 +22,7 @@ import {
   CoinsIcon,
   CalendarIcon,
   KeyIcon,
+  RadarIcon,
   PulseIcon,
   RocketIcon,
   WalletIcon,
@@ -35,7 +37,8 @@ type Tab =
   | "snipe"
   | "serverwallets"
   | "funding"
-  | "upcoming";
+  | "upcoming"
+  | "scanner";
 
 const TAB_ICON = {
   launch: RocketIcon,
@@ -47,6 +50,7 @@ const TAB_ICON = {
   serverwallets: KeyIcon,
   funding: CoinsIcon,
   upcoming: CalendarIcon,
+  scanner: RadarIcon,
 } as const;
 
 export default function App() {
@@ -125,6 +129,7 @@ export default function App() {
           ["wallets", "TRACKER"],
           ["dashboard", "DASHBOARD"],
           ["upcoming", "UPCOMING"],
+          ["scanner", "SCANNER"],
         ] as const).map(([t, label]) => {
           const Icon = TAB_ICON[t];
           return (
@@ -177,6 +182,7 @@ export default function App() {
       {tab === "serverwallets" ? <ServerWalletsTab /> : null}
       {tab === "funding" ? <FundingTab /> : null}
       {tab === "upcoming" ? <UpcomingTab /> : null}
+      {tab === "scanner" ? <ScannerTab onSnipe={() => setTab("snipe")} /> : null}
       <div className="footer">
         {info.label} · explorer:{" "}
         <a href={info.explorerUrl} target="_blank" rel="noreferrer">
