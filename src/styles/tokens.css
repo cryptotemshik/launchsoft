@@ -1,0 +1,63 @@
+/**
+ * Design tokens — the single source of truth for the terminal look.
+ *
+ * Two layers on purpose. The first block is the canonical palette from the
+ * redesign spec. The second maps the names the existing stylesheet has used
+ * since day one onto those canonical values, so seventeen hundred lines of
+ * rules pick the new skin up without each being rewritten — and so no rule
+ * anywhere ends up owning a private hex value again.
+ *
+ * Rules of the style, enforced wherever these tokens are consumed:
+ *   - depth comes from surface steps (--bg → --panel → --panel-2), never
+ *     from drop shadows;
+ *   - the only glow is --glow-green, on live indicators and the primary CTA;
+ *   - nothing rounder than 2px except tiny status dots;
+ *   - green is semantic (live / positive / CTA), red negative, amber warning.
+ */
+:root {
+  /* surfaces */
+  --bg: #050807;
+  --panel: #070d0a;
+  --panel-2: #0a1510;
+  --border: #143523;
+  --border-dim: #0d1a12;
+
+  /* text */
+  --text: #d6e2da;
+  --text-dim: #6d8377;
+  --text-bright: #ffffff;
+
+  /* accents */
+  --green: #00e676;
+  --green-deep: #007a3d;
+  --red: #ff5252;
+  --amber: #ffb020;
+
+  /* effects */
+  --glow-green: 0 0 8px rgba(0, 230, 118, 0.55);
+  --radius: 2px;
+
+  /* type — one face, two weights; data and labels alike are mono */
+  --mono: "JetBrains Mono", "SFMono-Regular", "Menlo", "Consolas", monospace;
+
+  /* ── legacy names, mapped ─────────────────────────────────────────────
+     The pre-redesign stylesheet consumes these. They are aliases now:
+     changing the canonical block above restyles everything below it. */
+  --green-bright: var(--green);
+  --green-ink: #03170e;
+  --bg-2: var(--bg);
+  --surface: var(--panel);
+  --surface-2: var(--panel-2);
+  --surface-hi: var(--panel-2);
+  --line: var(--border);
+  --line-strong: #1e5236;
+  --dim: var(--text-dim);
+  --faint: #46584e;
+  --err: var(--red);
+  --warn: var(--amber);
+  --display: var(--mono);
+  --sans: var(--mono);
+  --radius-sm: var(--radius);
+  --shadow: none;
+  --glow: var(--glow-green);
+}

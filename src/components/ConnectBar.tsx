@@ -1,4 +1,5 @@
 import { useState } from "react";
+import GasBlock from "./GasBlock";
 import { useAccount, useConnect, useDisconnect } from "wagmi";
 import { CHAINS } from "../chains";
 import { useChainSwitcher, useSigner, useSignerControls } from "../signer";
@@ -45,12 +46,12 @@ export default function ConnectBar({ onHome }: { onHome?: () => void }) {
           role={onHome ? "button" : undefined}
           title={onHome ? "back to cover" : undefined}
         >
-          <span className="brand-mark" aria-hidden>◆</span>
-          LaunchPad
-          <span className="brand-dim">&nbsp;· OpenSea EVM</span>
-          <span className="cursor">▌</span>
+          LAUNCH
+          <span className="brand-dim">PAD</span>
+          <span className="cursor" aria-hidden>_</span>
         </h1>
-        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <GasBlock />
           <div className="mode-toggle">
             <button
               className={mode === "wallet" ? "active" : ""}
