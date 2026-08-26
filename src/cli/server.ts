@@ -383,6 +383,34 @@ async function selfUpdate(): Promise<UpdateResult> {
 }
 
 /**
+ * The wallets the running job has signed transactions for, lowercased, or null
+ * when nothing is running.
+ *
+ * A job with no wallet list of its own fires from every wallet on the box.
+ */
+function walletsOfActiveJob(): Set<string> | null {
+  if (!activeJobId) return null;
+  const job = jobs.find((j) => j.id === activeJobId);
+  if (!job) return null;
+  if (job.wallets && job.wallets.length > 0) {
+    return new Set(job.wallets.map((w) => w.toLowerCase()));
+  }
+  try {
+    const cfg = loadConfig(CONFIG_PATH);
+    return new Set(
+      loadKeyEntries(CONFIG_PATH, cfg.keysFile).map((e) =>
+        privateKeyToAccount(e.key).address.toLowerCase(),
+      ),
+    );
+  } catch {
+    // Unreachable from the funding route, which loads the same config first and
+    // fails there — but an empty set is the honest answer to "which wallets",
+    // not a claim that none are firing.
+    return new Set();
+  }
+}
+
+/**
  * Why an update must not happen right now, or null if it may.
  *
  * A restart costs a few seconds of downtime, which is nothing except in the
@@ -1270,10 +1298,16 @@ const server = createServer(async (req, res) => {
 
     // ── Funding: fan money out to the wallet set, or sweep it back ──────────
     if (url.pathname === "/api/disperse" && req.method === "POST") {
-      if (activeJobId) {
-        json(res, 409, { error: "a mint job is running — wait for it or abort first" });
-        return;
-      }
+      // Deliberately allowed while a job is armed and waiting. Topping a wallet
+      // up is the one thing you need to be able to do in that window — the
+      // stage hasn't opened, the wallet is short, and blocking it means the
+      // mint fails for want of gas money.
+      //
+      // It is safe because receiving does not consume a nonce: the mint
+      // transactions were signed at arm time against nonces that money
+      // arriving cannot move. The payer is a different matter — sending does
+      // consume one — so the only case still refused is paying out of a wallet
+      // this mint is about to fire from.
       const body = await readBody(req);
       const cfg = loadConfig(CONFIG_PATH);
       const entries = loadKeyEntries(CONFIG_PATH, cfg.keysFile);
@@ -1299,6 +1333,16 @@ const server = createServer(async (req, res) => {
       if (amountWei <= 0n) throw new Error("amountEth must be greater than zero");
 
       const payer = privateKeyToAccount(fromKey).address.toLowerCase();
+      const firing = walletsOfActiveJob();
+      if (firing?.has(payer)) {
+        json(res, 409, {
+          error:
+            "that payer is one of the wallets this mint is firing from — " +
+            "sending from it now would spend the nonce its mint is signed against. " +
+            "Fund from another wallet, or abort the job first.",
+        });
+        return;
+      }
       const targets = entries
         .map((e) => privateKeyToAccount(e.key).address)
         // Never send a wallet its own money.
