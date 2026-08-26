@@ -138,7 +138,7 @@ export interface RunHooks {
   signal?: AbortSignal;
 }
 
-interface DropState {
+export interface DropState {
   name: string;
   totalSupply: bigint;
   maxSupply: bigint;
@@ -150,7 +150,15 @@ interface DropState {
   allowedFeeRecipients: readonly string[];
 }
 
-async function readDrop(
+/**
+ * Everything the contract says about the drop.
+ *
+ * Exported because the queue wants it too: knowing the price, the supply and
+ * when the stage opens *before* the job runs is what lets the panel show a
+ * queue in the order it will actually fire, rather than the order someone
+ * happened to add things in.
+ */
+export async function readDrop(
   client: PublicClient,
   info: ChainInfo,
   collection: `0x${string}`,

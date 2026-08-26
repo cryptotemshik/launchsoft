@@ -1,5 +1,13 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { formatCountdown, unixToLocalAndUtc } from "../lib/convert";
+import {
+  CHAINS_BY_ID,
+  DEFAULT_CHAIN_ID,
+  openSeaCollectionUrl,
+  type ChainInfo,
+} from "../chains";
+import { useActiveChain } from "../signer";
+import { formatEthShort } from "../lib/profit";
 import { useRunnerApi } from "../lib/runnerClient";
 import StaleServer from "./StaleServer";
 
@@ -46,6 +54,18 @@ interface Outcome {
   tokenIds?: string[];
 }
 
+/** What the contract said about the drop when the job was queued. */
+interface JobDrop {
+  name: string;
+  totalSupply: string;
+  maxSupply: string;
+  priceWei: string;
+  startTime: number;
+  endTime: number;
+  perWallet: number;
+  readAt: number;
+}
+
 interface Job {
   id: string;
   label: string;
@@ -61,6 +81,8 @@ interface Job {
   logs?: string[];
   plan?: RunPlan;
   outcomes?: Outcome[];
+  /** Absent on servers older than the queue-time drop read. */
+  drop?: JobDrop;
   error?: string;
 }
 
@@ -320,6 +342,25 @@ export default function RemoteRunner(props: RemoteRunnerProps) {
 
   const jobs = status?.jobs ?? [];
   const pending = jobs.filter((j) => j.status === "queued" || j.status === "armed");
+  const chain = useActiveChain() ?? CHAINS_BY_ID.get(DEFAULT_CHAIN_ID)!;
+
+  /**
+   * The queue in the order it will actually fire.
+   *
+   * The server picks the job whose stage opens soonest, so listing them in the
+   * order someone happened to add them shows a running order that isn't the
+   * running order. Jobs with no known stage time go last among the waiting —
+   * they arm as soon as they are due, but there is no time to sort them by.
+   * Finished jobs sit below the lot, newest first, since they are history.
+   */
+  const queue = useMemo(() => {
+    const rank = (j: Job) => (j.status === "queued" || j.status === "armed" ? 0 : 1);
+    return [...jobs].sort((a, b) => {
+      if (rank(a) !== rank(b)) return rank(a) - rank(b);
+      if (rank(a) === 1) return b.addedAt - a.addedAt;
+      return (a.startTime ?? Infinity) - (b.startTime ?? Infinity) || a.addedAt - b.addedAt;
+    });
+  }, [jobs]);
   // Compared by host: the stored URLs are never sent back with their keys.
   const rpcsDiffer =
     props.extraRpcs.length > 0 &&
@@ -469,42 +510,95 @@ export default function RemoteRunner(props: RemoteRunnerProps) {
             </p>
           ) : (
             <div className="table-wrap" style={{ marginTop: 14 }}>
-              <table className="projects">
+              <table className="ledger-table">
                 <thead>
                   <tr>
-                    <th>drop</th>
-                    <th>stage</th>
                     <th>opens</th>
+                    <th>drop</th>
+                    <th className="num">price</th>
+                    <th className="num">supply</th>
+                    <th>stage</th>
                     <th>status</th>
-                    <th></th>
+                    <th />
                   </tr>
                 </thead>
                 <tbody>
-                  {jobs.map((j) => {
+                  {queue.map((j) => {
                     const opensIn = j.startTime ? j.startTime - now : null;
                     const minted =
                       j.outcomes?.filter((o) => o.status === "mined").reduce((n, o) => n + (o.tokenIds?.length ?? 0), 0) ??
                       0;
-                    return (
+                    const isOpen = openJob === j.id;
+                    return [
                       <tr
                         key={j.id}
-                        className="project-row"
-                        onClick={() => setOpenJob(openJob === j.id ? null : j.id)}
+                        className={`project-row${isOpen ? " row-open" : ""}`}
+                        onClick={() => setOpenJob(isOpen ? null : j.id)}
                       >
                         <td>
-                          {j.label}
-                          {j.dryRun ? <span className="dim"> (dry)</span> : null}
+                          {j.startTime ? (
+                            <>
+                              <span className="cell-name">
+                                {unixToLocalAndUtc(j.startTime).local}
+                              </span>
+                              {/* A countdown only means something while the job
+                                  is still waiting; on a finished one the date
+                                  is the whole story. */}
+                              {j.status === "queued" || j.status === "armed" ? (
+                                <span
+                                  className={`cell-sub ${opensIn !== null && opensIn > 0 && opensIn < 3600 ? "warn" : "dim"}`}
+                                >
+                                  {opensIn !== null && opensIn > 0
+                                    ? `in ${formatCountdown(opensIn)}`
+                                    : "open now"}
+                                </span>
+                              ) : null}
+                            </>
+                          ) : (
+                            <span className="dim">as soon as due</span>
+                          )}
+                        </td>
+                        <td>
+                          {/* Straight through to the collection — stopPropagation
+                              so following the link does not also toggle the row. */}
+                          <a
+                            className="cell-name"
+                            href={openSeaCollectionUrl(chain, j.collection)}
+                            target="_blank"
+                            rel="noreferrer"
+                            onClick={(e) => e.stopPropagation()}
+                            title={j.collection}
+                          >
+                            {j.drop?.name ?? j.label}
+                          </a>
+                          {j.dryRun ? <span className="cell-sub dim">dry run</span> : null}
+                        </td>
+                        <td className="num">
+                          {j.drop ? (
+                            BigInt(j.drop.priceWei) === 0n ? (
+                              <span className="ok">free</span>
+                            ) : (
+                              formatEthShort(BigInt(j.drop.priceWei))
+                            )
+                          ) : (
+                            <span className="dim">?</span>
+                          )}
+                        </td>
+                        <td className="num">
+                          {j.drop ? (
+                            <>
+                              <span className="cell-name">{Number(j.drop.maxSupply).toLocaleString("en-US")}</span>
+                              <span className="cell-sub dim">
+                                {Number(j.drop.totalSupply).toLocaleString("en-US")} minted
+                              </span>
+                            </>
+                          ) : (
+                            <span className="dim">?</span>
+                          )}
                         </td>
                         <td className="dim">
                           {j.stage} ×{j.quantity}
                           {j.wallets?.length ? ` · ${j.wallets.length}w` : ""}
-                        </td>
-                        <td className="dim">
-                          {j.startTime
-                            ? opensIn && opensIn > 0
-                              ? `in ${formatCountdown(opensIn)}`
-                              : unixToLocalAndUtc(j.startTime).local
-                            : "—"}
                         </td>
                         <td>
                           <span className={STATUS_CLASS[j.status]}>{j.status}</span>
@@ -512,11 +606,11 @@ export default function RemoteRunner(props: RemoteRunnerProps) {
                             <span className="ok"> · {minted} NFT</span>
                           ) : null}
                         </td>
-                        <td>
+                        <td className="num">
                           {j.status === "queued" ? (
                             <button
                               className="secondary"
-                              style={{ padding: "2px 10px", fontSize: 11 }}
+                              style={{ padding: "2px 10px", fontSize: 11, width: "auto" }}
                               onClick={(e) => {
                                 e.stopPropagation();
                                 void remove(j.id);
@@ -526,33 +620,92 @@ export default function RemoteRunner(props: RemoteRunnerProps) {
                             </button>
                           ) : null}
                         </td>
-                      </tr>
-                    );
+                      </tr>,
+                      isOpen ? (
+                        <tr key={`${j.id}-detail`} className="detail-row">
+                          <td colSpan={7}>
+                            <JobDetail job={j} chain={chain} />
+                          </td>
+                        </tr>
+                      ) : null,
+                    ];
                   })}
                 </tbody>
               </table>
             </div>
           )}
-
-          {openJob ? <JobDetail job={jobs.find((j) => j.id === openJob)} /> : null}
         </>
       ) : null}
     </div>
   );
 }
 
-/** Expanded view for one queued/finished job: outcomes, then the log tail. */
-function JobDetail({ job }: { job?: Job }) {
+/**
+ * Expanded view for one job: what the drop is, then how the run went.
+ *
+ * The drop half is there from the moment the job is queued — before it runs
+ * there is no plan and no outcome, and "nothing here yet" is a poor answer to
+ * someone checking what they queued.
+ */
+function JobDetail({ job, chain }: { job?: Job; chain: ChainInfo }) {
   if (!job) return null;
+  const d = job.drop;
   return (
-    <div style={{ marginTop: 14 }}>
+    <div>
       {job.error ? <p className="error">{job.error}</p> : null}
-      {job.plan ? (
+
+      {d ? (
         <dl className="kv">
           <dt>collection</dt>
           <dd>
-            {job.plan.name} — {job.plan.totalSupply}/{job.plan.maxSupply}
+            <a href={openSeaCollectionUrl(chain, job.collection)} target="_blank" rel="noreferrer">
+              {d.name}
+            </a>{" "}
+            <span className="dim">on OpenSea</span> ·{" "}
+            <a href={`${chain.explorerUrl}/address/${job.collection}`} target="_blank" rel="noreferrer">
+              contract
+            </a>
           </dd>
+          <dt>price</dt>
+          <dd>
+            {BigInt(d.priceWei) === 0n ? "free" : `${formatEthShort(BigInt(d.priceWei))} ETH`} per NFT
+            {BigInt(d.priceWei) > 0n && job.quantity !== "max" ? (
+              <span className="dim">
+                {" "}
+                · {formatEthShort(BigInt(d.priceWei) * BigInt(job.quantity))} ETH per wallet for{" "}
+                {job.quantity}
+              </span>
+            ) : null}
+          </dd>
+          <dt>supply</dt>
+          <dd>
+            {Number(d.maxSupply).toLocaleString("en-US")} total ·{" "}
+            {Number(d.totalSupply).toLocaleString("en-US")} minted so far ·{" "}
+            {Math.max(0, Number(d.maxSupply) - Number(d.totalSupply)).toLocaleString("en-US")} left
+          </dd>
+          <dt>per wallet</dt>
+          <dd>{d.perWallet === 0 ? "no cap" : `${d.perWallet} max`}</dd>
+          <dt>window</dt>
+          <dd>
+            {d.startTime > 0 ? unixToLocalAndUtc(d.startTime).local : "not set"}
+            {d.endTime > 0 ? ` → ${unixToLocalAndUtc(d.endTime).local}` : ""}
+            <span className="dim"> · read {new Date(d.readAt).toLocaleString()}</span>
+          </dd>
+        </dl>
+      ) : null}
+
+      {job.plan ? (
+        <dl className="kv">
+          {/* Only when the drop block above isn't already saying it — a job
+              queued by an older server has the plan and nothing else. */}
+          {d ? null : (
+            <>
+              <dt>collection</dt>
+              <dd>
+                {job.plan.name} — {job.plan.totalSupply}/{job.plan.maxSupply}
+              </dd>
+            </>
+          )}
           <dt>endpoints</dt>
           <dd>{job.plan.endpoints.join(", ")}</dd>
           <dt>wallets</dt>

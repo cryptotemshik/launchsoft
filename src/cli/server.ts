@@ -51,7 +51,7 @@ import {
   type KeyEntry,
   type SnipeConfig,
 } from "./config";
-import { runSnipe, type RunOptions, type RunResult } from "./runner";
+import { readDrop, runSnipe, type RunOptions, type RunResult } from "./runner";
 import { formatMintReport, sendTelegram, type MintedWallet } from "../lib/telegram";
 import { startTelegramBot } from "./telegramBot";
 import { loadUpcoming, removeUpcoming } from "./upcomingStore";
@@ -94,6 +94,26 @@ if (!TOKEN || TOKEN.length < 16) {
 // ── Queue ────────────────────────────────────────────────────────────────────
 type JobStatus = "queued" | "armed" | "done" | "error" | "aborted";
 
+/**
+ * The drop as the contract described it at queue time.
+ *
+ * Read once, when the job is added, rather than at fire time: a queue you can
+ * only understand after it has run is not much of a queue. Every number is a
+ * string because these travel as JSON and a supply does not fit in a double.
+ */
+interface JobDrop {
+  name: string;
+  totalSupply: string;
+  maxSupply: string;
+  priceWei: string;
+  /** Unix seconds; 0 when the stage has no start set yet. */
+  startTime: number;
+  endTime: number;
+  perWallet: number;
+  /** When this snapshot was taken. */
+  readAt: number;
+}
+
 interface Job {
   id: string;
   label: string;
@@ -115,6 +135,8 @@ interface Job {
   wallets?: string[];
   /** Set when the post-run NFT sweep ran. */
   consolidated?: { to: string; moved: number; total: number };
+  /** What the contract said about the drop when the job was queued. */
+  drop?: JobDrop;
 }
 
 /** Where the box is reachable, once the tunnel log has been read. */
@@ -166,6 +188,39 @@ async function readBody(req: IncomingMessage): Promise<Record<string, unknown>> 
 }
 
 /** Public view of a job — logs and outcomes, never keys. */
+/**
+ * Read the drop, or give up quietly.
+ *
+ * A queue that refuses to accept a job because an RPC blinked would be worse
+ * than one missing a price column, so every failure here is swallowed: the job
+ * is queued either way and simply shows less.
+ */
+async function peekDrop(
+  collection: `0x${string}`,
+  extraRpcs: readonly string[],
+): Promise<JobDrop | undefined> {
+  try {
+    const cfg = loadConfig(CONFIG_PATH);
+    const info = getChainInfo(cfg.chainId);
+    if (!info) return undefined;
+    const client = makeReadClient(info.chain, [...extraRpcs, ...cfg.extraRpcs]);
+    const d = await readDrop(client as never, info, collection);
+    return {
+      name: d.name,
+      totalSupply: d.totalSupply.toString(),
+      maxSupply: d.maxSupply.toString(),
+      priceWei: d.price.toString(),
+      startTime: d.startTime,
+      endTime: d.endTime,
+      perWallet: d.perWallet,
+      readAt: Date.now(),
+    };
+  } catch (e) {
+    log(`queue: couldn't read the drop (${e instanceof Error ? e.message : e}) — queueing anyway`);
+    return undefined;
+  }
+}
+
 function jobView(j: Job) {
   return {
     id: j.id,
@@ -182,6 +237,7 @@ function jobView(j: Job) {
     plan: j.result?.plan,
     outcomes: j.result?.outcomes,
     consolidated: j.consolidated,
+    drop: j.drop,
     error: j.error,
   };
 }
@@ -1419,18 +1475,38 @@ const server = createServer(async (req, res) => {
           log(`queue: ${missing.length} chosen wallet(s) are not on this server — ignoring them`);
         }
       }
+      // Ask the contract what this drop is before queueing it. Two round
+      // trips, once, and they buy the whole queue: the price, the supply, and
+      // above all when the stage opens — without which every job looks due
+      // immediately and arms hours early, holding the box against funding and
+      // sweeping the entire time.
+      const drop = await peekDrop(request.collection as `0x${string}`, request.extraRpcs ?? []);
       const job: Job = {
         id: randomUUID().slice(0, 8),
-        label: typeof body.label === "string" && body.label ? body.label : request.collection.slice(0, 10),
+        label:
+          typeof body.label === "string" && body.label
+            ? body.label
+            : (drop?.name ?? request.collection.slice(0, 10)),
         addedAt: Date.now(),
         status: "queued",
         request,
         wallets,
-        startTime: typeof body.startTime === "number" ? body.startTime : undefined,
+        startTime:
+          typeof body.startTime === "number"
+            ? body.startTime
+            : // Only the public stage's window is the one this tells us about;
+              // an allow-list job keeps arming as soon as it is due.
+              request.stage === "public" && drop && drop.startTime > 0
+              ? drop.startTime
+              : undefined,
+        drop,
         logs: [],
       };
       jobs.push(job);
-      log(`queued job ${job.id} (${job.label}) for ${request.collection}`);
+      log(
+        `queued job ${job.id} (${job.label}) for ${request.collection}` +
+          (drop ? ` — ${formatEther(BigInt(drop.priceWei))} ETH, ${drop.totalSupply}/${drop.maxSupply} minted` : ""),
+      );
       json(res, 201, jobView(job));
       return;
     }
