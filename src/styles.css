@@ -77,6 +77,26 @@ h1 .cursor {
   }
 }
 
+/* The mute switch, ASCII style. */
+.snd-toggle {
+  background: none;
+  border: none;
+  padding: 4px 2px;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.snd-toggle[aria-pressed="true"] {
+  color: var(--green);
+}
+@media (max-width: 760px) {
+  .snd-toggle {
+    display: none;
+  }
+}
+
 /* Gas price + block height — the header's proof of life. */
 .gas-block {
   font-family: var(--mono);

@@ -1,4 +1,5 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { sndTxConfirmed, sndTxFailed, sndTxSubmitted } from "../lib/sound";
 import {
   CHAINS_BY_ID,
   DEFAULT_CHAIN_ID,
@@ -292,6 +293,20 @@ const MARKERS: Record<StepStatus, string> = {
 };
 
 export function Steps({ steps }: { steps: StepView[] }) {
+  // Sounds ride the status transitions: a step starting to run is a
+  // submission, done a confirmation, failed a buzz. Diffing here means every
+  // flow that renders Steps gets audio without knowing about it.
+  const prev = useRef<Map<string, StepStatus>>(new Map());
+  useEffect(() => {
+    for (const s of steps) {
+      const was = prev.current.get(s.id);
+      if (was === s.status) continue;
+      if (s.status === "running" && was === "pending") sndTxSubmitted();
+      if (s.status === "done" && was !== undefined) sndTxConfirmed();
+      if (s.status === "failed") sndTxFailed();
+      prev.current.set(s.id, s.status);
+    }
+  }, [steps]);
   return (
     <ul className="steps">
       {steps.map((s) => (

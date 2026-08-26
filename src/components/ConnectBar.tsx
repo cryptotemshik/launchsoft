@@ -1,5 +1,6 @@
 import { useState } from "react";
 import GasBlock from "./GasBlock";
+import { setSoundEnabled, soundEnabled } from "../lib/sound";
 import { useAccount, useConnect, useDisconnect } from "wagmi";
 import { CHAINS } from "../chains";
 import { useChainSwitcher, useSigner, useSignerControls } from "../signer";
@@ -18,6 +19,7 @@ export default function ConnectBar({ onHome }: { onHome?: () => void }) {
   const { mode, setMode, locals, active, addLocalKey, removeLocal, clearLocals, selectLocal } =
     useSignerControls();
   const [keyInput, setKeyInput] = useState("");
+  const [snd, setSnd] = useState(soundEnabled);
   const [keyError, setKeyError] = useState<string | null>(null);
   const [reveal, setReveal] = useState(false);
 
@@ -52,6 +54,18 @@ export default function ConnectBar({ onHome }: { onHome?: () => void }) {
         </h1>
         <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
           <GasBlock />
+          <button
+            type="button"
+            className="snd-toggle"
+            aria-pressed={snd}
+            title="terminal sounds"
+            onClick={() => {
+              setSoundEnabled(!snd);
+              setSnd(!snd);
+            }}
+          >
+            [SND {snd ? "ON" : "OFF"}]
+          </button>
           <div className="mode-toggle">
             <button
               className={mode === "wallet" ? "active" : ""}

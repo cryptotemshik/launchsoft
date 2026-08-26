@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Landing from "./components/Landing";
 import ConnectBar from "./components/ConnectBar";
 import DashboardTab from "./components/DashboardTab";
@@ -10,6 +10,7 @@ import ServerWalletsTab from "./components/ServerWalletsTab";
 import SnipeTab from "./components/SnipeTab";
 import StatusTab from "./components/StatusTab";
 import WalletsTab from "./components/WalletsTab";
+import { installClickSound } from "./lib/sound";
 import { useActiveChain } from "./signer";
 import { CHAINS_BY_ID, DEFAULT_CHAIN_ID } from "./chains";
 import {
@@ -54,6 +55,10 @@ export default function App() {
     () => localStorage.getItem("launchpad.entered") === "1",
   );
   const info = useActiveChain() ?? CHAINS_BY_ID.get(DEFAULT_CHAIN_ID)!;
+
+  // One capture-phase listener gives every button its click tick — and the
+  // first of those clicks is the user gesture that unlocks the AudioContext.
+  useEffect(() => installClickSound(), []);
 
   if (!entered) {
     return (

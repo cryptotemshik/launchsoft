@@ -1,3 +1,4 @@
+import { sndFeedTick } from "../lib/sound";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useActiveChain } from "../signer";
 import { openSeaCollectionUrl } from "../chains";
@@ -72,6 +73,7 @@ export default function WalletsTab() {
 
       // Suppress the first (baseline) batch so we don't fire a flood of old
       // events; notify only for genuinely new ones after that.
+      if (baselinedRef.current && fresh.length > 0) sndFeedTick();
       if (baselinedRef.current && perm === "granted") {
         for (const e of fresh.sort((a, b) => a.t - b.t).slice(-6)) {
           const who = e.label || shortAddress(e.wallet);
