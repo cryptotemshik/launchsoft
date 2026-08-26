@@ -60,6 +60,14 @@ export default function App() {
   // first of those clicks is the user gesture that unlocks the AudioContext.
   useEffect(() => installClickSound(), []);
 
+  // On a phone the nav scrolls sideways — keep the selected tab in view.
+  useEffect(() => {
+    if (!window.matchMedia("(max-width: 640px)").matches) return;
+    document
+      .querySelector(".tabs button.active")
+      ?.scrollIntoView({ inline: "center", block: "nearest", behavior: "smooth" });
+  }, [tab]);
+
   if (!entered) {
     return (
       <Landing
@@ -84,8 +92,12 @@ export default function App() {
             so they live in a hover menu under it instead of as sibling tabs. */}
         <div className="tab-group">
           <button
+            // `group-active` marks "a child of mine is open": the desktop
+            // dropdown paints it like active, the mobile bar — where the
+            // children are visible as their own tabs — leaves it alone, so
+            // two tabs never look selected at once.
             className={
-              tab === "launch" || tab === "reveal" || tab === "status" ? "active" : ""
+              tab === "launch" ? "active" : tab === "reveal" || tab === "status" ? "group-active" : ""
             }
             onClick={() => setTab("launch")}
           >
@@ -129,7 +141,9 @@ export default function App() {
         {/* Snipe is the entry point; the server's wallets belong with it. */}
         <div className="tab-group snipe-group">
           <button
-            className={`tab-mint ${tab === "snipe" || tab === "serverwallets" || tab === "funding" ? "active" : ""}`}
+            className={`tab-mint ${
+              tab === "snipe" ? "active" : tab === "serverwallets" || tab === "funding" ? "group-active" : ""
+            }`}
             onClick={() => setTab("snipe")}
           >
             <CrosshairIcon />

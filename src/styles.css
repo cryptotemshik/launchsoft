@@ -256,7 +256,8 @@ h1 .cursor {
   color: var(--text);
   background: rgba(255, 255, 255, 0.04);
 }
-.tabs button.active {
+.tabs button.active,
+.tabs button.group-active {
   color: var(--green);
   background: var(--panel-2);
   box-shadow: inset 0 0 0 1px var(--green);
@@ -270,7 +271,8 @@ h1 .cursor {
   background: rgba(0, 230, 118, 0.12);
   color: var(--green-bright);
 }
-.tabs button.tab-mint.active {
+.tabs button.tab-mint.active,
+.tabs button.tab-mint.group-active {
   color: var(--green);
   background: var(--panel-2);
   box-shadow: inset 0 0 0 1px var(--green);
@@ -1128,6 +1130,14 @@ tr.project-detail td {
   /* Flattened menu entries keep the desktop menu's width: 100% otherwise. */
   .tab-menu button {
     width: auto;
+  }
+  /* Children are visible as their own tabs here — the group parent must not
+     read as a second selection. */
+  .tabs button.group-active,
+  .tabs button.tab-mint.group-active {
+    color: var(--text-dim);
+    background: transparent;
+    box-shadow: none;
   }
   #root {
     padding-bottom: 110px;

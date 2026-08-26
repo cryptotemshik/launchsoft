@@ -52,7 +52,7 @@
   --line: var(--border);
   --line-strong: #1e5236;
   --dim: var(--text-dim);
-  --faint: #46584e;
+  --faint: #6a8074; /* tertiary text still has to clear 4.5:1 */
   --err: var(--red);
   --warn: var(--amber);
   --display: var(--mono);
