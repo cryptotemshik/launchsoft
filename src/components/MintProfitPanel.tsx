@@ -11,11 +11,14 @@
  * without asking the chain again. No marketplace API is involved, so there is
  * nothing to key and nothing to break when one changes.
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRunnerApi } from "../lib/runnerClient";
 import { formatEthShort } from "../lib/profit";
 import StaleServer from "./StaleServer";
 import Addr from "./Addr";
+import { openSeaCollectionUrlBySlug } from "../chains";
+import { cardFileName, drawShareCard } from "../lib/shareCard";
+import CopyButton from "./CopyButton";
 
 interface CollectionProfit {
   collection: string;
@@ -92,6 +95,8 @@ interface Row {
   unpriced: number;
   runs: number;
   sales: ProfitEvent[];
+  /** The mint transactions themselves, for the other half of the breakdown. */
+  mints: ProfitEvent[];
 }
 
 export default function MintProfitPanel() {
@@ -201,7 +206,10 @@ export default function MintProfitPanel() {
           held: c.heldTokens ?? 0,
           unpriced: c.unpricedSales ?? 0,
           runs: c.runs ?? 0,
+          // An older server reports totals without the events behind them, so
+          // the breakdown is empty rather than wrong.
           sales: [],
+          mints: [],
         }));
     }
 
@@ -224,10 +232,12 @@ export default function MintProfitPanel() {
           unpriced: 0,
           runs: c?.runs ?? 0,
           sales: [],
+          mints: [],
         } satisfies Row);
       if (e.kind === "mint") {
         row.minted += e.tokens;
         row.spent += -BigInt(e.wei);
+        row.mints.push(e);
       } else {
         row.sold += 1;
         if (e.priced === false) row.unpriced += 1;
@@ -270,6 +280,42 @@ export default function MintProfitPanel() {
     };
     return [...rows].sort((a, b) => dir * cmp(a, b));
   }, [rows, sort, desc]);
+
+  const cardRef = useRef<HTMLCanvasElement | null>(null);
+  const [card, setCard] = useState<string | null>(null);
+
+  /**
+   * Draw the window as something postable.
+   *
+   * The palette comes off the live stylesheet rather than being repeated in
+   * the drawing code, so the image cannot drift from the app it claims to be
+   * a picture of.
+   */
+  const makeCard = useCallback(() => {
+    const canvas = cardRef.current;
+    if (!canvas) return;
+    const styles = getComputedStyle(document.documentElement);
+    drawShareCard(
+      canvas,
+      {
+        netWei: totals.net,
+        spentWei: totals.spent,
+        earnedWei: totals.earned,
+        minted: totals.minted,
+        sold: totals.sold,
+        collections: rows.length,
+        rangeLabel: RANGES.find((r) => r.key === range)?.label ?? "window",
+        top: [...rows]
+          .sort((a, b) => (b.net > a.net ? 1 : b.net < a.net ? -1 : 0))
+          .slice(0, 3)
+          .map((r) => ({ name: r.name ?? r.collection.slice(0, 10), netWei: r.net })),
+        symbol: "ETH",
+      },
+      (name, fallback) => styles.getPropertyValue(name).trim() || fallback,
+    );
+    setCard(canvas.toDataURL("image/png"));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows, range]);
 
   const totals = rows.reduce(
     (acc, r) => ({
@@ -400,6 +446,7 @@ export default function MintProfitPanel() {
         </p>
       ) : null}
 
+      <canvas ref={cardRef} style={{ display: "none" }} />
       {view && rows.length > 0 ? (
         <>
           <div className="profit-summary">
@@ -417,7 +464,34 @@ export default function MintProfitPanel() {
               <Fact label="sold" value={String(totals.sold)} />
               <Fact label="still held" value={String(totals.held)} />
             </div>
+            <button className="secondary card-btn" onClick={makeCard}>
+              card ↗
+            </button>
           </div>
+
+          {card ? (
+            <div className="card-preview">
+              <img src={card} alt="Shareable summary of this window" />
+              <div className="card-actions">
+                <a
+                  className="secondary btn-like"
+                  href={card}
+                  download={cardFileName(
+                    RANGES.find((r) => r.key === range)?.label ?? "window",
+                  )}
+                >
+                  SAVE PNG
+                </a>
+                <button className="secondary link-btn" onClick={() => setCard(null)}>
+                  dismiss
+                </button>
+              </div>
+              <p className="dim hint" style={{ marginBottom: 0 }}>
+                Right-click or long-press to copy it straight into a post. The
+                figures are the ones above — nothing is rounded up for effect.
+              </p>
+            </div>
+          ) : null}
 
           {totals.unpriced > 0 ? (
             <p className="warn" style={{ marginTop: 0 }}>
@@ -451,8 +525,18 @@ export default function MintProfitPanel() {
                       onClick={() => setOpen(isOpen ? null : r.collection)}
                     >
                       <td>
-                        <span className="cell-name">
-                          {r.name ?? `${r.collection.slice(0, 10)}…`}
+                        <span className="name-with-copy">
+                          <a
+                            className="cell-name"
+                            href={openSeaCollectionUrlBySlug(view.openSeaSlug, r.collection)}
+                            target="_blank"
+                            rel="noreferrer"
+                            title="Open this collection on OpenSea"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            {r.name ?? `${r.collection.slice(0, 10)}…`}
+                          </a>
+                          <CopyButton value={r.collection} />
                         </span>
                         <span className="cell-sub dim">
                           {r.held} held
@@ -472,7 +556,7 @@ export default function MintProfitPanel() {
                     isOpen ? (
                       <tr key={`${r.collection}-detail`} className="detail-row">
                         <td colSpan={6}>
-                          <SaleList sales={r.sales} explorerUrl={view.explorerUrl} held={r.held} />
+                          <Ledger row={r} explorerUrl={view.explorerUrl} />
                         </td>
                       </tr>
                     ) : null,
@@ -626,44 +710,89 @@ function PnlChart({ events }: { events: ProfitEvent[] }) {
   );
 }
 
-function SaleList({
-  sales,
-  explorerUrl,
-  held,
-}: {
-  sales: ProfitEvent[];
-  explorerUrl: string;
-  held: number;
-}) {
-  if (sales.length === 0) {
-    return (
-      <p className="dim hint" style={{ margin: 0 }}>
-        Nothing sold in this window — {held} token{held === 1 ? "" : "s"} still held.
-      </p>
-    );
-  }
+function whenOf(at: number): string {
+  return new Date(at * 1000).toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+/**
+ * What actually happened, in two columns.
+ *
+ * The money went out one way and came back another, and a single mixed list
+ * made that hard to read: what you minted is a decision you made, what sold is
+ * something the market did. Side by side they answer "did this work" at a
+ * glance, and every line links to the transaction so the answer is checkable.
+ */
+function Ledger({ row, explorerUrl }: { row: Row; explorerUrl: string }) {
+  const tx = (hash: string) => `${explorerUrl}/tx/${hash}`;
   return (
-    <div>
-      <p className="dim hint" style={{ marginTop: 0 }}>
-        {sales.length} sale{sales.length === 1 ? "" : "s"} · {held} still held. A
-        sale priced at 0 was a transfer with no payment in ETH — a gift, or paid
-        in something else.
-      </p>
-      <ul className="feed" style={{ maxHeight: 260, overflowY: "auto" }}>
-        {sales.map((s) => (
-          <li key={`${s.txHash}-${s.tokenId}`} className="feed-row">
-            <span className="feed-main">
-              #{s.tokenId} from <Addr value={s.wallet} head={8} />
-            </span>
-            <span className="feed-meta dim">
-              {formatEthShort(BigInt(s.wei))} ETH ·{" "}
-              <a href={`${explorerUrl}/tx/${s.txHash}`} target="_blank" rel="noreferrer">
-                tx
-              </a>
-            </span>
-          </li>
-        ))}
-      </ul>
+    <div className="ledger-split">
+      <section>
+        <h4 className="ls-head">
+          MINTED <span className="dim">· {row.minted} tokens</span>
+          <span className="ls-total neg">−{formatEthShort(row.spent)}</span>
+        </h4>
+        {row.mints.length === 0 ? (
+          <p className="dim" style={{ margin: 0, fontSize: 12 }}>
+            nothing minted in this window.
+          </p>
+        ) : (
+          <ul className="ls-list">
+            {row.mints.map((m) => (
+              <li key={`${m.txHash}-${m.wallet}`}>
+                <span className="ls-when dim">{whenOf(m.at)}</span>
+                <span className="ls-what">
+                  {m.tokens}× from <Addr value={m.wallet} head={6} />
+                </span>
+                <span className="ls-amt neg">−{formatEthShort(-BigInt(m.wei))}</span>
+                <a href={tx(m.txHash)} target="_blank" rel="noreferrer" className="ls-tx">
+                  tx
+                </a>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      <section>
+        <h4 className="ls-head">
+          SOLD <span className="dim">· {row.sold} tokens</span>
+          <span className="ls-total pos">+{formatEthShort(row.earned)}</span>
+        </h4>
+        {row.sales.length === 0 ? (
+          <p className="dim" style={{ margin: 0, fontSize: 12 }}>
+            nothing sold — {row.held} token{row.held === 1 ? "" : "s"} still held.
+          </p>
+        ) : (
+          <ul className="ls-list">
+            {row.sales.map((sale) => (
+              <li key={`${sale.txHash}-${sale.tokenId}`}>
+                <span className="ls-when dim">{whenOf(sale.at)}</span>
+                <span className="ls-what">
+                  #{sale.tokenId} from <Addr value={sale.wallet} head={6} />
+                </span>
+                <span className={sale.priced === false ? "ls-amt dim" : "ls-amt pos"}>
+                  {sale.priced === false ? "unpriced" : `+${formatEthShort(BigInt(sale.wei))}`}
+                </span>
+                <a href={tx(sale.txHash)} target="_blank" rel="noreferrer" className="ls-tx">
+                  tx
+                </a>
+              </li>
+            ))}
+          </ul>
+        )}
+        {row.unpriced > 0 ? (
+          <p className="dim hint" style={{ marginBottom: 0 }}>
+            {row.unpriced} sale{row.unpriced === 1 ? "" : "s"} the node would not
+            price — a transfer with no payment in ETH, or a block whose balance
+            history this node no longer keeps. Revenue excludes them.
+          </p>
+        ) : null}
+      </section>
     </div>
   );
 }

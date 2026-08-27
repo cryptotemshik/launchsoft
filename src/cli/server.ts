@@ -1776,7 +1776,13 @@ const server = createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/upcoming" && req.method === "GET") {
-      json(res, 200, { upcoming: sortByDate(loadUpcoming(CONFIG_PATH)) });
+      const info = getChainInfo(loadConfig(CONFIG_PATH).chainId);
+      json(res, 200, {
+        upcoming: sortByDate(loadUpcoming(CONFIG_PATH)),
+        // So a row with a contract can link the same way every other table
+        // in the app does.
+        openSeaSlug: info?.openSeaSlug,
+      });
       return;
     }
 

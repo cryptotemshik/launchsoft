@@ -2516,3 +2516,138 @@ button.secondary.link-btn {
     width: 100vw;
   }
 }
+
+/* ── The dashboard's breakdown ───────────────────────────────────────────
+   What you minted and what the market did, side by side. One mixed list made
+   the two hard to tell apart; the question is "did this work", and that is a
+   comparison. */
+.ledger-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 24px;
+}
+.ls-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin: 0 0 8px;
+  padding-bottom: 5px;
+  border-bottom: 1px solid var(--line);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  color: var(--faint);
+  font-family: var(--mono);
+  font-weight: 600;
+}
+.ls-total {
+  margin-left: auto;
+  font-size: 12px;
+  letter-spacing: 0;
+}
+.ls-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 260px;
+  overflow-y: auto;
+}
+.ls-list li {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr) 84px 24px;
+  gap: 8px;
+  align-items: baseline;
+  padding: 4px 2px;
+  border-bottom: 1px solid var(--border-dim);
+  font-size: 11.5px;
+}
+.ls-list li:last-child {
+  border-bottom: none;
+}
+.ls-when,
+.ls-amt {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+.ls-amt {
+  text-align: right;
+}
+.ls-what {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ls-tx {
+  font-size: 10px;
+  text-align: right;
+}
+
+/* A name you can open, and an address you can take with you. */
+.name-with-copy {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.copy-btn {
+  flex: none;
+  width: auto;
+  padding: 0 6px;
+  border: 1px solid var(--border-dim);
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--faint);
+  font-family: var(--mono);
+  font-size: 9px;
+  line-height: 15px;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+}
+.copy-btn:hover {
+  color: var(--green-bright);
+  border-color: var(--green-bright);
+}
+
+@media (max-width: 900px) {
+  .ledger-split {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 18px;
+  }
+  .ls-list li {
+    grid-template-columns: minmax(0, 1fr) 78px 22px;
+  }
+  .ls-when {
+    grid-column: 1 / -1;
+  }
+}
+
+/* The window as a picture, for posting. */
+.card-btn {
+  width: auto;
+  padding: 6px 14px;
+  font-size: 11px;
+  align-self: center;
+}
+.card-preview {
+  margin: 12px 0 4px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+.card-preview img {
+  display: block;
+  width: 100%;
+  max-width: 620px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border-dim);
+}
+.card-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 10px;
+}
+.card-actions .btn-like {
+  width: auto;
+  padding: 6px 14px;
+  font-size: 11px;
+}

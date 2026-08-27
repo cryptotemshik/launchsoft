@@ -14,6 +14,8 @@ import { useRunnerApi } from "../lib/runnerClient";
 import { sortByDate, twitterHandle, type UpcomingMint } from "../lib/upcoming";
 import { setPendingTarget } from "../lib/snipeTarget";
 import Addr from "./Addr";
+import CopyButton from "./CopyButton";
+import { openSeaCollectionUrlBySlug } from "../chains";
 import StaleServer from "./StaleServer";
 
 type SortKey = "date" | "name" | "supply";
@@ -57,6 +59,7 @@ export default function UpcomingTab({ onSnipe }: { onSnipe?: (contract: string) 
   const [draft, setDraft] = useState({ name: "", twitter: "", contract: "", supply: "", when: "" });
   const [addError, setAddError] = useState<string | null>(null);
   const [addBusy, setAddBusy] = useState(false);
+  const [slug, setSlug] = useState<string | undefined>();
   const [looking, setLooking] = useState(false);
   const [found, setFound] = useState<string | null>(null);
 
@@ -65,8 +68,12 @@ export default function UpcomingTab({ onSnipe }: { onSnipe?: (contract: string) 
     setError(null);
     try {
       save();
-      const r = (await call("/api/upcoming")) as unknown as { upcoming?: UpcomingMint[] };
+      const r = (await call("/api/upcoming")) as unknown as {
+        upcoming?: UpcomingMint[];
+        openSeaSlug?: string;
+      };
       setList(Array.isArray(r.upcoming) ? r.upcoming : []);
+      setSlug(r.openSeaSlug);
       setNow(Math.floor(Date.now() / 1000));
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -381,13 +388,35 @@ export default function UpcomingTab({ onSnipe }: { onSnipe?: (contract: string) 
                   const near = m.at !== undefined ? until(m.at, now) : null;
                   return (
                     <tr key={m.id} className="project-row">
-                      <td data-label="collection">
-                        <span className="cell-name">{m.name}</span>
+                      <td data-label="collection" className="cell-clip">
+                        {/* The same shape as every other table here: a name
+                            that opens the collection, an address you can take
+                            with you. A drop with no contract yet has nowhere
+                            to go, so its name is text rather than a dead
+                            link. */}
                         {m.contract ? (
-                          <span className="cell-sub dim">
-                            <Addr value={m.contract} head={8} />
+                          <span className="name-with-copy">
+                            <a
+                              className="cell-name"
+                              href={openSeaCollectionUrlBySlug(slug, m.contract)}
+                              target="_blank"
+                              rel="noreferrer"
+                              title="Open this collection on OpenSea"
+                            >
+                              {m.name}
+                            </a>
+                            <CopyButton value={m.contract} />
                           </span>
-                        ) : null}
+                        ) : (
+                          <span className="cell-name">{m.name}</span>
+                        )}
+                        <span className="cell-sub dim">
+                          {m.contract ? (
+                            <Addr value={m.contract} head={8} />
+                          ) : (
+                            "no contract yet"
+                          )}
+                        </span>
                       </td>
                       <td data-label="twitter">
                         {m.twitter ? (
