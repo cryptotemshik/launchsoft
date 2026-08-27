@@ -139,9 +139,14 @@ async function readRange<T>(
     noteRefused(span);
     if (span <= MIN_SPAN) throw e;
     onNote?.(`range of ${span} blocks refused — splitting`);
+    // Back through readLogs, not straight into readRange: the refusal just
+    // recorded above, and whatever the first half goes on to prove acceptable,
+    // both apply to the second half. Recursing into readRange instead made
+    // each half rediscover the same ceiling from scratch — visible in the log
+    // as the same block count being refused twice.
     const mid = fromBlock + span / 2n;
-    const a = await readRange<T>(client, event, fromBlock, mid, onNote, waited);
-    const b = await readRange<T>(client, event, mid + 1n, toBlock, onNote, waited);
+    const a = await readLogs<T>(client, event, fromBlock, mid, onNote);
+    const b = await readLogs<T>(client, event, mid + 1n, toBlock, onNote);
     return [...a, ...b];
   }
 }

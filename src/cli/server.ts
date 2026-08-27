@@ -121,10 +121,29 @@ const ARM_LEAD_MS = Number(process.env.SNIPE_ARM_LEAD_MS ?? 120_000);
  *
  * Comma or newline separated. Best first.
  */
-const ENV_RPCS = (process.env.SNIPE_RPCS ?? "")
-  .split(/[\s,]+/)
-  .map((u) => u.trim())
-  .filter((u) => /^https?:\/\//i.test(u));
+const ENV_RPCS = splitRpcs(process.env.SNIPE_RPCS);
+
+/**
+ * The endpoints the *research* reads go through, when they are to be kept
+ * apart from the ones a mint uses.
+ *
+ * A scan is the heaviest thing this server does — a week of history is
+ * millions of blocks of `eth_getLogs` — and a provider's throughput limit is
+ * per key. Sharing one key means a calendar refresh can be eating the
+ * allowance at the exact second a stage opens, and the request that loses is
+ * the one that cannot be retried: the mint. Point this at a second key and the
+ * scanner can be as greedy as it likes without ever standing in a drop's way.
+ *
+ * Unset, it falls back to SNIPE_RPCS, so one key keeps working as before.
+ */
+const SCAN_ENV_RPCS = splitRpcs(process.env.SNIPE_SCAN_RPCS);
+
+function splitRpcs(raw: string | undefined): string[] {
+  return (raw ?? "")
+    .split(/[\s,]+/)
+    .map((u) => u.trim())
+    .filter((u) => /^https?:\/\//i.test(u));
+}
 
 const AUTO_UPDATE = process.env.SNIPE_AUTO_UPDATE !== "0";
 const AUTO_UPDATE_MS = Number(process.env.SNIPE_AUTO_UPDATE_MS ?? 3_600_000);
@@ -320,7 +339,7 @@ async function buildProfitReport(): Promise<Record<string, unknown>> {
   const costs = costByCollection(loadMints(CONFIG_PATH));
   const known = loadCollections(CONFIG_PATH);
 
-  const client = makeReadClient(info.chain, readRpcs(cfg));
+  const client = makeReadClient(info.chain, scanRpcs(cfg));
 
   // One scan covers every collection these wallets have ever touched, so
   // a drop shows up here whether or not it was minted through this server
@@ -707,7 +726,7 @@ async function startScan(hours: number): Promise<Record<string, unknown>> {
     const cfg = loadConfig(CONFIG_PATH);
     const info = getChainInfo(cfg.chainId);
     if (!info) throw new Error(`chain ${cfg.chainId} isn't in the registry`);
-    const client = makeReadClient(info.chain, readRpcs(cfg));
+    const client = makeReadClient(info.chain, scanRpcs(cfg));
 
     const tip = await client.getBlockNumber();
     // Measured, not assumed: a hardcoded rate turns "last 24 hours" into a
@@ -801,8 +820,8 @@ async function startScan(hours: number): Promise<Record<string, unknown>> {
        * 429 — so the panel has to be able to say which node was used rather
        * than leaving the user to guess from the error.
        */
-      readRpc: rpcHost(readRpc(cfg, info)),
-      publicRpc: readRpcs(cfg).length === 0,
+      readRpc: rpcHost(scanRpc(cfg, info)),
+      publicRpc: scanRpcs(cfg).length === 0,
       /** Minting over the last hour, keyed by lower-case contract. */
       pulse,
       pulseHours: PULSE_HOURS,
@@ -1135,6 +1154,11 @@ function readRpc(cfg: SnipeConfig, info: NonNullable<ReturnType<typeof getChainI
   return readRpcs(cfg)[0] ?? info.chain.rpcUrls.default.http[0];
 }
 
+/** The endpoint the panel is looking at when it asks who answered a scan. */
+function scanRpc(cfg: SnipeConfig, info: NonNullable<ReturnType<typeof getChainInfo>>): string {
+  return scanRpcs(cfg)[0] ?? info.chain.rpcUrls.default.http[0];
+}
+
 /** Host only — the full URL usually carries a provider API key. */
 function rpcHost(url: string): string {
   try {
@@ -1182,6 +1206,20 @@ async function probeChainId(url: string): Promise<number> {
  */
 function readRpcs(cfg: SnipeConfig): string[] {
   return withEnvRpcs(cfg.extraRpcs);
+}
+
+/**
+ * Every endpoint the heavy read-only routes may go through — the scanner, the
+ * live feed, the drop list, the profit report.
+ *
+ * Falls back to the mint path's endpoints when no separate one is set, which
+ * is the single-key case and the default.
+ */
+function scanRpcs(cfg: SnipeConfig): string[] {
+  if (SCAN_ENV_RPCS.length === 0) return readRpcs(cfg);
+  const out = [...SCAN_ENV_RPCS];
+  for (const u of cfg.extraRpcs) if (!out.includes(u)) out.push(u);
+  return out;
 }
 
 /** The same rule for a list that arrived from somewhere else. */
@@ -1733,7 +1771,7 @@ const server = createServer(async (req, res) => {
       const cfg = loadConfig(CONFIG_PATH);
       const info = getChainInfo(cfg.chainId);
       if (!info) throw new Error(`chain ${cfg.chainId} isn't in the registry`);
-      const client = makeReadClient(info.chain, readRpcs(cfg));
+      const client = makeReadClient(info.chain, scanRpcs(cfg));
       const tip = await client.getBlockNumber();
       if (!blockRate || Date.now() - blockRate.at > BLOCK_RATE_TTL_MS) {
         blockRate = { at: Date.now(), perHour: await measureBlockRate(client as never, tip) };
@@ -1747,8 +1785,8 @@ const server = createServer(async (req, res) => {
         minutes,
         windows: LIVE_WINDOWS,
         error: pulseError,
-        readRpc: rpcHost(readRpc(cfg, info)),
-        publicRpc: readRpcs(cfg).length === 0,
+        readRpc: rpcHost(scanRpc(cfg, info)),
+        publicRpc: scanRpcs(cfg).length === 0,
         related: creators.relatedFor(rows.map((r) => r.contract)),
         knownCollections: creators.size,
         now: Math.floor(Date.now() / 1000),
@@ -1822,7 +1860,7 @@ const server = createServer(async (req, res) => {
       const cfg = loadConfig(CONFIG_PATH);
       const info = getChainInfo(cfg.chainId);
       if (!info) throw new Error(`chain ${cfg.chainId} isn't in the registry`);
-      const client = makeReadClient(info.chain, readRpcs(cfg));
+      const client = makeReadClient(info.chain, scanRpcs(cfg));
 
       // The public stage, straight off SeaDrop — never an allow-list one.
       const stages = (await client.multicall({
@@ -2361,9 +2399,14 @@ server.listen(PORT, HOST, () => {
     const hosts = readRpcs(cfg).map(rpcHost);
     log(
       hosts.length > 0
-        ? `reads through ${hosts.join(", ")}`
-        : "reads through the chain's PUBLIC RPC, which meters — set SNIPE_RPCS in snipe.env to use your own",
+        ? `mints through ${hosts.join(", ")}`
+        : "mints through the chain's PUBLIC RPC, which meters — set SNIPE_RPCS in snipe.env to use your own",
     );
+    // Only worth a second line when the two are actually different: on one key
+    // it would just be the same host twice and read like a misconfiguration.
+    if (SCAN_ENV_RPCS.length > 0) {
+      log(`scans through ${scanRpcs(cfg).map(rpcHost).join(", ")} — kept off the mint path`);
+    }
     log(cfg.telegram ? "telegram notifications ON" : "telegram notifications off (no token/chat id)");
     // The same bot, now also listening: /add collects a drop that exists
     // nowhere but Twitter yet, and the site reads the list back.
