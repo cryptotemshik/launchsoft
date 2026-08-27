@@ -11,6 +11,8 @@ import { formatEthShort } from "../lib/profit";
 import { useRunnerApi } from "../lib/runnerClient";
 import StaleServer from "./StaleServer";
 import Addr from "./Addr";
+import FundJobPanel from "./FundJobPanel";
+import { FUNDED_MIN_ETH, isFunded, pickRandom } from "../lib/walletSelection";
 
 /**
  * Control panel for a snipe runner living next to the sequencer.
@@ -84,6 +86,8 @@ interface Job {
   outcomes?: Outcome[];
   /** Absent on servers older than the queue-time drop read. */
   drop?: JobDrop;
+  /** The gas this job was queued with. Absent on older servers. */
+  gas?: { maxFeeGwei: string; tipGwei: string; limit: number };
   error?: string;
 }
 
@@ -156,8 +160,18 @@ export default function RemoteRunner(props: RemoteRunnerProps) {
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<StatusView | null>(null);
   const [openJob, setOpenJob] = useState<string | null>(null);
+  /** Which queued job's funding drawer is open, by id. */
+  const [funding, setFunding] = useState<string | null>(null);
   // The server's own wallets, so a job can be aimed at a subset of them.
   const [wallets, setWallets] = useState<ServerWallet[]>([]);
+  /**
+   * Exactly which wallets fire, always spelled out.
+   *
+   * An empty set used to mean "all of them", which made "none of them"
+   * impossible to express — there was no way to clear the list and tick a few
+   * back on. It is literal now: empty means none, and the full set is filled
+   * in when the wallets first load.
+   */
   const [chosen, setChosen] = useState<Set<string>>(new Set());
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
   const pollRef = useRef<ReturnType<typeof setInterval>>();
@@ -178,14 +192,21 @@ export default function RemoteRunner(props: RemoteRunnerProps) {
       try {
         const w = (await call("/api/wallets")) as unknown as { wallets: ServerWallet[] };
         const list = w.wallets ?? [];
-        setWallets(list);
-        // Drop anything that has since been deleted on the server, otherwise a
-        // ghost address keeps the selection looking partial forever.
-        setChosen((prev) => {
-          if (prev.size === 0) return prev;
-          const live = new Set(list.map((x) => x.address));
-          const next = new Set([...prev].filter((a) => live.has(a)));
-          return next.size === prev.size ? prev : next;
+        setWallets((prevList) => {
+          // First sight of the wallet set selects all of it, which is what
+          // most drops want and what the empty set used to stand in for.
+          if (prevList.length === 0 && list.length > 0) {
+            setChosen(new Set(list.map((x) => x.address)));
+          } else {
+            // Drop anything since deleted on the server, otherwise a ghost
+            // address keeps the selection looking partial forever.
+            setChosen((prev) => {
+              const live = new Set(list.map((x) => x.address));
+              const next = new Set([...prev].filter((a) => live.has(a)));
+              return next.size === prev.size ? prev : next;
+            });
+          }
+          return list;
         });
       } catch {
         setWallets([]);
@@ -291,6 +312,10 @@ export default function RemoteRunner(props: RemoteRunnerProps) {
       setError("Read a collection above first — the queue takes the one loaded here.");
       return;
     }
+    if (wallets.length > 0 && chosen.size === 0) {
+      setError("No wallets ticked — a job with none would arm nothing and mint nothing.");
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -301,8 +326,9 @@ export default function RemoteRunner(props: RemoteRunnerProps) {
           collection: props.collection,
           stage: props.stage,
           quantity: props.quantity,
-          // Empty selection means "every wallet", which is the sane default.
-          ...(chosen.size > 0 && chosen.size < wallets.length ? { wallets: [...chosen] } : {}),
+          // Only pin the job when it is a strict subset; sending the whole
+          // list would freeze it against wallets added later.
+          ...(chosen.size < wallets.length ? { wallets: [...chosen] } : {}),
           gas: props.gas,
           extraRpcs: props.extraRpcs,
           timing: props.timing,
@@ -342,6 +368,20 @@ export default function RemoteRunner(props: RemoteRunnerProps) {
   }
 
   const jobs = status?.jobs ?? [];
+  const fundingJob = funding ? (jobs.find((j) => j.id === funding) ?? null) : null;
+  /**
+   * The wallets that job will actually fire from. A job pinned to a subset
+   * carries the list; one that is not fires from every wallet the server has,
+   * and funding the others would be money sent nowhere useful.
+   */
+  const fundingWallets = fundingJob
+    ? fundingJob.wallets?.length
+      ? wallets.filter((w) =>
+          fundingJob.wallets!.some((a) => a.toLowerCase() === w.address.toLowerCase()),
+        )
+      : wallets
+    : [];
+
   const pending = jobs.filter((j) => j.status === "queued" || j.status === "armed");
   const chain = useActiveChain() ?? CHAINS_BY_ID.get(DEFAULT_CHAIN_ID)!;
 
@@ -616,16 +656,34 @@ export default function RemoteRunner(props: RemoteRunnerProps) {
                         </td>
                         <td className="num" data-label="">
                           {j.status === "queued" ? (
-                            <button
-                              className="secondary"
-                              style={{ padding: "2px 10px", fontSize: 11, width: "auto" }}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                void remove(j.id);
-                              }}
-                            >
-                              remove
-                            </button>
+                            <span style={{ display: "inline-flex", gap: 6 }}>
+                              <button
+                                className="secondary"
+                                style={{ padding: "2px 10px", fontSize: 11, width: "auto" }}
+                                title={
+                                  j.gas
+                                    ? "Top the wallets this job fires from up to what it will cost them"
+                                    : "This server is too old to say what gas the job was queued with — update it"
+                                }
+                                disabled={!j.gas}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setFunding(j.id);
+                                }}
+                              >
+                                fund
+                              </button>
+                              <button
+                                className="secondary"
+                                style={{ padding: "2px 10px", fontSize: 11, width: "auto" }}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  void remove(j.id);
+                                }}
+                              >
+                                remove
+                              </button>
+                            </span>
                           ) : null}
                         </td>
                       </tr>,
@@ -643,6 +701,26 @@ export default function RemoteRunner(props: RemoteRunnerProps) {
             </div>
           )}
         </>
+      ) : null}
+
+      {fundingJob && fundingJob.gas ? (
+        <FundJobPanel
+          jobLabel={fundingJob.label}
+          cost={{
+            priceWei: BigInt(fundingJob.drop?.priceWei ?? "0"),
+            // "max" means as many as the stage allows, and the stage cap is
+            // what the wallet must be able to pay for.
+            quantity:
+              fundingJob.quantity === "max"
+                ? Number(fundingJob.drop?.perWallet ?? 1) || 1
+                : fundingJob.quantity,
+            maxFeeGwei: fundingJob.gas.maxFeeGwei,
+            gasLimit: fundingJob.gas.limit,
+          }}
+          wallets={fundingWallets}
+          onClose={() => setFunding(null)}
+          onFunded={() => void refresh()}
+        />
       ) : null}
     </div>
   );
@@ -759,9 +837,11 @@ function JobDetail({ job, chain }: { job?: Job; chain: ChainInfo }) {
 }
 
 /**
- * Which of the server's wallets this job fires from. Nothing ticked means all
- * of them, which is both the default and what most drops want; ticking a
- * label's chip is the quick way to aim one drop at a batch.
+ * Which of the server's wallets this job fires from.
+ *
+ * Every wallet is either ticked or not — there is no "empty means all" any
+ * more, because it made "none" impossible to say and so made picking a handful
+ * by hand a chore of unticking ninety.
  */
 function WalletPicker({
   wallets,
@@ -772,6 +852,8 @@ function WalletPicker({
   chosen: Set<string>;
   setChosen: (s: Set<string>) => void;
 }) {
+  const [drawSize, setDrawSize] = useState(10);
+
   if (wallets.length === 0) {
     return (
       <p className="warn" style={{ marginTop: 14, marginBottom: 0 }}>
@@ -782,33 +864,65 @@ function WalletPicker({
   }
 
   const labels = [...new Set(wallets.map((w) => w.label).filter((l): l is string => Boolean(l)))];
-  const all = chosen.size === 0 || chosen.size === wallets.length;
-  const funded = wallets.filter((w) => Number(w.balance ?? 0) > 0).length;
+  const all = chosen.size === wallets.length;
+  const fundedWallets = wallets.filter((w) => isFunded(w.balance));
 
   const pick = (addresses: string[]) => setChosen(new Set(addresses));
+
+  /**
+   * Narrow what is already ticked, rather than always drawing from everything.
+   *
+   * This is what makes the chips compose: press "funded only", then draw, and
+   * you get a random handful of the funded ones. Drawing from the whole list
+   * regardless would silently undo the filter just applied.
+   */
+  const draw = () => {
+    const pool = chosen.size > 0 ? wallets.filter((w) => chosen.has(w.address)) : wallets;
+    pick(pickRandom(pool, drawSize).map((w) => w.address));
+  };
+
+  const drawMax = Math.max(1, chosen.size > 0 ? chosen.size : wallets.length);
 
   return (
     <div style={{ marginTop: 16 }}>
       <div className="field" style={{ marginBottom: 8 }}>
         <label>
-          wallets for this job — {all ? `all ${wallets.length}` : `${chosen.size} of ${wallets.length}`}
-          {funded < wallets.length ? ` · ${wallets.length - funded} with no balance` : ""}
+          wallets for this job —{" "}
+          {chosen.size === 0 ? (
+            <span className="warn">none ticked</span>
+          ) : all ? (
+            `all ${wallets.length}`
+          ) : (
+            `${chosen.size} of ${wallets.length}`
+          )}
+          {fundedWallets.length < wallets.length
+            ? ` · ${wallets.length - fundedWallets.length} below ${FUNDED_MIN_ETH} ETH`
+            : ""}
         </label>
       </div>
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
         <button
           className={all ? "secondary active-chip" : "secondary"}
           style={{ padding: "3px 12px", fontSize: 11 }}
-          onClick={() => setChosen(new Set())}
+          onClick={() => pick(wallets.map((w) => w.address))}
         >
           all ({wallets.length})
         </button>
         <button
+          className={chosen.size === 0 ? "secondary active-chip" : "secondary"}
+          style={{ padding: "3px 12px", fontSize: 11 }}
+          title="Clear the lot, then tick the few you want"
+          onClick={() => setChosen(new Set())}
+        >
+          none
+        </button>
+        <button
           className="secondary"
           style={{ padding: "3px 12px", fontSize: 11 }}
-          onClick={() => pick(wallets.filter((w) => Number(w.balance ?? 0) > 0).map((w) => w.address))}
+          title={`Wallets holding at least ${FUNDED_MIN_ETH} ETH — enough to pay for gas`}
+          onClick={() => pick(fundedWallets.map((w) => w.address))}
         >
-          funded only ({funded})
+          funded only ({fundedWallets.length})
         </button>
         {labels.map((l) => (
           <button
@@ -821,27 +935,54 @@ function WalletPicker({
           </button>
         ))}
       </div>
+
+      {/* Spreading a mint over a random handful, without ticking them one at a
+          time. It narrows the current selection, so "funded only" then "draw"
+          means a random few of the funded ones. */}
+      <div
+        style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 10, flexWrap: "wrap" }}
+      >
+        <button
+          className="secondary"
+          style={{ padding: "3px 12px", fontSize: 11 }}
+          onClick={draw}
+          title="Pick this many at random out of what is ticked now"
+        >
+          draw {Math.min(drawSize, drawMax)} at random
+        </button>
+        <input
+          type="range"
+          min={1}
+          max={drawMax}
+          value={Math.min(drawSize, drawMax)}
+          onChange={(e) => setDrawSize(Number(e.target.value))}
+          style={{ flex: "1 1 160px", minWidth: 120, accentColor: "var(--green)" }}
+          aria-label="how many wallets to draw"
+        />
+        <span className="dim mono-break" style={{ fontSize: 11, minWidth: 62 }}>
+          {Math.min(drawSize, drawMax)} of {drawMax}
+        </span>
+      </div>
+
       <div className="wallet-picker">
         {wallets.map((w) => {
-          const on = all || chosen.has(w.address);
+          const on = chosen.has(w.address);
           return (
             <label key={w.address} className={`wallet-pick ${on ? "on" : ""}`}>
               <input
                 type="checkbox"
                 checked={on}
                 onChange={() => {
-                  // First tick off an "all" selection materialises the full set,
-                  // so unticking one leaves the rest selected.
-                  const base = chosen.size === 0 ? new Set(wallets.map((x) => x.address)) : new Set(chosen);
-                  if (base.has(w.address)) base.delete(w.address);
-                  else base.add(w.address);
-                  setChosen(base);
+                  const next = new Set(chosen);
+                  if (next.has(w.address)) next.delete(w.address);
+                  else next.add(w.address);
+                  setChosen(next);
                 }}
               />
               <span className="mono-break">
                 <Addr value={w.address} head={8} />
               </span>
-              <span className={Number(w.balance ?? 0) > 0 ? "dim" : "warn"}>
+              <span className={isFunded(w.balance) ? "dim" : "warn"}>
                 {w.balance === null ? "—" : `${Number(w.balance).toFixed(4)}`}
               </span>
               {w.label ? <span className="dim">{w.label}</span> : null}

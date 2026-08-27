@@ -108,11 +108,7 @@ function tzChip(): { label: string; offsetMin: number } {
   };
 }
 
-export default function CalendarTab({
-  onSnipe,
-}: {
-  onSnipe?: (contract: string) => void;
-}) {
+export default function CalendarTab() {
   const { url, setUrl, token, setToken, base, call, save, serverVersion } = useRunnerApi();
   const [events, setEvents] = useState<CalendarEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -611,7 +607,6 @@ export default function CalendarTab({
           openSeaSlug={openSeaSlug}
           onClose={() => setSelected(null)}
           onHide={() => hide(chosen.id)}
-          onSnipe={onSnipe}
         />
       ) : null}
     </div>
@@ -700,16 +695,16 @@ function EventDrawer({
   openSeaSlug,
   onClose,
   onHide,
-  onSnipe,
 }: {
   event: CalendarEvent;
   now: number;
   openSeaSlug?: string;
   onClose: () => void;
   onHide: () => void;
-  onSnipe?: (contract: string) => void;
 }) {
   const st = statusOf(e, now);
+  // Local to the drawer, so reopening a different event starts unpressed.
+  const [sent, setSent] = useState(false);
   return (
     <>
       <div className="drawer-scrim" onClick={onClose} />
@@ -803,13 +798,14 @@ function EventDrawer({
           {e.contract ? (
             <>
               <button
-                className="primary"
+                className={sent ? "secondary active-chip" : "primary"}
+                title="Send it to the Snipe tab. This drawer stays where it is."
                 onClick={() => {
                   setPendingTarget(e.contract!);
-                  onSnipe?.(e.contract!);
+                  setSent(true);
                 }}
               >
-                OPEN IN SNIPE
+                {sent ? "SENT TO SNIPE ✓" : "SEND TO SNIPE"}
               </button>
               <a
                 className="secondary btn-like"

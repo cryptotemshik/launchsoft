@@ -325,6 +325,10 @@ function jobView(j: Job) {
     stage: j.request.stage,
     quantity: j.request.quantity,
     dryRun: j.request.dryRun,
+    // The gas this job was queued with, not whatever the panel shows now.
+    // Funding it means covering what it will actually spend, and the two drift
+    // apart the moment someone edits the gas box for the next drop.
+    gas: j.request.gas,
     wallets: j.wallets,
     logs: j.logs.slice(-60),
     plan: j.result?.plan,
@@ -2260,10 +2264,24 @@ const server = createServer(async (req, res) => {
         throw new Error("supply either fromKey (a one-off payer) or fromAddress (a stored wallet)");
       }
 
-      const amount = typeof body.amountEth === "string" ? body.amountEth : "";
-      if (!/^\d+(\.\d+)?$/.test(amount)) throw new Error("amountEth must be a plain number");
-      const amountWei = parseEther(amount);
-      if (amountWei <= 0n) throw new Error("amountEth must be greater than zero");
+      // Either a flat amount each, or a level to bring everyone up to. The
+      // second is what funding a mint actually wants: the wallets carry
+      // different leftovers from the last drop, so a flat send overfunds the
+      // ones that were nearly ready and underfunds the empty ones.
+      const num = (v: unknown): string => (typeof v === "string" ? v.trim() : "");
+      const topUpTo = num(body.topUpToEth);
+      const amount = num(body.amountEth);
+      let amountWei = 0n;
+      let topUpToWei: bigint | undefined;
+      if (topUpTo) {
+        if (!/^\d+(\.\d+)?$/.test(topUpTo)) throw new Error("topUpToEth must be a plain number");
+        topUpToWei = parseEther(topUpTo);
+        if (topUpToWei <= 0n) throw new Error("topUpToEth must be greater than zero");
+      } else {
+        if (!/^\d+(\.\d+)?$/.test(amount)) throw new Error("amountEth must be a plain number");
+        amountWei = parseEther(amount);
+        if (amountWei <= 0n) throw new Error("amountEth must be greater than zero");
+      }
 
       const payer = privateKeyToAccount(fromKey).address.toLowerCase();
       const firing = walletsOfActiveJob();
@@ -2276,12 +2294,31 @@ const server = createServer(async (req, res) => {
         });
         return;
       }
-      const targets = entries
-        .map((e) => privateKeyToAccount(e.key).address)
-        // Never send a wallet its own money.
-        .filter((a) => a.toLowerCase() !== payer);
+      // A caller may name the wallets to fund — the queue does, so funding a
+      // job pays exactly the wallets that job fires from and no others.
+      // Anything named that the server does not hold is refused rather than
+      // silently dropped: a typo would otherwise look like a successful run
+      // that funded fewer wallets than asked.
+      const stored = entries.map((e) => privateKeyToAccount(e.key).address);
+      let targets = stored;
+      if (Array.isArray(body.targets)) {
+        const want = (body.targets as unknown[])
+          .filter((x): x is string => typeof x === "string")
+          .map((a) => a.toLowerCase());
+        const byLower = new Map(stored.map((a) => [a.toLowerCase(), a]));
+        const missing = want.filter((a) => !byLower.has(a));
+        if (missing.length > 0) {
+          throw new Error(`not wallets on this server: ${missing.slice(0, 3).join(", ")}`);
+        }
+        targets = want.map((a) => byLower.get(a)!);
+      }
+      // Never send a wallet its own money.
+      targets = targets.filter((a) => a.toLowerCase() !== payer);
       if (targets.length === 0) throw new Error("no targets — the only wallet stored is the payer");
 
+      // Kept as well as logged, so the panel can show what happened instead of
+      // asking someone to go and read the server's console.
+      const lines: string[] = [];
       const result = await disperse(
         {
           chainId: cfg.chainId,
@@ -2290,15 +2327,19 @@ const server = createServer(async (req, res) => {
           fromKey,
           targets,
           amountWei,
+          topUpToWei,
           skipIfAtLeastWei:
             typeof body.skipIfAtLeastEth === "string" && body.skipIfAtLeastEth
               ? parseEther(body.skipIfAtLeastEth)
               : undefined,
           dryRun: body.dryRun !== false,
         },
-        (line) => log(`disperse: ${line}`),
+        (line) => {
+          lines.push(line);
+          log(`disperse: ${line}`);
+        },
       );
-      json(res, 200, result);
+      json(res, 200, { ...result, logs: lines });
       return;
     }
 

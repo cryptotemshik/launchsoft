@@ -22,7 +22,7 @@ import { twitterUrl, type CollectionInfo } from "../lib/collectionInfo";
 import { compactCount } from "../lib/twitterStats";
 import RelatedPopover, { ReuseBadge, anchorFrom, useRelated } from "./RelatedPopover";
 import { openSeaCollectionUrlBySlug } from "../chains";
-import { setPendingTarget } from "../lib/snipeTarget";
+import SnipeButton from "./SnipeButton";
 import { sndFeedTick } from "../lib/sound";
 import Addr from "./Addr";
 import StaleServer from "./StaleServer";
@@ -118,13 +118,7 @@ function Spark({ spark }: { spark: readonly number[] }) {
   );
 }
 
-export default function LiveTab({
-  onSnipe,
-  onWatch,
-}: {
-  onSnipe?: (contract: string) => void;
-  onWatch?: () => void;
-}) {
+export default function LiveTab() {
   const { url, setUrl, token, setToken, base, call, save, serverVersion } = useRunnerApi();
   const { urls: customRpcs } = useCustomRpcs();
   const [view, setView] = useState<LiveView | null>(null);
@@ -557,17 +551,7 @@ export default function LiveTab({
                       </td>
                       <td className="num" data-label="">
                         <div className="row-actions">
-                          <button
-                            className="secondary"
-                            style={{ padding: "2px 10px", fontSize: 11, width: "auto" }}
-                            title="Load this collection in the Snipe tab"
-                            onClick={() => {
-                              setPendingTarget(r.contract);
-                              onSnipe?.(r.contract);
-                            }}
-                          >
-                            snipe
-                          </button>
+                          <SnipeButton contract={r.contract} />
                           <WatchButton
                             draft={{
                               name: r.name ?? r.contract,
@@ -575,7 +559,6 @@ export default function LiveTab({
                               twitter: info[r.contract.toLowerCase()]?.twitter,
                               supply: r.maxSupply,
                             }}
-                            onAdded={onWatch}
                           />
                         </div>
                       </td>

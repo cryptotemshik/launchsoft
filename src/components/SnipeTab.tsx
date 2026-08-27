@@ -1,7 +1,14 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { usePublicClient } from "wagmi";
 import { formatGwei, parseGwei } from "viem";
-import { clearPendingTarget, readPendingTarget } from "../lib/snipeTarget";
+import {
+  clearPendingTarget,
+  clearPendingTargets,
+  pendingTargets,
+  pendingVersion,
+  readPendingTarget,
+  subscribePendingTargets,
+} from "../lib/snipeTarget";
 import { useActiveChain } from "../signer";
 import { CHAINS_BY_ID, DEFAULT_CHAIN_ID } from "../chains";
 import { seaDropAbi, tokenAbi } from "../contracts/seadrop";
@@ -291,12 +298,19 @@ export default function SnipeTab() {
   // without making the user press the button they just pressed next door,
   // then forget the handoff so coming back here later starts clean.
   useEffect(() => {
-    if (!readPendingTarget() || !publicClient || !chainInfo) return;
-    clearPendingTarget();
+    const first = readPendingTarget();
+    if (!first || !publicClient || !chainInfo) return;
+    clearPendingTarget(first);
     void load();
     // Once, for whatever was handed over at mount.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [publicClient, chainInfo]);
+
+  // Anything else marked while this tab was elsewhere. Rows no longer switch
+  // tabs when pressed, so without this the second and third collection someone
+  // marked would sit here invisible.
+  useSyncExternalStore(subscribePendingTargets, pendingVersion, pendingVersion);
+  const waiting = pendingTargets();
 
   async function load() {
     const parsed = parseCollectionInput(input);
@@ -420,6 +434,35 @@ export default function SnipeTab() {
             {loading ? "reading…" : "read"}
           </button>
         </div>
+        {waiting.length > 0 ? (
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", marginTop: 10 }}>
+            <span className="dim" style={{ fontSize: 11 }}>
+              MARKED ELSEWHERE
+            </span>
+            {waiting.map((c) => (
+              <button
+                key={c}
+                className="secondary"
+                style={{ padding: "2px 10px", fontSize: 11, width: "auto" }}
+                title={c}
+                onClick={() => {
+                  setInput(c);
+                  clearPendingTarget(c);
+                }}
+              >
+                {c.slice(0, 8)}…{c.slice(-4)}
+              </button>
+            ))}
+            <button
+              className="secondary link-btn"
+              style={{ fontSize: 11 }}
+              onClick={() => clearPendingTargets()}
+            >
+              clear
+            </button>
+          </div>
+        ) : null}
+
         {error ? <p className="error">{error}</p> : null}
 
         {target ? (

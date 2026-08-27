@@ -199,14 +199,16 @@ export default function App() {
       {tab === "snipe" ? <SnipeTab /> : null}
       {tab === "serverwallets" ? <ServerWalletsTab /> : null}
       {tab === "funding" ? <FundingTab /> : null}
-      {tab === "upcoming" ? <UpcomingTab onSnipe={() => setTab("snipe")} /> : null}
-      {tab === "scanner" ? (
-        <ScannerTab onSnipe={() => setTab("snipe")} onWatch={() => setTab("upcoming")} />
-      ) : null}
-      {tab === "calendar" ? <CalendarTab onSnipe={() => setTab("snipe")} /> : null}
-      {tab === "live" ? (
-        <LiveTab onSnipe={() => setTab("snipe")} onWatch={() => setTab("upcoming")} />
-      ) : null}
+      {/* No onSnipe/onWatch handlers here on purpose. Marking a row parks the
+          collection for the snipe tab and adds to the watchlist where asked,
+          and that is all it does: someone going down a scan marks three or
+          four things, and jumping tabs after the first one costs them their
+          place in the list. The snipe tab shows what is waiting when they get
+          there. */}
+      {tab === "upcoming" ? <UpcomingTab /> : null}
+      {tab === "scanner" ? <ScannerTab /> : null}
+      {tab === "calendar" ? <CalendarTab /> : null}
+      {tab === "live" ? <LiveTab /> : null}
       <div className="footer">
         {info.label} · explorer:{" "}
         <a href={info.explorerUrl} target="_blank" rel="noreferrer">

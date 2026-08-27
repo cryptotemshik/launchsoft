@@ -17,7 +17,7 @@ import { larpReport, type LarpReport } from "../lib/larp";
 import type { CollectionInfo } from "../lib/collectionInfo";
 import type { IndexedCollection } from "../lib/creatorIndex";
 import DropTable, { isReal, type SortKey } from "./DropTable";
-import { setPendingTarget } from "../lib/snipeTarget";
+import SnipeButton from "./SnipeButton";
 import { openSeaCollectionUrlBySlug } from "../chains";
 import StaleServer from "./StaleServer";
 
@@ -44,7 +44,7 @@ function placeholderFor(id: string): `0x${string}` {
   return `0xwl:${id}` as `0x${string}`;
 }
 
-export default function UpcomingTab({ onSnipe }: { onSnipe?: (contract: string) => void }) {
+export default function UpcomingTab() {
   const { url, setUrl, token, setToken, base, call, save, serverVersion } = useRunnerApi();
   const [list, setList] = useState<UpcomingMint[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -467,18 +467,7 @@ export default function UpcomingTab({ onSnipe }: { onSnipe?: (contract: string) 
             actions={(d) => (
               <>
                 {isReal(d.contract) ? (
-                  <button
-                    className="secondary"
-                    style={{ padding: "2px 10px", fontSize: 11, width: "auto" }}
-                    title="Load this collection in the Snipe tab"
-                    onClick={(ev) => {
-                      ev.stopPropagation();
-                      setPendingTarget(d.contract);
-                      onSnipe?.(d.contract);
-                    }}
-                  >
-                    snipe
-                  </button>
+                  <SnipeButton contract={d.contract} />
                 ) : null}
                 <button
                   className="secondary"

@@ -26,7 +26,7 @@ import { larpReport, type LarpReport } from "../lib/larp";
 import type { MintPulse } from "../lib/mintPulse";
 import type { IndexedCollection } from "../lib/creatorIndex";
 import DropTable, { type SortKey } from "./DropTable";
-import { setPendingTarget } from "../lib/snipeTarget";
+import SnipeButton from "./SnipeButton";
 import { sndFeedTick } from "../lib/sound";
 import StaleServer from "./StaleServer";
 import WatchButton from "./WatchButton";
@@ -118,13 +118,7 @@ function numberOrUndefined(v: string): number | undefined {
   return Number.isFinite(n) && n >= 0 ? n : undefined;
 }
 
-export default function ScannerTab({
-  onSnipe,
-  onWatch,
-}: {
-  onSnipe?: (contract: string) => void;
-  onWatch?: () => void;
-}) {
+export default function ScannerTab() {
   const { url, setUrl, token, setToken, base, call, save, serverVersion } = useRunnerApi();
   const { urls: customRpcs } = useCustomRpcs();
   const [rpcNote, setRpcNote] = useState<string | null>(null);
@@ -810,18 +804,7 @@ export default function ScannerTab({
             }}
             actions={(d) => (
               <>
-                <button
-                  className="secondary"
-                  style={{ padding: "2px 10px", fontSize: 11, width: "auto" }}
-                  title="Load this collection in the Snipe tab"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setPendingTarget(d.contract);
-                    onSnipe?.(d.contract);
-                  }}
-                >
-                  snipe
-                </button>
+                <SnipeButton contract={d.contract} />
                 <WatchButton
                   draft={{
                     name: d.name ?? d.contract,
@@ -830,7 +813,6 @@ export default function ScannerTab({
                     supply: d.maxSupply,
                     startTime: d.startTime,
                   }}
-                  onAdded={onWatch}
                 />
               </>
             )}

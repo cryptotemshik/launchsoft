@@ -137,8 +137,19 @@ export interface DisperseOptions {
   fromKey: `0x${string}`;
   /** Wallets to top up. */
   targets: `0x${string}`[];
-  /** Amount each target receives, in wei. */
+  /** Amount each target receives, in wei. Ignored when topUpToWei is set. */
   amountWei: bigint;
+  /**
+   * Bring every target *up to* this balance instead of sending each a flat
+   * amount. A wallet already at or above it is skipped; one holding half gets
+   * the other half.
+   *
+   * Funding a mint is a "make sure they each have enough" job, not a "send
+   * them each this much" one — the wallets have leftovers from the last drop,
+   * in every different amount. Sending a flat amount to all of them either
+   * overfunds the ones that were nearly ready or underfunds the empty ones.
+   */
+  topUpToWei?: bigint;
   /** Skip targets that already hold at least this much. */
   skipIfAtLeastWei?: bigint;
   dryRun: boolean;
@@ -151,6 +162,35 @@ export interface DisperseResult {
   funded: number;
   skipped: number;
   outcomes: TransferOutcome[];
+}
+
+/**
+ * What each target actually gets, and who is left out.
+ *
+ * Pure, and separate from the sending, because it is the arithmetic that
+ * decides how much money leaves a wallet — the one part of this file worth
+ * being able to test without a chain in front of it.
+ *
+ * Topping up is per-wallet: the shortfall, not a flat figure. The wallets
+ * carry different leftovers from the last drop, so a flat send overfunds the
+ * ones that were nearly ready and underfunds the empty ones.
+ */
+export function dispersePlan(
+  targets: readonly `0x${string}`[],
+  balances: ReadonlyMap<string, bigint>,
+  opts: { amountWei: bigint; topUpToWei?: bigint; skipIfAtLeastWei?: bigint },
+): { to: `0x${string}`; value: bigint }[] {
+  const threshold = opts.skipIfAtLeastWei ?? 0n;
+  return targets
+    .map((to) => {
+      const held = balances.get(to.toLowerCase()) ?? 0n;
+      if (opts.topUpToWei !== undefined) {
+        return { to, value: opts.topUpToWei > held ? opts.topUpToWei - held : 0n };
+      }
+      if (threshold > 0n && held >= threshold) return { to, value: 0n };
+      return { to, value: opts.amountWei };
+    })
+    .filter((p) => p.value > 0n);
 }
 
 export async function disperse(
@@ -169,24 +209,39 @@ export async function disperse(
     { onRetry: (ms) => onLog(`endpoint is rate-limiting reads — waiting ${ms}ms`) },
   );
   opts.targets.forEach((t, i) => balances.set(t.toLowerCase(), read[i]));
-  const threshold = opts.skipIfAtLeastWei ?? 0n;
-  const needy = opts.targets.filter(
-    (t) => (balances.get(t.toLowerCase()) ?? 0n) < threshold || threshold === 0n,
-  );
+  const plan = dispersePlan(opts.targets, balances, {
+    amountWei: opts.amountWei,
+    topUpToWei: opts.topUpToWei,
+    skipIfAtLeastWei: opts.skipIfAtLeastWei,
+  });
+  const needy = plan.map((p) => p.to);
   const skipped = opts.targets.length - needy.length;
 
   const perTxGas = TRANSFER_GAS * ctx.maxFeePerGas;
-  const required = BigInt(needy.length) * (opts.amountWei + perTxGas);
+  const required = plan.reduce((sum, p) => sum + p.value + perTxGas, 0n);
   const fromBalance = await ctx.client.getBalance({ address: from.address });
 
   onLog(`from ${from.address} — holds ${formatEther(fromBalance)} ETH`);
   onLog(
-    `targets ${needy.length}${skipped ? ` (${skipped} already funded, skipped)` : ""} × ` +
-      `${formatEther(opts.amountWei)} ETH — needs ${formatEther(required)} ETH incl. gas`,
+    opts.topUpToWei !== undefined
+      ? `topping ${needy.length} wallet(s) up to ${formatEther(opts.topUpToWei)} ETH each` +
+          `${skipped ? ` (${skipped} already there, skipped)` : ""} — ` +
+          `needs ${formatEther(required)} ETH incl. gas`
+      : `targets ${needy.length}${skipped ? ` (${skipped} already funded, skipped)` : ""} × ` +
+          `${formatEther(opts.amountWei)} ETH — needs ${formatEther(required)} ETH incl. gas`,
   );
-  if (fromBalance < required) {
+  // A dry run is how you find out what funding will cost, so it must survive a
+  // payer that has not been topped up yet — refusing it there meant the only
+  // way to see the number was to already be able to pay it.
+  if (fromBalance < required && !opts.dryRun) {
     throw new Error(
       `source wallet holds ${formatEther(fromBalance)} ETH but needs ${formatEther(required)} ETH`,
+    );
+  }
+  if (fromBalance < required) {
+    onLog(
+      `NOTE — the payer holds ${formatEther(fromBalance)} ETH, ` +
+        `${formatEther(required - fromBalance)} ETH short of this plan`,
     );
   }
   if (needy.length === 0) {
@@ -207,7 +262,12 @@ export async function disperse(
       requiredWei: required.toString(),
       funded: 0,
       skipped,
-      outcomes: needy.map((t) => ({ address: t, status: "skipped", detail: "dry run" })),
+      outcomes: plan.map((p) => ({
+        address: p.to,
+        status: "skipped" as const,
+        amountWei: p.value.toString(),
+        detail: "dry run",
+      })),
     };
   }
 
@@ -218,12 +278,12 @@ export async function disperse(
   });
   const outcomes = await fire(
     ctx,
-    needy.map((to, i) => ({
+    plan.map((p, i) => ({
       from,
-      to,
-      value: opts.amountWei,
+      to: p.to,
+      value: p.value,
       nonce: startNonce + i,
-      tag: to,
+      tag: p.to,
     })),
     onLog,
   );
