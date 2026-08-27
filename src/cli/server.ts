@@ -531,6 +531,14 @@ async function startScan(hours: number): Promise<Record<string, unknown>> {
       chain: info.label,
       explorerUrl: info.explorerUrl,
       openSeaSlug: info.openSeaSlug,
+      /**
+       * Which endpoint actually answered. A scan is the heaviest read this
+       * server makes, and running it through the chain's public RPC ends in a
+       * 429 — so the panel has to be able to say which node was used rather
+       * than leaving the user to guess from the error.
+       */
+      readRpc: rpcHost(readRpc(cfg, info)),
+      publicRpc: cfg.extraRpcs.length === 0,
       now,
       tookMs: Date.now() - started,
     };

@@ -36,8 +36,20 @@ const COLLECTION_ABI = [
 
 /** Below this, splitting costs more round trips than it saves. */
 const MIN_SPAN = 5_000n;
+/** How many times one range may be waited out before giving up on it. */
+const THROTTLE_RETRIES = 4;
 
-function looksSplittable(e: unknown): boolean {
+/**
+ * "Your range is too wide" — the only error splitting actually answers.
+ *
+ * Rate limiting is deliberately not in this list, and used to be. The two read
+ * alike and need opposite responses: halving a throttled range turns one
+ * request into two, and each of those gets throttled and halved again, so the
+ * endpoint's request to slow down produces a burst four levels deep. That is
+ * exactly what a 24-hour scan against the public RPC did — twenty-five
+ * getLogs in one batch, every one of them a 429.
+ */
+function tooWide(e: unknown): boolean {
   const msg = (e instanceof Error ? e.message : String(e)).toLowerCase();
   return (
     msg.includes("block range") ||
@@ -46,10 +58,11 @@ function looksSplittable(e: unknown): boolean {
     msg.includes("exceeds") ||
     msg.includes("limit") ||
     msg.includes("timeout") ||
-    msg.includes("timed out") ||
-    isRateLimit(e)
+    msg.includes("timed out")
   );
 }
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 type DropLog = {
   blockNumber: bigint;
@@ -68,15 +81,22 @@ type DropLog = {
 /**
  * Every public stage configured between two blocks.
  *
- * One request covers three days on a healthy endpoint. A provider that refuses
- * the width — or times out under load — gets the range halved and retried,
- * which is the only reason this isn't three lines.
+ * One request covers three days on a healthy endpoint. The rest of this is the
+ * two ways an endpoint can say no, and they are not the same:
+ *
+ * - "too wide" → halve the range and read the halves **one after the other**.
+ *   Reading them at once would double the requests in flight at exactly the
+ *   moment the endpoint is struggling, and viem batches them into a single
+ *   oversized HTTP body besides.
+ * - "slow down" → wait and ask for the same range again. Splitting here is
+ *   what turns a throttle into a stampede.
  */
 async function readLogs(
   client: PublicClient,
   fromBlock: bigint,
   toBlock: bigint,
   onNote?: (s: string) => void,
+  waited = 0,
 ): Promise<DropLog[]> {
   try {
     return (await client.getLogs({
@@ -86,14 +106,19 @@ async function readLogs(
       toBlock,
     })) as unknown as DropLog[];
   } catch (e) {
+    if (isRateLimit(e)) {
+      if (waited >= THROTTLE_RETRIES) throw e;
+      const pause = 600 * 2 ** waited;
+      onNote?.(`throttled — waiting ${pause}ms before asking again`);
+      await sleep(pause);
+      return readLogs(client, fromBlock, toBlock, onNote, waited + 1);
+    }
     const span = toBlock - fromBlock;
-    if (!looksSplittable(e) || span <= MIN_SPAN) throw e;
+    if (!tooWide(e) || span <= MIN_SPAN) throw e;
     onNote?.(`range of ${span} blocks refused — splitting`);
     const mid = fromBlock + span / 2n;
-    const [a, b] = await Promise.all([
-      readLogs(client, fromBlock, mid, onNote),
-      readLogs(client, mid + 1n, toBlock, onNote),
-    ]);
+    const a = await readLogs(client, fromBlock, mid, onNote, waited);
+    const b = await readLogs(client, mid + 1n, toBlock, onNote, waited);
     return [...a, ...b];
   }
 }

@@ -13,6 +13,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { formatEther, parseEther } from "viem";
 import { useRunnerApi } from "../lib/runnerClient";
+import { useCustomRpcs } from "../lib/customRpc";
 import {
   applyFilter,
   classify,
@@ -41,6 +42,10 @@ interface ScanView {
   fromBlock: number;
   toBlock: number;
   blocksPerHour: number;
+  /** Host of the endpoint the server actually read through. */
+  readRpc?: string;
+  /** True when that was the chain's public RPC, with nothing better set. */
+  publicRpc?: boolean;
   chain: string;
   explorerUrl: string;
   openSeaSlug?: string;
@@ -120,6 +125,8 @@ function numberOrUndefined(v: string): number | undefined {
 
 export default function ScannerTab({ onSnipe }: { onSnipe?: (contract: string) => void }) {
   const { url, setUrl, token, setToken, base, call, save, serverVersion } = useRunnerApi();
+  const { urls: customRpcs } = useCustomRpcs();
+  const [rpcNote, setRpcNote] = useState<string | null>(null);
   const [view, setView] = useState<ScanView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -186,8 +193,36 @@ export default function ScannerTab({ onSnipe }: { onSnipe?: (contract: string) =
     [call, save],
   );
 
+  /**
+   * Hand the server the endpoint this browser is set up with.
+   *
+   * A scan is by far the heaviest read the box makes, and until now the only
+   * page that pushed the user's endpoint down to it was the Snipe tab — so
+   * someone who opened the Scanner first was scanning through the chain's
+   * public RPC without being told, and getting rate-limited for it. The
+   * endpoint is one shared setting; every page that leans on it should be able
+   * to install it.
+   */
+  const pushRpcs = useCallback(async () => {
+    if (customRpcs.length === 0) return;
+    try {
+      await call("/api/rpcs", {
+        method: "POST",
+        body: JSON.stringify({ extraRpcs: customRpcs }),
+      });
+      setRpcNote(null);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      // An older server has no such route; the stale-server notice covers it.
+      setRpcNote(/HTTP 404/.test(msg) ? null : msg);
+    }
+  }, [call, customRpcs]);
+
   useEffect(() => {
-    if (base && token) void load(hours);
+    if (!base || !token) return;
+    // Install the endpoint first, so the very first scan already goes through
+    // it rather than discovering the public RPC's limit the hard way.
+    void pushRpcs().then(() => load(hours));
     // Only on mount: every other load is a click.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -474,10 +509,41 @@ export default function ScannerTab({ onSnipe }: { onSnipe?: (contract: string) =
                   : ""}
               </span>
             ) : null}
+            {view?.readRpc ? (
+              <span
+                className={view.publicRpc ? "pill warn" : "pill"}
+                title={
+                  view.publicRpc
+                    ? "The chain's public RPC meters requests and answers a scan with 429. Paste your own endpoint in the Snipe tab and it is used here too."
+                    : "The endpoint this server reads through"
+                }
+              >
+                via <b>{view.readRpc}</b>
+                {view.publicRpc ? " · public" : ""}
+              </span>
+            ) : null}
           </div>
         </div>
 
         {error ? <p className="error">{error}</p> : null}
+        {rpcNote ? <p className="error">endpoint refused: {rpcNote}</p> : null}
+        {error && /429|rate limit/i.test(error) && customRpcs.length === 0 ? (
+          <p className="dim hint">
+            That was the chain's public RPC, which meters requests and answers a
+            scan of this size with 429. Paste your own endpoint in the RPC box
+            on the Snipe tab — it is one shared setting, and the scanner picks
+            it up from there.
+          </p>
+        ) : null}
+        {error && /429|rate limit/i.test(error) && customRpcs.length > 0 ? (
+          <p className="dim hint">
+            <button className="secondary link-btn" onClick={() => void pushRpcs().then(() => load(hours, true))}>
+              install {customRpcs.length === 1 ? "your endpoint" : "your endpoints"} and re-scan
+            </button>{" "}
+            — this browser has one set, but the server was reading through
+            something else.
+          </p>
+        ) : null}
         <StaleServer version={serverVersion} />
 
         {view ? (
