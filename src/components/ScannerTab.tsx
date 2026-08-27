@@ -26,6 +26,8 @@ import { twitterUrl, type CollectionInfo } from "../lib/collectionInfo";
 import { accountAge, compactCount } from "../lib/twitterStats";
 import { larpReport, riskBand, type LarpReport } from "../lib/larp";
 import { cumulativeFromSpark, type MintPulse } from "../lib/mintPulse";
+import { reuseBand, type IndexedCollection } from "../lib/creatorIndex";
+import RelatedPopover, { ReuseBadge, anchorFrom, useRelated } from "./RelatedPopover";
 import { openSeaCollectionUrlBySlug } from "../chains";
 import { setPendingTarget } from "../lib/snipeTarget";
 import { sndFeedTick } from "../lib/sound";
@@ -53,6 +55,8 @@ interface ScanView {
   pulseHours?: number;
   nativeSymbol?: string;
   nativeUsd?: number | null;
+  /** Owner and handle groupings, accumulated by the server across scans. */
+  related?: { owners?: Record<string, IndexedCollection[]>; twitters?: Record<string, IndexedCollection[]> };
   chain: string;
   explorerUrl: string;
   openSeaSlug?: string;
@@ -169,6 +173,11 @@ function MintCurve({ spark }: { spark: readonly number[] }) {
       <polyline points={pts.join(" ")} className="mc-line" />
     </svg>
   );
+}
+
+/** OpenSea shows a wallet's collections on its profile page. */
+function openSeaProfile(address: string): string {
+  return `https://opensea.io/${address}`;
 }
 
 const STATUS_CLASS: Record<string, string> = {
@@ -316,6 +325,9 @@ export default function ScannerTab({ onSnipe }: { onSnipe?: (contract: string) =
   const [justIn, setJustIn] = useState<Set<string>>(new Set());
   /** The one row whose checks are on screen. */
   const [openRow, setOpenRow] = useState<string | null>(null);
+  /** Handle groupings arrive with the marketplace lookup, not with the scan. */
+  const [twitterRelated, setTwitterRelated] = useState<Record<string, IndexedCollection[]>>({});
+  const related = useRelated();
   const seen = useRef<Set<string> | null>(null);
 
   const load = useCallback(
@@ -468,9 +480,14 @@ export default function ScannerTab({ onSnipe }: { onSnipe?: (contract: string) =
    */
   const ownerCounts = useMemo(() => {
     const by = new Map<string, number>();
+    // The server's index is the better answer where it has one: it remembers
+    // every scan this session, while the loaded window is only ever a slice.
+    const indexed = view?.related?.owners ?? {};
+    for (const [owner, list] of Object.entries(indexed)) by.set(owner, list.length);
     for (const d of view?.drops ?? []) {
       if (!d.owner) continue;
       const key = d.owner.toLowerCase();
+      if (indexed[key]) continue;
       by.set(key, (by.get(key) ?? 0) + 1);
     }
     return by;
@@ -609,11 +626,13 @@ export default function ScannerTab({ onSnipe }: { onSnipe?: (contract: string) =
         )) as unknown as {
           known?: Record<string, CollectionInfo>;
           pending?: string[];
+          twitters?: Record<string, IndexedCollection[]>;
         };
         if (!alive) return;
         if (r.known && Object.keys(r.known).length > 0) {
           setInfo((prev) => ({ ...prev, ...r.known }));
         }
+        if (r.twitters) setTwitterRelated((prev) => ({ ...prev, ...r.twitters }));
         // Background reads finish in a second or two; a handful of rounds is
         // plenty, and stopping is better than asking forever about a page
         // OpenSea will not serve.
@@ -954,6 +973,7 @@ export default function ScannerTab({ onSnipe }: { onSnipe?: (contract: string) =
                 <col style={{ width: 124 }} />
                 <col />
                 <col style={{ width: 130 }} />
+                <col style={{ width: 138 }} />
                 <col style={{ width: 82 }} />
                 <col style={{ width: 90 }} />
                 <col style={{ width: 100 }} />
@@ -967,6 +987,7 @@ export default function ScannerTab({ onSnipe }: { onSnipe?: (contract: string) =
                   {header("start", "opens")}
                   {header("name", "collection")}
                   {header("twitter", "twitter")}
+                  <th>creator</th>
                   {header("price", "price", "num")}
                   {header("floor", "floor", "num")}
                   {header("supply", "supply", "num")}
@@ -1040,16 +1061,37 @@ export default function ScannerTab({ onSnipe }: { onSnipe?: (contract: string) =
                           </span>
                         ) : meta.twitter ? (
                           <>
-                            <a
-                              className="cell-name tw-handle"
-                              href={twitterUrl(meta.twitter)}
-                              target="_blank"
-                              rel="noreferrer"
-                              onClick={(e) => e.stopPropagation()}
-                              title={`@${meta.twitter}`}
-                            >
-                              @{meta.twitter}
-                            </a>
+                            <span className="cell-name tw-handle">
+                              <a
+                                href={twitterUrl(meta.twitter)}
+                                target="_blank"
+                                rel="noreferrer"
+                                onClick={(e) => e.stopPropagation()}
+                                title={`@${meta.twitter}`}
+                              >
+                                @{meta.twitter}
+                              </a>
+                              {(() => {
+                                // How many collections have launched under this
+                                // handle. One is unremarkable; four is the
+                                // finding, so nothing is drawn below two.
+                                const all = twitterRelated[meta.twitter!.toLowerCase()] ?? [];
+                                const band = reuseBand(all.length);
+                                if (band === "none") return null;
+                                return (
+                                  <ReuseBadge
+                                    count={all.length}
+                                    band={band}
+                                    onEnter={(e) =>
+                                      related.open(
+                                        anchorFrom(e, `@${meta.twitter} has launched`, all),
+                                      )
+                                    }
+                                    onLeave={related.close}
+                                  />
+                                );
+                              })()}
+                            </span>
                             <span className="cell-sub dim">
                               {meta.followers === undefined ? (
                                 <span className="faint">···</span>
@@ -1086,6 +1128,45 @@ export default function ScannerTab({ onSnipe }: { onSnipe?: (contract: string) =
                               </a>
                             ) : null}
                           </>
+                        )}
+                      </td>
+                      <td data-label="creator" className="cell-clip">
+                        {d.owner ? (
+                          <>
+                            <span className="cell-name">
+                              <a
+                                href={openSeaProfile(d.owner)}
+                                target="_blank"
+                                rel="noreferrer"
+                                onClick={(e) => e.stopPropagation()}
+                                title="Open this wallet's OpenSea profile"
+                              >
+                                {d.owner.slice(0, 6)}…{d.owner.slice(-4)}
+                              </a>
+                              {(() => {
+                                const all =
+                                  view.related?.owners?.[d.owner!.toLowerCase()] ??
+                                  [];
+                                const count = Math.max(all.length, ownerCounts.get(d.owner!.toLowerCase()) ?? 1);
+                                const band = reuseBand(count);
+                                if (band === "none") return null;
+                                return (
+                                  <ReuseBadge
+                                    count={count}
+                                    band={band}
+                                    onEnter={(e) =>
+                                      related.open(
+                                        anchorFrom(e, "this wallet has launched", all),
+                                      )
+                                    }
+                                    onLeave={related.close}
+                                  />
+                                );
+                              })()}
+                            </span>
+                          </>
+                        ) : (
+                          <span className="faint">—</span>
                         )}
                       </td>
                       <td className="num" data-label="price">
@@ -1179,7 +1260,7 @@ export default function ScannerTab({ onSnipe }: { onSnipe?: (contract: string) =
                     </tr>
                     {open ? (
                       <tr className="detail-row">
-                        <td colSpan={10}>
+                        <td colSpan={11}>
                           <RiskDetail drop={d} report={report} pulse={pulse} meta={info[key]} />
                         </td>
                       </tr>
@@ -1204,6 +1285,13 @@ export default function ScannerTab({ onSnipe }: { onSnipe?: (contract: string) =
             NOT SCANNED YET — <span className="es-action">PICK A WINDOW ABOVE</span>
           </div>
         ) : null}
+
+        <RelatedPopover
+          anchor={related.anchor}
+          onHold={related.hold}
+          onLeave={related.close}
+          href={(c) => openSeaCollectionUrlBySlug(view?.openSeaSlug, c)}
+        />
 
         {view ? (
           <p className="dim hint" style={{ marginBottom: 0 }}>

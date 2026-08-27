@@ -38,6 +38,7 @@ import { collect, disperse } from "./funding";
 import { scanChain } from "./holdings";
 import { lookupCollections } from "./collectionLookup";
 import { pulseByCollection, type MintPulse } from "../lib/mintPulse";
+import { CreatorIndex } from "../lib/creatorIndex";
 import { costByCollection, loadMints, recordMint } from "./ledger";
 import {
   blockTimes,
@@ -489,6 +490,16 @@ async function nativeUsd(api: string | undefined): Promise<number | null> {
   return usd;
 }
 
+/**
+ * Who launched what, across every scan this process has served.
+ *
+ * Held here rather than rebuilt per request because its value is exactly its
+ * age: a six-hour scan sees one collection for an address that has launched
+ * twelve, and the only way to know the twelve is to remember what earlier
+ * scans saw.
+ */
+const creators = new CreatorIndex();
+
 const PULSE_HOURS = 1;
 const PULSE_TTL_MS = 30_000;
 let pulseCache: { at: number; by: Record<string, MintPulse> } | null = null;
@@ -508,6 +519,7 @@ export interface LiveRow {
   name?: string;
   maxSupply?: number;
   minted?: number;
+  owner?: string;
   pulse: MintPulse;
 }
 
@@ -541,6 +553,9 @@ async function liveRows(
       })),
     );
     const meta = new Map(enriched.map((e) => [e.contract.toLowerCase(), e]));
+    for (const e of enriched) {
+      creators.remember({ contract: e.contract, name: e.name, owner: e.owner });
+    }
     const rows = ranked.map(([contract, pulse]) => {
       const m = meta.get(contract);
       return {
@@ -548,6 +563,7 @@ async function liveRows(
         name: m?.name,
         maxSupply: m?.maxSupply,
         minted: m?.minted,
+        owner: m?.owner,
         pulse,
       };
     });
@@ -659,6 +675,15 @@ async function startScan(hours: number): Promise<Record<string, unknown>> {
     const byContract = new Map(drops.map((d) => [d.contract.toLowerCase(), d]));
     for (const e of enriched) byContract.set(e.contract.toLowerCase(), e);
 
+    for (const d of byContract.values()) {
+      creators.remember({
+        contract: d.contract,
+        name: d.name,
+        startTime: d.startTime,
+        owner: d.owner,
+      });
+    }
+
     const [pulse, nativeUsdRate] = await Promise.all([
       mintPulse(client as never, tip, blocksPerHour),
       nativeUsd(info.blockscoutApi),
@@ -692,6 +717,9 @@ async function startScan(hours: number): Promise<Record<string, unknown>> {
       pulseHours: PULSE_HOURS,
       nativeSymbol: info.chain.nativeCurrency.symbol,
       nativeUsd: nativeUsdRate,
+      /** Owner and handle groupings for the collections in this response. */
+      related: creators.relatedFor([...byContract.keys()]),
+      knownCollections: creators.size,
       now,
       tookMs: Date.now() - started,
     };
@@ -1596,8 +1624,11 @@ const server = createServer(async (req, res) => {
       if (!blockRate || Date.now() - blockRate.at > BLOCK_RATE_TTL_MS) {
         blockRate = { at: Date.now(), perHour: await measureBlockRate(client as never, tip) };
       }
+      const rows = await liveRows(client as never, tip, blockRate.perHour);
       json(res, 200, {
-        rows: await liveRows(client as never, tip, blockRate.perHour),
+        rows,
+        related: creators.relatedFor(rows.map((r) => r.contract)),
+        knownCollections: creators.size,
         hours: PULSE_HOURS,
         now: Math.floor(Date.now() / 1000),
         chain: info.label,
@@ -1618,10 +1649,21 @@ const server = createServer(async (req, res) => {
       }
       const cfg = loadConfig(CONFIG_PATH);
       const info = getChainInfo(cfg.chainId);
+      const found = lookupCollections(
+        info?.openSeaSlug ?? "ethereum",
+        contracts.slice(0, 120),
+        60,
+        (n: string) => log(n),
+      );
+      // A handle is a fact about a contract, so it goes into the same index the
+      // owner does — that is what makes "this Twitter has launched four
+      // collections" answerable at all.
+      for (const [contract, meta] of Object.entries(found.known)) {
+        creators.remember({ contract, twitter: meta.twitter });
+      }
       json(res, 200, {
-        ...lookupCollections(info?.openSeaSlug ?? "ethereum", contracts.slice(0, 120), 60, (n: string) =>
-          log(n),
-        ),
+        ...found,
+        twitters: creators.relatedFor(Object.keys(found.known)).twitters,
       });
       return;
     }

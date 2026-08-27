@@ -2082,3 +2082,76 @@ button.secondary.link-btn {
   opacity: 0.85;
   border-radius: 1px 1px 0 0;
 }
+
+/* ── Reuse badges and the panel behind them ──────────────────────────────
+   A count that only appears when it means something, and a list you can
+   click through rather than a tooltip you can only read. */
+.reuse-badge {
+  display: inline-block;
+  margin-left: 5px;
+  padding: 0 5px;
+  border-radius: var(--radius);
+  border: 1px solid currentColor;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 15px;
+  cursor: pointer;
+  vertical-align: 1px;
+}
+.reuse-warn {
+  color: var(--warn);
+}
+.reuse-bad {
+  color: var(--err);
+}
+
+.related-pop {
+  position: fixed;
+  z-index: 60;
+  max-height: 300px;
+  overflow-y: auto;
+  padding: 8px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  box-shadow: 0 8px 26px rgba(0, 0, 0, 0.55);
+}
+.related-pop .rp-title {
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--faint);
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border-dim);
+}
+.related-pop .rp-empty {
+  padding: 8px 0 2px;
+  font-size: 12px;
+}
+.related-pop .rp-list {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+}
+.related-pop .rp-list a {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 5px 4px;
+  border-radius: var(--radius);
+  font-size: 12px;
+}
+.related-pop .rp-list a:hover {
+  background: var(--surface-hi);
+}
+.related-pop .rp-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.related-pop .rp-when {
+  font-family: var(--mono);
+  font-size: 11px;
+  flex: none;
+}

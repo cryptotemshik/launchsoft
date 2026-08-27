@@ -16,6 +16,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRunnerApi } from "../lib/runnerClient";
 import type { MintPulse } from "../lib/mintPulse";
+import { reuseBand, type IndexedCollection } from "../lib/creatorIndex";
+import { twitterUrl, type CollectionInfo } from "../lib/collectionInfo";
+import { compactCount } from "../lib/twitterStats";
+import RelatedPopover, { ReuseBadge, anchorFrom, useRelated } from "./RelatedPopover";
 import { openSeaCollectionUrlBySlug } from "../chains";
 import { setPendingTarget } from "../lib/snipeTarget";
 import { sndFeedTick } from "../lib/sound";
@@ -27,6 +31,7 @@ interface LiveRow {
   name?: string;
   maxSupply?: number;
   minted?: number;
+  owner?: string;
   pulse: MintPulse;
 }
 
@@ -37,6 +42,7 @@ interface LiveView {
   chain: string;
   openSeaSlug?: string;
   cachedAt?: number;
+  related?: { owners?: Record<string, IndexedCollection[]>; twitters?: Record<string, IndexedCollection[]> };
 }
 
 const INTERVALS = [
@@ -54,6 +60,11 @@ function fmtRate(perMin: number): string {
   if (perMin < 1) return `${perMin.toFixed(1)}/m`;
   if (perMin < 1000) return `${Math.round(perMin)}/m`;
   return `${(perMin / 1000).toFixed(1)}k/m`;
+}
+
+/** OpenSea shows a wallet's collections on its profile page. */
+function openSeaProfile(address: string): string {
+  return `https://opensea.io/${address}`;
 }
 
 function ago(secs: number): string {
@@ -91,7 +102,10 @@ export default function LiveTab({ onSnipe }: { onSnipe?: (contract: string) => v
   const [hideWash, setHideWash] = useState(false);
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
   const [justIn, setJustIn] = useState<Set<string>>(new Set());
+  const [info, setInfo] = useState<Record<string, CollectionInfo>>({});
+  const [twitterRelated, setTwitterRelated] = useState<Record<string, IndexedCollection[]>>({});
   const seen = useRef<Set<string> | null>(null);
+  const related = useRelated();
 
   const load = useCallback(async () => {
     setBusy(true);
@@ -148,6 +162,54 @@ export default function LiveTab({ onSnipe }: { onSnipe?: (contract: string) => v
     }, 1000);
     return () => clearInterval(t);
   }, [every, base, token, load]);
+
+  /**
+   * The marketplace side of these rows.
+   *
+   * The same lookup the scanner uses, asked about the collections on screen.
+   * It is what makes the handle column — and the count of other drops behind
+   * that handle — answerable here at all; the chain knows neither.
+   */
+  const wanted = useMemo(
+    () =>
+      (view?.rows ?? [])
+        .slice(0, 40)
+        .map((r) => r.contract)
+        .filter((c) => {
+          const have = info[c.toLowerCase()];
+          return !have || (have.twitter !== null && have.followers === undefined);
+        }),
+    [view, info],
+  );
+
+  useEffect(() => {
+    if (!base || !token || wanted.length === 0) return;
+    let alive = true;
+    let timer: ReturnType<typeof setTimeout>;
+    const ask = async (round: number) => {
+      try {
+        const r = (await call(`/api/collection-info?contracts=${wanted.join(",")}`)) as unknown as {
+          known?: Record<string, CollectionInfo>;
+          pending?: string[];
+          twitters?: Record<string, IndexedCollection[]>;
+        };
+        if (!alive) return;
+        if (r.known && Object.keys(r.known).length > 0) {
+          setInfo((prev) => ({ ...prev, ...r.known }));
+        }
+        if (r.twitters) setTwitterRelated((prev) => ({ ...prev, ...r.twitters }));
+        if (r.pending?.length && round < 6) timer = setTimeout(() => void ask(round + 1), 3000);
+      } catch {
+        // An older server has no such route; the column then says nothing,
+        // which is what it should say when nothing is known.
+      }
+    };
+    timer = setTimeout(() => void ask(0), 400);
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+    };
+  }, [wanted, base, token, call]);
 
   const rows = useMemo(() => {
     const all = view?.rows ?? [];
@@ -254,6 +316,8 @@ export default function LiveTab({ onSnipe }: { onSnipe?: (contract: string) => v
             <table className="ledger-table collapsible scan-table">
               <colgroup>
                 <col />
+                <col style={{ width: 132 }} />
+                <col style={{ width: 138 }} />
                 <col style={{ width: 150 }} />
                 <col style={{ width: 96 }} />
                 <col style={{ width: 104 }} />
@@ -263,6 +327,8 @@ export default function LiveTab({ onSnipe }: { onSnipe?: (contract: string) => v
               <thead>
                 <tr>
                   <th>collection</th>
+                  <th>twitter</th>
+                  <th>creator</th>
                   <th>last hour</th>
                   {header("rate", "rate", "num")}
                   {header("unique", "wallets", "num")}
@@ -295,6 +361,77 @@ export default function LiveTab({ onSnipe }: { onSnipe?: (contract: string) => v
                           <Addr value={r.contract} head={8} />
                           {soldOut ? <span className="pill-tba"> SOLD OUT</span> : null}
                         </span>
+                      </td>
+                      <td data-label="twitter" className="cell-clip">
+                        {(() => {
+                          const meta = info[r.contract.toLowerCase()];
+                          if (meta === undefined) return <span className="faint">···</span>;
+                          if (!meta.twitter)
+                            return (
+                              <span className="faint" title="no account connected on OpenSea">
+                                —
+                              </span>
+                            );
+                          const all = twitterRelated[meta.twitter.toLowerCase()] ?? [];
+                          const band = reuseBand(all.length);
+                          return (
+                            <>
+                              <span className="cell-name tw-handle">
+                                <a href={twitterUrl(meta.twitter)} target="_blank" rel="noreferrer">
+                                  @{meta.twitter}
+                                </a>
+                                {band === "none" ? null : (
+                                  <ReuseBadge
+                                    count={all.length}
+                                    band={band}
+                                    onEnter={(e) =>
+                                      related.open(anchorFrom(e, `@${meta.twitter} has launched`, all))
+                                    }
+                                    onLeave={related.close}
+                                  />
+                                )}
+                              </span>
+                              <span className="cell-sub dim">
+                                {meta.followers === undefined
+                                  ? ""
+                                  : `${compactCount(meta.followers)} followers`}
+                              </span>
+                            </>
+                          );
+                        })()}
+                      </td>
+                      <td data-label="creator" className="cell-clip">
+                        {r.owner ? (
+                          <span className="cell-name">
+                            <a
+                              href={openSeaProfile(r.owner)}
+                              target="_blank"
+                              rel="noreferrer"
+                              title="Open this wallet's OpenSea profile"
+                            >
+                              {r.owner.slice(0, 6)}…{r.owner.slice(-4)}
+                            </a>
+                            {(() => {
+                              const all = view.related?.owners?.[r.owner!.toLowerCase()] ?? [];
+                              const band = reuseBand(all.length);
+                              if (band === "none") return null;
+                              return (
+                                <ReuseBadge
+                                  count={all.length}
+                                  band={band}
+                                  onEnter={(e) =>
+                                    related.open(
+                                      anchorFrom(e, "this wallet has launched", all),
+                                    )
+                                  }
+                                  onLeave={related.close}
+                                />
+                              );
+                            })()}
+                          </span>
+                        ) : (
+                          <span className="faint">—</span>
+                        )}
                       </td>
                       <td data-label="last hour">
                         <Spark spark={p.spark ?? []} />
@@ -348,6 +485,13 @@ export default function LiveTab({ onSnipe }: { onSnipe?: (contract: string) => v
             </table>
           </div>
         ) : null}
+
+        <RelatedPopover
+          anchor={related.anchor}
+          onHold={related.hold}
+          onLeave={related.close}
+          href={(c) => openSeaCollectionUrlBySlug(view?.openSeaSlug, c)}
+        />
 
         {view && rows.length === 0 ? (
           <div className="empty-state">
