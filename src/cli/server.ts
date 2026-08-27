@@ -109,6 +109,23 @@ const CONFIG_PATH = process.env.SNIPE_CONFIG ?? "snipe.config.json";
 /** How far ahead of a stage a job is armed (read nonces, pre-sign, warm). */
 const ARM_LEAD_MS = Number(process.env.SNIPE_ARM_LEAD_MS ?? 120_000);
 /** Set to 0 to stop the server pulling its own updates. */
+/**
+ * The endpoints this box reads through, set on the box.
+ *
+ * Until now the only way to give the server a paid endpoint was for a browser
+ * to push one down to it, which meant the machine's own configuration
+ * depended on which browser had last visited and whether it happened to open
+ * a tab that pushes. A server that reads the chain for a living should not
+ * learn where to read from a web page — so it can be told here, and what a
+ * panel pushes is added behind it rather than instead of it.
+ *
+ * Comma or newline separated. Best first.
+ */
+const ENV_RPCS = (process.env.SNIPE_RPCS ?? "")
+  .split(/[\s,]+/)
+  .map((u) => u.trim())
+  .filter((u) => /^https?:\/\//i.test(u));
+
 const AUTO_UPDATE = process.env.SNIPE_AUTO_UPDATE !== "0";
 const AUTO_UPDATE_MS = Number(process.env.SNIPE_AUTO_UPDATE_MS ?? 3_600_000);
 /**
@@ -244,7 +261,7 @@ async function peekDrop(
     const cfg = loadConfig(CONFIG_PATH);
     const info = getChainInfo(cfg.chainId);
     if (!info) return undefined;
-    const client = makeReadClient(info.chain, [...extraRpcs, ...cfg.extraRpcs]);
+    const client = makeReadClient(info.chain, withEnvRpcs([...extraRpcs, ...cfg.extraRpcs]));
     const d = await readDrop(client as never, info, collection);
     return {
       name: d.name,
@@ -303,7 +320,7 @@ async function buildProfitReport(): Promise<Record<string, unknown>> {
   const costs = costByCollection(loadMints(CONFIG_PATH));
   const known = loadCollections(CONFIG_PATH);
 
-  const client = makeReadClient(info.chain, cfg.extraRpcs);
+  const client = makeReadClient(info.chain, readRpcs(cfg));
 
   // One scan covers every collection these wallets have ever touched, so
   // a drop shows up here whether or not it was minted through this server
@@ -690,7 +707,7 @@ async function startScan(hours: number): Promise<Record<string, unknown>> {
     const cfg = loadConfig(CONFIG_PATH);
     const info = getChainInfo(cfg.chainId);
     if (!info) throw new Error(`chain ${cfg.chainId} isn't in the registry`);
-    const client = makeReadClient(info.chain, cfg.extraRpcs);
+    const client = makeReadClient(info.chain, readRpcs(cfg));
 
     const tip = await client.getBlockNumber();
     // Measured, not assumed: a hardcoded rate turns "last 24 hours" into a
@@ -785,7 +802,7 @@ async function startScan(hours: number): Promise<Record<string, unknown>> {
        * than leaving the user to guess from the error.
        */
       readRpc: rpcHost(readRpc(cfg, info)),
-      publicRpc: cfg.extraRpcs.length === 0,
+      publicRpc: readRpcs(cfg).length === 0,
       /** Minting over the last hour, keyed by lower-case contract. */
       pulse,
       pulseHours: PULSE_HOURS,
@@ -848,9 +865,14 @@ function buildRequest(body: Record<string, unknown>): Omit<RunOptions, "keys"> {
     collection: collection as `0x${string}`,
     stage,
     quantity,
-    extraRpcs: Array.isArray(body.extraRpcs)
-      ? (body.extraRpcs as unknown[]).filter((x): x is string => typeof x === "string")
-      : cfg.extraRpcs,
+    // The box's own endpoints lead whatever the caller sent. A panel that has
+    // never pushed an RPC would otherwise mint through the public node, which
+    // is the one place on this server where being metered costs a drop.
+    extraRpcs: withEnvRpcs(
+      Array.isArray(body.extraRpcs)
+        ? (body.extraRpcs as unknown[]).filter((x): x is string => typeof x === "string")
+        : cfg.extraRpcs,
+    ),
     gas: {
       maxFeeGwei: gasIn.maxFeeGwei ?? cfg.gas.maxFeeGwei,
       tipGwei: gasIn.tipGwei ?? cfg.gas.tipGwei,
@@ -1110,7 +1132,7 @@ function startAutoUpdate() {
  * than the whole request. This is what the panel displays.
  */
 function readRpc(cfg: SnipeConfig, info: NonNullable<ReturnType<typeof getChainInfo>>): string {
-  return cfg.extraRpcs[0] ?? info.chain.rpcUrls.default.http[0];
+  return readRpcs(cfg)[0] ?? info.chain.rpcUrls.default.http[0];
 }
 
 /** Host only — the full URL usually carries a provider API key. */
@@ -1150,6 +1172,23 @@ async function probeChainId(url: string): Promise<number> {
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * Every endpoint reads may go through, best first.
+ *
+ * The box's own setting leads: it is the one someone chose deliberately and
+ * the one that survives a browser nobody has opened today.
+ */
+function readRpcs(cfg: SnipeConfig): string[] {
+  return withEnvRpcs(cfg.extraRpcs);
+}
+
+/** The same rule for a list that arrived from somewhere else. */
+function withEnvRpcs(urls: readonly string[]): string[] {
+  const out = [...ENV_RPCS];
+  for (const u of urls) if (!out.includes(u)) out.push(u);
+  return out;
 }
 
 function saveExtraRpcs(urls: string[]): string[] {
@@ -1217,7 +1256,7 @@ async function walletsView() {
     balances = balanceCache.values;
   } else if (info && addresses.length > 0) {
     try {
-      const client = makeReadClient(info.chain, cfg.extraRpcs);
+      const client = makeReadClient(info.chain, readRpcs(cfg));
       const got = await mapWithLimit(addresses, (a) => client.getBalance({ address: a.address }));
       balances = new Map(addresses.map((a, i) => [a.address, formatEther(got[i])]));
       balanceCache = { at: Date.now(), values: balances };
@@ -1520,7 +1559,7 @@ const server = createServer(async (req, res) => {
         autoUpdate: AUTO_UPDATE ? AUTO_UPDATE_MS : null,
         // Hosts only — the full URLs carry provider API keys.
         tunnelUrl,
-        rpcHosts: cfg.extraRpcs.map(rpcHost),
+        rpcHosts: readRpcs(cfg).map(rpcHost),
         readRpc: info ? rpcHost(readRpc(cfg, info)) : null,
         jobs: jobs.map(jobView),
       });
@@ -1694,7 +1733,7 @@ const server = createServer(async (req, res) => {
       const cfg = loadConfig(CONFIG_PATH);
       const info = getChainInfo(cfg.chainId);
       if (!info) throw new Error(`chain ${cfg.chainId} isn't in the registry`);
-      const client = makeReadClient(info.chain, cfg.extraRpcs);
+      const client = makeReadClient(info.chain, readRpcs(cfg));
       const tip = await client.getBlockNumber();
       if (!blockRate || Date.now() - blockRate.at > BLOCK_RATE_TTL_MS) {
         blockRate = { at: Date.now(), perHour: await measureBlockRate(client as never, tip) };
@@ -1709,7 +1748,7 @@ const server = createServer(async (req, res) => {
         windows: LIVE_WINDOWS,
         error: pulseError,
         readRpc: rpcHost(readRpc(cfg, info)),
-        publicRpc: cfg.extraRpcs.length === 0,
+        publicRpc: readRpcs(cfg).length === 0,
         related: creators.relatedFor(rows.map((r) => r.contract)),
         knownCollections: creators.size,
         now: Math.floor(Date.now() / 1000),
@@ -1783,7 +1822,7 @@ const server = createServer(async (req, res) => {
       const cfg = loadConfig(CONFIG_PATH);
       const info = getChainInfo(cfg.chainId);
       if (!info) throw new Error(`chain ${cfg.chainId} isn't in the registry`);
-      const client = makeReadClient(info.chain, cfg.extraRpcs);
+      const client = makeReadClient(info.chain, readRpcs(cfg));
 
       // The public stage, straight off SeaDrop — never an allow-list one.
       const stages = (await client.multicall({
@@ -1971,7 +2010,7 @@ const server = createServer(async (req, res) => {
         (e) => privateKeyToAccount(e.key).address,
       );
       const started = Date.now();
-      const client = makeReadClient(info.chain, cfg.extraRpcs);
+      const client = makeReadClient(info.chain, readRpcs(cfg));
 
       // Two queries cover every wallet and every collection, so there is
       // nothing to discover first and nothing that can be missed.
@@ -2030,7 +2069,7 @@ const server = createServer(async (req, res) => {
 
       // One scan for every wallet and every collection, so a sweep can't move
       // what it happened to see and silently leave the rest.
-      const client = makeReadClient(info.chain, cfg.extraRpcs);
+      const client = makeReadClient(info.chain, readRpcs(cfg));
       const scan = await scanChain(client as never, addresses, { collection: only });
 
       const byWallet = new Map<string, Holding[]>();
@@ -2068,7 +2107,7 @@ const server = createServer(async (req, res) => {
       const result = await sweepNfts(
         {
           chainId: cfg.chainId,
-          extraRpcs: cfg.extraRpcs,
+          extraRpcs: readRpcs(cfg),
           gas: { maxFeeGwei: cfg.gas.maxFeeGwei, tipGwei: cfg.gas.tipGwei },
           holdings: perWallet,
           to: to as `0x${string}`,
@@ -2136,7 +2175,7 @@ const server = createServer(async (req, res) => {
       const result = await disperse(
         {
           chainId: cfg.chainId,
-          extraRpcs: cfg.extraRpcs,
+          extraRpcs: readRpcs(cfg),
           gas: { maxFeeGwei: cfg.gas.maxFeeGwei, tipGwei: cfg.gas.tipGwei },
           fromKey,
           targets,
@@ -2169,7 +2208,7 @@ const server = createServer(async (req, res) => {
       const result = await collect(
         {
           chainId: cfg.chainId,
-          extraRpcs: cfg.extraRpcs,
+          extraRpcs: readRpcs(cfg),
           gas: { maxFeeGwei: cfg.gas.maxFeeGwei, tipGwei: cfg.gas.tipGwei },
           keys: entries.map((e) => e.key),
           to: to as `0x${string}`,
@@ -2316,6 +2355,15 @@ server.listen(PORT, HOST, () => {
   log(`config ${CONFIG_PATH} · origins ${ORIGINS.join(", ")} · arm lead ${ARM_LEAD_MS / 1000}s`);
   try {
     const cfg = loadConfig(CONFIG_PATH);
+    // Which endpoint reads go through, said out loud at startup. A box quietly
+    // on the chain's public node — metered, and the cause of every rate limit
+    // in today's log — was invisible until something failed because of it.
+    const hosts = readRpcs(cfg).map(rpcHost);
+    log(
+      hosts.length > 0
+        ? `reads through ${hosts.join(", ")}`
+        : "reads through the chain's PUBLIC RPC, which meters — set SNIPE_RPCS in snipe.env to use your own",
+    );
     log(cfg.telegram ? "telegram notifications ON" : "telegram notifications off (no token/chat id)");
     // The same bot, now also listening: /add collects a drop that exists
     // nowhere but Twitter yet, and the site reads the list back.

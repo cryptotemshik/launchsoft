@@ -38,8 +38,23 @@ import StaleServer from "./StaleServer";
 
 type View = "list" | "week";
 
-/** How far ahead to look. A week of chain is the scanner's widest window. */
-const SCAN_HOURS = 168;
+/**
+ * How much chain history to read for configured stages.
+ *
+ * This used to be a hardcoded week, requested the moment the tab mounted. A
+ * week of this chain is close to six million blocks, which no free endpoint
+ * will answer in one piece — so simply opening the calendar started the
+ * heaviest read the server can make, whether or not anything a week old was
+ * wanted. It is a choice now, and three days is the default: far enough back
+ * to catch a stage configured well before it opens, cheap enough to open the
+ * tab without thinking about it.
+ */
+const SCAN_WINDOWS = [
+  { hours: 24, label: "24h" },
+  { hours: 72, label: "3d" },
+  { hours: 168, label: "7d" },
+] as const;
+const DEFAULT_SCAN_HOURS = 72;
 
 const STATUS_CLASS: Record<EventStatus, string> = {
   live: "ok",
@@ -121,11 +136,13 @@ export default function CalendarTab({
   const [hidden, setHidden] = useState<Set<string>>(new Set());
   const [selected, setSelected] = useState<string | null>(null);
   const [weekFrom, setWeekFrom] = useState(() => Math.floor(Date.now() / 1000));
+  /** How far back the scan reads. Shared with the scanner's cache per window. */
+  const [hours, setHours] = useState(DEFAULT_SCAN_HOURS);
   const prior = useRef<CalendarEvent[]>([]);
 
   const tz = useMemo(tzChip, []);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (h: number = DEFAULT_SCAN_HOURS) => {
     setBusy(true);
     setError(null);
     try {
@@ -133,7 +150,7 @@ export default function CalendarTab({
       // Both sources at once: neither depends on the other, and this is the
       // difference between one wait and two.
       const [scan, watch] = await Promise.all([
-        call(`/api/scan?hours=${SCAN_HOURS}`) as Promise<Record<string, unknown>>,
+        call(`/api/scan?hours=${h}`) as Promise<Record<string, unknown>>,
         call("/api/upcoming") as Promise<Record<string, unknown>>,
       ]);
 
@@ -189,7 +206,7 @@ export default function CalendarTab({
   }, [call, save, tz.offsetMin]);
 
   useEffect(() => {
-    if (base && token) void load();
+    if (base && token) void load(hours);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -327,9 +344,30 @@ export default function CalendarTab({
             >
               list
             </button>
-            <button className="secondary" disabled={busy || !base || !token} onClick={() => void load()}>
+            <button
+              className="secondary"
+              disabled={busy || !base || !token}
+              onClick={() => void load(hours)}
+            >
               {busy ? <span className="spin">READING</span> : "refresh"}
             </button>
+          </div>
+          <span className="bar-label">HISTORY</span>
+          <div className="chip-group">
+            {SCAN_WINDOWS.map((w) => (
+              <button
+                key={w.hours}
+                className={hours === w.hours ? "secondary active-chip" : "secondary"}
+                disabled={busy || !base || !token}
+                onClick={() => {
+                  setHours(w.hours);
+                  void load(w.hours);
+                }}
+                title={`Read ${w.label} of configured stages`}
+              >
+                {w.label}
+              </button>
+            ))}
           </div>
           <div className="bar-tail">
             <span className="pill">{tz.label}</span>
@@ -560,7 +598,7 @@ export default function CalendarTab({
         ) : null}
 
         <p className="dim hint" style={{ marginBottom: 0 }}>
-          Read {SCAN_HOURS}h of configured stages plus everything on the
+          Read {hours}h of configured stages plus everything on the
           watchlist. Times are yours ({tz.label}); a drop at 23:30 UTC lands on
           the day it happens where you are, not where the server is.
         </p>

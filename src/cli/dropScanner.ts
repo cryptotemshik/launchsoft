@@ -109,7 +109,7 @@ type DropLog = {
  * - "slow down" → wait and ask for the same range again. Splitting here is
  *   what turns a throttle into a stampede.
  */
-async function readLogs<T>(
+async function readRange<T>(
   client: PublicClient,
   event: typeof EVENT | typeof MINT_EVENT,
   fromBlock: bigint,
@@ -118,28 +118,107 @@ async function readLogs<T>(
   waited = 0,
 ): Promise<T[]> {
   try {
-    return (await client.getLogs({
+    const logs = (await client.getLogs({
       address: SEADROP,
       event,
       fromBlock,
       toBlock,
     })) as unknown as T[];
+    noteAccepted(toBlock - fromBlock);
+    return logs;
   } catch (e) {
     if (isRateLimit(e)) {
       if (waited >= THROTTLE_RETRIES) throw e;
       const pause = 600 * 2 ** waited;
       onNote?.(`throttled — waiting ${pause}ms before asking again`);
       await sleep(pause);
-      return readLogs<T>(client, event, fromBlock, toBlock, onNote, waited + 1);
+      return readRange<T>(client, event, fromBlock, toBlock, onNote, waited + 1);
     }
     const span = toBlock - fromBlock;
-    if (!tooWide(e) || span <= MIN_SPAN) throw e;
+    if (!tooWide(e)) throw e;
+    noteRefused(span);
+    if (span <= MIN_SPAN) throw e;
     onNote?.(`range of ${span} blocks refused — splitting`);
     const mid = fromBlock + span / 2n;
-    const a = await readLogs<T>(client, event, fromBlock, mid, onNote, waited);
-    const b = await readLogs<T>(client, event, mid + 1n, toBlock, onNote, waited);
+    const a = await readRange<T>(client, event, fromBlock, mid, onNote, waited);
+    const b = await readRange<T>(client, event, mid + 1n, toBlock, onNote, waited);
     return [...a, ...b];
   }
+}
+
+/**
+ * What this endpoint has already taught us about how much it will answer at
+ * once, remembered for the life of the process.
+ *
+ * Without this, every seven-day scan started by asking for six million blocks,
+ * got refused, and rediscovered the endpoint's limit by halving — eight
+ * refusals deep before the first log came back, and the same eight again on
+ * the next scan. The limit is a property of the endpoint, not of the request,
+ * so it is worth remembering: once a span has been refused and a smaller one
+ * answered, the range is walked in chunks that are known to fit.
+ */
+let acceptedSpan: bigint | null = null;
+let refusedSpan: bigint | null = null;
+
+/** Forget what the endpoint taught us — for tests, and for a config change. */
+export function forgetSpanLimits(): void {
+  acceptedSpan = null;
+  refusedSpan = null;
+}
+
+function noteAccepted(span: bigint): void {
+  if (span > 0n && (acceptedSpan === null || span > acceptedSpan)) acceptedSpan = span;
+}
+
+function noteRefused(span: bigint): void {
+  if (refusedSpan === null || span < refusedSpan) refusedSpan = span;
+  // Anything we thought was fine but is at least as wide as a refusal isn't.
+  // Endpoints change under us — a fallback answering for a paid node has a
+  // different ceiling — so an old success must not outrank a fresh refusal.
+  if (acceptedSpan !== null && acceptedSpan >= span) acceptedSpan = null;
+}
+
+/**
+ * How wide a single request may be, or null to just ask for the whole range.
+ *
+ * Nothing refused yet means nothing to be careful about: a healthy endpoint
+ * answers three days in one round trip and chunking it would only make the
+ * scan slower.
+ */
+function chunkSpan(): bigint | null {
+  if (refusedSpan === null) return null;
+  if (acceptedSpan !== null && acceptedSpan < refusedSpan) return acceptedSpan;
+  const half = refusedSpan / 2n;
+  return half > MIN_SPAN ? half : MIN_SPAN;
+}
+
+/**
+ * Every log of one event between two blocks, in as few requests as the
+ * endpoint allows.
+ *
+ * The chunks are read one after another rather than together: the point of
+ * knowing the limit is to stop flooding an endpoint that has already said no.
+ */
+async function readLogs<T>(
+  client: PublicClient,
+  event: typeof EVENT | typeof MINT_EVENT,
+  fromBlock: bigint,
+  toBlock: bigint,
+  onNote?: (s: string) => void,
+): Promise<T[]> {
+  const chunk = chunkSpan();
+  const span = toBlock - fromBlock;
+  if (chunk === null || span <= chunk) {
+    return readRange<T>(client, event, fromBlock, toBlock, onNote);
+  }
+
+  onNote?.(`${span} blocks in chunks of ${chunk} — the endpoint won't take more`);
+  const out: T[] = [];
+  for (let start = fromBlock; start <= toBlock; start += chunk + 1n) {
+    const end = start + chunk > toBlock ? toBlock : start + chunk;
+    out.push(...(await readRange<T>(client, event, start, end, onNote)));
+  }
+  return out;
 }
 
 export interface ScanResult {

@@ -1,5 +1,5 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { scanPublicDrops } from "./dropScanner";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { forgetSpanLimits, scanPublicDrops } from "./dropScanner";
 
 /** A client that records the ranges asked for and answers however told to. */
 function fakeClient(answer: (from: bigint, to: bigint, call: number) => unknown) {
@@ -21,6 +21,9 @@ function fakeClient(answer: (from: bigint, to: bigint, call: number) => unknown)
 const span = (a: { from: bigint; to: bigint }) => Number(a.to - a.from);
 
 afterEach(() => vi.useRealTimers());
+// What one endpoint refuses is remembered for the whole process, which is the
+// point of it — but each test here is a different endpoint.
+beforeEach(forgetSpanLimits);
 
 describe("reading the log range", () => {
   it("takes one request when the endpoint is happy", async () => {
@@ -87,6 +90,37 @@ describe("reading the log range", () => {
     await vi.advanceTimersByTimeAsync(120_000);
     await settled;
     expect(asked.length).toBeLessThanOrEqual(5);
+  });
+
+  it("walks the next range in chunks it already knows fit", async () => {
+    // The failure this exists to prevent: every seven-day scan rediscovering
+    // the endpoint's ceiling by halving from six million blocks, eight
+    // refusals deep before the first log comes back — and again next time.
+    const { client, asked } = fakeClient((from, to) =>
+      to - from > 100_000n ? new Error("block range is too large") : [],
+    );
+    await scanPublicDrops(client, { fromBlock: 0n, toBlock: 400_000n });
+    const learned = asked.length;
+    asked.length = 0;
+
+    await scanPublicDrops(client, { fromBlock: 1_000_000n, toBlock: 1_400_000n });
+    // Four chunks, no refusals — where the first pass spent three requests
+    // being told no.
+    expect(asked.length).toBeLessThan(learned);
+    expect(Math.max(...asked.map(span))).toBeLessThanOrEqual(100_000);
+    const sorted = [...asked].sort((a, b) => Number(a.from - b.from));
+    expect(sorted[0].from).toBe(1_000_000n);
+    expect(sorted[sorted.length - 1].to).toBe(1_400_000n);
+    sorted.slice(1).forEach((l, i) => expect(l.from).toBe(sorted[i].to + 1n));
+  });
+
+  it("asks for the whole range while nothing has been refused", async () => {
+    const { client, asked } = fakeClient(() => []);
+    await scanPublicDrops(client, { fromBlock: 0n, toBlock: 50_000n });
+    await scanPublicDrops(client, { fromBlock: 0n, toBlock: 6_000_000n });
+    // A small read must not teach the reader to chop up a big one: a healthy
+    // endpoint answers a week in one request.
+    expect(asked[1]).toEqual({ from: 0n, to: 6_000_000n });
   });
 
   it("passes an error it cannot answer straight up", async () => {
