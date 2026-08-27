@@ -37,6 +37,7 @@ import { privateKeyToAccount } from "viem/accounts";
 import { collect, disperse } from "./funding";
 import { scanChain } from "./holdings";
 import { lookupCollections } from "./collectionLookup";
+import { pulseByCollection, type MintPulse } from "../lib/mintPulse";
 import { costByCollection, loadMints, recordMint } from "./ledger";
 import {
   blockTimes,
@@ -64,7 +65,7 @@ import { formatMintReport, sendTelegram, type MintedWallet } from "../lib/telegr
 import { startTelegramBot } from "./telegramBot";
 import { loadUpcoming, removeUpcoming } from "./upcomingStore";
 import { sortByDate } from "../lib/upcoming";
-import { enrichDrops, measureBlockRate, scanPublicDrops } from "./dropScanner";
+import { enrichDrops, measureBlockRate, readMints, scanPublicDrops } from "./dropScanner";
 import { blocksForHours, classify, mergeScans, sortForScan, type ScannedDrop } from "../lib/dropScan";
 import { API_VERSION } from "../lib/apiVersion";
 import { mapWithLimit } from "../lib/rpcRead";
@@ -451,6 +452,78 @@ const MAX_SCAN_HOURS = 168;
  */
 const INCREMENTAL_LIMIT_HOURS = 2;
 
+/**
+ * How much minting to look at, and how long to hold the answer.
+ *
+ * An hour of SeaDrop mints is one log query — about 3,250 events on this chain
+ * — and it answers "is anyone actually minting this" for every collection in
+ * the table at once. Held for half a minute because a live refresh every ten
+ * seconds should not pay for it three times, and because a rate measured over
+ * an hour does not move meaningfully in thirty.
+ */
+/**
+ * What the chain's coin is worth, so a floor listed in a stablecoin can be
+ * compared with a mint priced in the native one. Both occur here, and
+ * comparing their face numbers produces things like "2,500,000% of the mint
+ * price". One cheap call, held for an hour — this is used to decide whether a
+ * floor is above or below a mint, not to price a trade.
+ */
+let coinUsd: { at: number; usd: number | null } | null = null;
+const COIN_USD_TTL_MS = 3600_000;
+
+async function nativeUsd(api: string | undefined): Promise<number | null> {
+  if (!api) return null;
+  if (coinUsd && Date.now() - coinUsd.at < COIN_USD_TTL_MS) return coinUsd.usd;
+  let usd: number | null = null;
+  try {
+    const r = await fetch(`${api}/stats`, { signal: AbortSignal.timeout(8000) });
+    if (r.ok) {
+      const v = Number(((await r.json()) as { coin_price?: string }).coin_price);
+      usd = Number.isFinite(v) && v > 0 ? v : null;
+    }
+  } catch {
+    // No rate means the cross-coin floor check reports "can't compare",
+    // which is the honest answer and not worth failing a scan over.
+  }
+  coinUsd = { at: Date.now(), usd };
+  return usd;
+}
+
+const PULSE_HOURS = 1;
+const PULSE_TTL_MS = 30_000;
+let pulseCache: { at: number; by: Record<string, MintPulse> } | null = null;
+let pulseInflight: Promise<Record<string, MintPulse>> | null = null;
+
+async function mintPulse(
+  client: Parameters<typeof readMints>[0],
+  tip: bigint,
+  blocksPerHour: number,
+): Promise<Record<string, MintPulse>> {
+  if (pulseCache && Date.now() - pulseCache.at < PULSE_TTL_MS) return pulseCache.by;
+  if (pulseInflight) return pulseInflight;
+  pulseInflight = (async () => {
+    const span = blocksForHours(PULSE_HOURS, blocksPerHour);
+    const events = await readMints(client, {
+      fromBlock: tip > span ? tip - span : 0n,
+      toBlock: tip,
+    });
+    const by = pulseByCollection(events, Math.floor(Date.now() / 1000));
+    pulseCache = { at: Date.now(), by };
+    log(`pulse: ${events.length} mints across ${Object.keys(by).length} collections`);
+    return by;
+  })()
+    .catch((e) => {
+      // A scan is still worth serving without it: the columns say "—" rather
+      // than the whole table failing over one extra query.
+      log(`pulse failed: ${e instanceof Error ? e.message : e}`);
+      return {} as Record<string, MintPulse>;
+    })
+    .finally(() => {
+      pulseInflight = null;
+    });
+  return pulseInflight;
+}
+
 async function startScan(hours: number): Promise<Record<string, unknown>> {
   const run = (async () => {
     const started = Date.now();
@@ -516,6 +589,11 @@ async function startScan(hours: number): Promise<Record<string, unknown>> {
     const byContract = new Map(drops.map((d) => [d.contract.toLowerCase(), d]));
     for (const e of enriched) byContract.set(e.contract.toLowerCase(), e);
 
+    const [pulse, nativeUsdRate] = await Promise.all([
+      mintPulse(client as never, tip, blocksPerHour),
+      nativeUsd(info.blockscoutApi),
+    ]);
+
     const body = {
       drops: sortForScan([...byContract.values()], now),
       hours,
@@ -539,6 +617,11 @@ async function startScan(hours: number): Promise<Record<string, unknown>> {
        */
       readRpc: rpcHost(readRpc(cfg, info)),
       publicRpc: cfg.extraRpcs.length === 0,
+      /** Minting over the last hour, keyed by lower-case contract. */
+      pulse,
+      pulseHours: PULSE_HOURS,
+      nativeSymbol: info.chain.nativeCurrency.symbol,
+      nativeUsd: nativeUsdRate,
       now,
       tookMs: Date.now() - started,
     };

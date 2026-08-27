@@ -10,7 +10,7 @@
  * The reading happens on the server, through the same endpoints everything else
  * uses. Nothing here talks to a chain directly.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { formatEther, parseEther } from "viem";
 import { useRunnerApi } from "../lib/runnerClient";
 import { useCustomRpcs } from "../lib/customRpc";
@@ -24,6 +24,8 @@ import {
 } from "../lib/dropScan";
 import { twitterUrl, type CollectionInfo } from "../lib/collectionInfo";
 import { accountAge, compactCount } from "../lib/twitterStats";
+import { larpReport, riskBand, type LarpReport } from "../lib/larp";
+import type { MintPulse } from "../lib/mintPulse";
 import { openSeaCollectionUrlBySlug } from "../chains";
 import { setPendingTarget } from "../lib/snipeTarget";
 import { sndFeedTick } from "../lib/sound";
@@ -46,6 +48,11 @@ interface ScanView {
   readRpc?: string;
   /** True when that was the chain's public RPC, with nothing better set. */
   publicRpc?: boolean;
+  /** Minting over the last hour, keyed by lower-case contract. */
+  pulse?: Record<string, MintPulse>;
+  pulseHours?: number;
+  nativeSymbol?: string;
+  nativeUsd?: number | null;
   chain: string;
   explorerUrl: string;
   openSeaSlug?: string;
@@ -84,7 +91,16 @@ const STATES: { key: DropState | "all"; label: string }[] = [
   { key: "all", label: "everything" },
 ];
 
-type SortKey = "start" | "name" | "price" | "supply" | "wallet" | "twitter" | "floor";
+type SortKey =
+  | "start"
+  | "name"
+  | "price"
+  | "supply"
+  | "wallet"
+  | "twitter"
+  | "floor"
+  | "mints"
+  | "risk";
 
 /**
  * How often the table is allowed to reorder itself.
@@ -123,6 +139,118 @@ function numberOrUndefined(v: string): number | undefined {
   return Number.isFinite(n) && n >= 0 ? n : undefined;
 }
 
+/** A mint rate a person reads at a glance: 0.4/min is not "0". */
+function fmtRate(perMin: number): string {
+  if (perMin <= 0) return "quiet";
+  if (perMin < 1) return `${perMin.toFixed(1)}/m`;
+  if (perMin < 100) return `${Math.round(perMin)}/m`;
+  return `${(perMin / 1000).toFixed(1)}k/m`;
+}
+
+const STATUS_CLASS: Record<string, string> = {
+  ok: "risk-ok",
+  warn: "risk-warn",
+  bad: "risk-bad",
+  info: "faint",
+};
+
+/**
+ * The reasons behind the score.
+ *
+ * The number in the column is a summary and summaries are worth exactly as
+ * much as the working behind them, so every check shows the fact it was
+ * decided from and the reader can disagree with any of them. The mint curve
+ * sits alongside because the shape of a mint says something no single check
+ * does — a wall at one minute and a flat line after it is a different drop
+ * from a steady climb, even when both end at the same supply.
+ */
+function RiskDetail({
+  drop,
+  report,
+  pulse,
+  meta,
+}: {
+  drop: ScannedDrop;
+  report?: LarpReport;
+  pulse?: MintPulse;
+  meta?: CollectionInfo;
+}) {
+  if (!report) return <span className="dim">nothing read for this collection yet.</span>;
+  return (
+    <div className="risk-detail">
+      <div className="risk-checks">
+        {report.checks.map((c) => (
+          <div key={c.id} className="risk-check">
+            <span className={`risk-dot ${STATUS_CLASS[c.status]}`}>
+              {c.status === "ok" ? "✓" : c.status === "info" ? "?" : c.status === "warn" ? "!" : "✕"}
+            </span>
+            <span className="risk-label">{c.label}</span>
+            <span className="risk-evidence dim">{c.detail}</span>
+          </div>
+        ))}
+        <p className="dim hint" style={{ margin: "8px 0 0" }}>
+          Score is the weighted average of what could be decided; a check
+          nobody could answer carries no weight, so an unknown never counts as
+          a pass — it lowers how much of this was known instead.
+        </p>
+      </div>
+
+      <div className="risk-side">
+        {pulse && pulse.txs > 0 ? (
+          <>
+            <div className="risk-stat">
+              <span className="rs-label">minted, last hour</span>
+              <span className="rs-value">{pulse.quantity.toLocaleString("en-US")}</span>
+            </div>
+            <div className="risk-stat">
+              <span className="rs-label">wallets</span>
+              <span className="rs-value">
+                {pulse.wallets.toLocaleString("en-US")}{" "}
+                <span className="dim">of {pulse.txs.toLocaleString("en-US")} txs</span>
+              </span>
+            </div>
+            <div className="risk-stat">
+              <span className="rs-label">biggest wallet</span>
+              <span className={`rs-value ${pulse.top1 > 0.35 ? "risk-bad" : ""}`}>
+                {Math.round(pulse.top1 * 100)}%
+              </span>
+            </div>
+            <div className="risk-stat">
+              <span className="rs-label">top five</span>
+              <span className="rs-value">{Math.round(pulse.top5 * 100)}%</span>
+            </div>
+            <div className="risk-stat">
+              <span className="rs-label">busiest minute</span>
+              <span className={`rs-value ${pulse.burst > 0.6 ? "risk-warn" : ""}`}>
+                {Math.round(pulse.burst * 100)}% of it
+              </span>
+            </div>
+          </>
+        ) : (
+          <div className="risk-stat">
+            <span className="rs-label">minting</span>
+            <span className="rs-value dim">nothing in the last hour</span>
+          </div>
+        )}
+        {meta?.site ? (
+          <div className="risk-stat">
+            <span className="rs-label">site</span>
+            <a className="rs-value" href={meta.site} target="_blank" rel="noreferrer">
+              {meta.site.replace(/^https?:\/\/(www\.)?/, "").replace(/\/$/, "")}
+            </a>
+          </div>
+        ) : null}
+        <div className="risk-stat">
+          <span className="rs-label">contract</span>
+          <span className="rs-value">
+            <Addr value={drop.contract} head={10} />
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function ScannerTab({ onSnipe }: { onSnipe?: (contract: string) => void }) {
   const { url, setUrl, token, setToken, base, call, save, serverVersion } = useRunnerApi();
   const { urls: customRpcs } = useCustomRpcs();
@@ -150,6 +278,8 @@ export default function ScannerTab({ onSnipe }: { onSnipe?: (contract: string) =
   // Contracts that appeared in the most recent refresh, so a new arrival is
   // visible without hunting for it.
   const [justIn, setJustIn] = useState<Set<string>>(new Set());
+  /** The one row whose checks are on screen. */
+  const [openRow, setOpenRow] = useState<string | null>(null);
   const seen = useRef<Set<string> | null>(null);
 
   const load = useCallback(
@@ -283,15 +413,63 @@ export default function ScannerTab({ onSnipe }: { onSnipe?: (contract: string) =
     [state, hideSoldOut, freeOnly, search, maxPrice, minSupply, maxSupply, minPerWallet],
   );
 
-  const rows = useMemo(() => {
+  const filtered = useMemo(() => {
     const all = view?.drops ?? [];
-    let filtered = applyFilter(all, filter, orderAt);
+    const kept = applyFilter(all, filter, orderAt);
     // Held apart from applyFilter because it is the one condition that depends
     // on something read off-chain, and a row whose lookup has not landed yet
     // must not be claimed to have no account.
-    if (withTwitter) {
-      filtered = filtered.filter((d) => info[d.contract.toLowerCase()]?.twitter);
+    return withTwitter ? kept.filter((d) => info[d.contract.toLowerCase()]?.twitter) : kept;
+  }, [view, filter, withTwitter, info, orderAt]);
+
+  /**
+   * The risk report for every row that survived the filters.
+   *
+   * Scored here rather than on the server because every input is already in
+   * the browser — the drop from the scan, the account from the lookup, the
+   * minting from the pulse — and because a score computed next to the table
+   * updates the moment any of the three does, instead of on the next scan.
+   * Only the filtered rows are scored: a 7-day window is a couple of thousand
+   * collections and almost none of them are on screen.
+   */
+  const reports = useMemo(() => {
+    const out: Record<string, LarpReport> = {};
+    if (!view) return out;
+    for (const d of filtered) {
+      const key = d.contract.toLowerCase();
+      const m = info[key];
+      const p = view.pulse?.[key];
+      out[key] = larpReport({
+        priceWei: d.priceWei,
+        maxPerWallet: d.maxPerWallet,
+        feeBps: d.feeBps,
+        maxSupply: d.maxSupply,
+        minted: d.minted,
+        twitter: m ? m.twitter : undefined,
+        followers: m?.followers,
+        joinedMs: m?.joinedMs,
+        floorUnit: m ? (m.floor?.unit ?? null) : undefined,
+        floorSymbol: m?.floor?.symbol ?? null,
+        floorUsd: m?.floor?.usd ?? null,
+        nativeSymbol: view.nativeSymbol,
+        nativeUsd: view.nativeUsd,
+        baseURI: d.baseURI,
+        provenanceHash: d.provenanceHash,
+        perMin: p?.perMin,
+        uniqueness: p ? p.uniqueness : undefined,
+        mintTxs: p?.txs,
+        top1: p?.top1,
+        now,
+      });
     }
+    return out;
+    // `now` deliberately absent: the account-age check moves by the day, and
+    // rebuilding a few hundred reports every second to watch it would be the
+    // one thing on this page that is expensive for no reason.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filtered, info, view]);
+
+  const rows = useMemo(() => {
     if (sort === "start") {
       const s = sortForScan(filtered, orderAt);
       return desc ? s.reverse() : s;
@@ -300,6 +478,7 @@ export default function ScannerTab({ onSnipe }: { onSnipe?: (contract: string) =
     // Rows whose lookup has not landed sort as if they had nothing, so an
     // unfilled column never floats to the top and looks like a result.
     const at = (d: ScannedDrop) => info[d.contract.toLowerCase()];
+    const pulseOf = (d: ScannedDrop) => view?.pulse?.[d.contract.toLowerCase()];
     return [...filtered].sort((a, b) => {
       if (sort === "name") return dir * (a.name ?? a.contract).localeCompare(b.name ?? b.contract);
       if (sort === "price") return dir * (Number(a.priceWei) - Number(b.priceWei));
@@ -307,9 +486,17 @@ export default function ScannerTab({ onSnipe }: { onSnipe?: (contract: string) =
         return dir * ((a.maxPerWallet || Infinity) - (b.maxPerWallet || Infinity));
       if (sort === "twitter") return dir * ((at(a)?.followers ?? -1) - (at(b)?.followers ?? -1));
       if (sort === "floor") return dir * ((at(a)?.floor?.unit ?? -1) - (at(b)?.floor?.unit ?? -1));
+      if (sort === "mints") return dir * ((pulseOf(a)?.perMin ?? -1) - (pulseOf(b)?.perMin ?? -1));
+      if (sort === "risk") {
+        return (
+          dir *
+          ((reports[a.contract.toLowerCase()]?.score ?? -1) -
+            (reports[b.contract.toLowerCase()]?.score ?? -1))
+        );
+      }
       return dir * ((a.maxSupply ?? 0) - (b.maxSupply ?? 0));
     });
-  }, [view, filter, withTwitter, info, sort, desc, orderAt]);
+  }, [filtered, info, view, reports, sort, desc, orderAt]);
 
   /**
    * Who the collections on screen are, and what their floors are.
@@ -662,6 +849,8 @@ export default function ScannerTab({ onSnipe }: { onSnipe?: (contract: string) =
                 <col style={{ width: 90 }} />
                 <col style={{ width: 100 }} />
                 <col style={{ width: 80 }} />
+                <col style={{ width: 96 }} />
+                <col style={{ width: 82 }} />
                 <col style={{ width: 74 }} />
               </colgroup>
               <thead>
@@ -673,6 +862,8 @@ export default function ScannerTab({ onSnipe }: { onSnipe?: (contract: string) =
                   {header("floor", "floor", "num")}
                   {header("supply", "supply", "num")}
                   {header("wallet", "per wallet", "num")}
+                  {header("mints", "minting", "num")}
+                  {header("risk", "risk", "num")}
                   <th />
                 </tr>
               </thead>
@@ -682,10 +873,17 @@ export default function ScannerTab({ onSnipe }: { onSnipe?: (contract: string) =
                   const sold = isSoldOut(d);
                   const away = d.startTime ? d.startTime - now : null;
                   const meta = info[d.contract.toLowerCase()];
+                  const key = d.contract.toLowerCase();
+                  const pulse = view.pulse?.[key];
+                  const report = reports[key];
+                  const band = riskBand(report?.score ?? null);
+                  const open = openRow === key;
                   return (
+                    <Fragment key={d.contract}>
                     <tr
-                      key={d.contract}
-                      className={`project-row${justIn.has(d.contract.toLowerCase()) ? " feed-row" : ""}`}
+                      className={`project-row${justIn.has(key) ? " feed-row" : ""}${open ? " row-open" : ""}`}
+                      onClick={() => setOpenRow(open ? null : key)}
+                      title="Open the risk breakdown"
                     >
                       <td data-label="opens">
                         <span className={`cell-name cd ${STATE_CLASS[st]}`}>
@@ -714,6 +912,7 @@ export default function ScannerTab({ onSnipe }: { onSnipe?: (contract: string) =
                           href={openSeaCollectionUrlBySlug(view.openSeaSlug, d.contract)}
                           target="_blank"
                           rel="noreferrer"
+                          onClick={(e) => e.stopPropagation()}
                           title={d.name ?? d.contract}
                         >
                           {d.name ?? `${d.contract.slice(0, 10)}…`}
@@ -737,6 +936,7 @@ export default function ScannerTab({ onSnipe }: { onSnipe?: (contract: string) =
                               href={twitterUrl(meta.twitter)}
                               target="_blank"
                               rel="noreferrer"
+                              onClick={(e) => e.stopPropagation()}
                               title={`@${meta.twitter}`}
                             >
                               @{meta.twitter}
@@ -770,6 +970,7 @@ export default function ScannerTab({ onSnipe }: { onSnipe?: (contract: string) =
                                 href={meta.site}
                                 target="_blank"
                                 rel="noreferrer"
+                                onClick={(e) => e.stopPropagation()}
                                 title={meta.site}
                               >
                                 {meta.site.replace(/^https?:\/\/(www\.)?/, "").replace(/\/$/, "")}
@@ -820,12 +1021,45 @@ export default function ScannerTab({ onSnipe }: { onSnipe?: (contract: string) =
                       <td className="num" data-label="per wallet">
                         {d.maxPerWallet || <span className="dim">∞</span>}
                       </td>
+                      <td className="num" data-label="minting">
+                        {pulse ? (
+                          <>
+                            <span className="cell-name">{fmtRate(pulse.perMin)}</span>
+                            <span className="cell-sub dim">
+                              {pulse.uniqueness === null ? (
+                                `${pulse.txs} tx`
+                              ) : (
+                                <span className={pulse.uniqueness < 0.4 ? "warn" : ""}>
+                                  {Math.round(pulse.uniqueness * 100)}% uniq
+                                </span>
+                              )}
+                            </span>
+                          </>
+                        ) : (
+                          <span className="faint" title={`no mints in the last ${view.pulseHours ?? 1}h`}>
+                            —
+                          </span>
+                        )}
+                      </td>
+                      <td className="num" data-label="risk">
+                        {report?.score === null || report === undefined ? (
+                          <span className="faint">—</span>
+                        ) : (
+                          <>
+                            <span className={`cell-name risk-${band}`}>{report.score}</span>
+                            <span className="cell-sub dim">
+                              {Math.round(report.confidence * 100)}% known
+                            </span>
+                          </>
+                        )}
+                      </td>
                       <td className="num" data-label="">
                         <button
                           className="secondary"
                           style={{ padding: "2px 10px", fontSize: 11, width: "auto" }}
                           title="Load this collection in the Snipe tab"
-                          onClick={() => {
+                          onClick={(e) => {
+                            e.stopPropagation();
                             setPendingTarget(d.contract);
                             onSnipe?.(d.contract);
                           }}
@@ -834,6 +1068,14 @@ export default function ScannerTab({ onSnipe }: { onSnipe?: (contract: string) =
                         </button>
                       </td>
                     </tr>
+                    {open ? (
+                      <tr className="detail-row">
+                        <td colSpan={10}>
+                          <RiskDetail drop={d} report={report} pulse={pulse} meta={info[key]} />
+                        </td>
+                      </tr>
+                    ) : null}
+                    </Fragment>
                   );
                 })}
               </tbody>

@@ -40,6 +40,12 @@ body {
   margin: 0 auto;
   padding: 22px 18px 110px;
 }
+/* One tab needs the room; the rest read better narrow. Set on the app rather
+   than on #root so the width travels with the tab, and capped so the table
+   never becomes a stretched-out line to follow across a wide monitor. */
+#root:has(> .roomy) {
+  max-width: 1340px;
+}
 
 a {
   color: var(--green-bright);
@@ -1945,5 +1951,99 @@ button.secondary.link-btn {
   }
   .scan-bar .bar-tail {
     margin-left: 0;
+  }
+}
+
+/* ── The risk column and its breakdown ───────────────────────────────────
+   A score is only worth the working behind it, so the number is a button into
+   the checks rather than a verdict on its own. */
+.risk-ok {
+  color: var(--green-bright);
+}
+.risk-warn {
+  color: var(--warn);
+}
+.risk-bad {
+  color: var(--err);
+}
+.scan-table .cell-name.risk-ok,
+.scan-table .cell-name.risk-warn,
+.scan-table .cell-name.risk-bad {
+  font-size: 15px;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.risk-detail {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 260px;
+  gap: 22px;
+  align-items: start;
+}
+.risk-check {
+  display: grid;
+  grid-template-columns: 16px 215px minmax(0, 1fr);
+  gap: 8px;
+  align-items: baseline;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--border-dim);
+  font-size: 12px;
+}
+.risk-check:last-of-type {
+  border-bottom: none;
+}
+.risk-dot {
+  font-family: var(--mono);
+  font-weight: 700;
+  text-align: center;
+}
+.risk-label {
+  color: var(--text);
+}
+.risk-evidence {
+  font-size: 11.5px;
+}
+
+.risk-side {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-left: 18px;
+  border-left: 1px solid var(--line);
+}
+.risk-stat {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12px;
+}
+.risk-stat .rs-label {
+  color: var(--faint);
+  text-transform: uppercase;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  align-self: center;
+}
+.risk-stat .rs-value {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 900px) {
+  .risk-detail {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 14px;
+  }
+  .risk-side {
+    padding-left: 0;
+    border-left: none;
+    border-top: 1px solid var(--line);
+    padding-top: 12px;
+  }
+  .risk-check {
+    grid-template-columns: 16px minmax(0, 1fr);
+  }
+  .risk-check .risk-evidence {
+    grid-column: 2;
   }
 }

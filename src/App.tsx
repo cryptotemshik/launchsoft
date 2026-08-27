@@ -84,7 +84,10 @@ export default function App() {
   }
 
   return (
-    <div className="app-enter">
+    // The scanner is a ten-column table; every other tab is a form or a short
+    // list. Rather than making all of them as wide as the widest, the page
+    // widens for the one that needs it.
+    <div className={`app-enter${tab === "scanner" ? " roomy" : ""}`}>
       <ConnectBar
         onHome={() => {
           localStorage.removeItem("launchpad.entered");

@@ -43,6 +43,9 @@ export interface ScannedDrop {
   name?: string;
   maxSupply?: number;
   minted?: number;
+  /** Where the art is served from. Empty string means "not revealed yet". */
+  baseURI?: string;
+  provenanceHash?: string;
 }
 
 /** What a drop is doing right now. */
@@ -132,7 +135,14 @@ export function mergeScans(
     if (prev && prev.block >= d.block) continue;
     // A collection nobody had seen, or one whose stage has been reconfigured:
     // either way its name and supply need reading again.
-    by.set(key, { ...d, name: prev?.name, maxSupply: prev?.maxSupply, minted: prev?.minted });
+    by.set(key, {
+      ...d,
+      name: prev?.name,
+      maxSupply: prev?.maxSupply,
+      minted: prev?.minted,
+      baseURI: prev?.baseURI,
+      provenanceHash: prev?.provenanceHash,
+    });
     fresh.push(d.contract);
   }
   return { drops: [...by.values()], fresh };
