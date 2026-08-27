@@ -57,12 +57,34 @@ export async function probeLogRange(
     const body = (await res.json()) as { error?: { message?: string } };
     const message = body.error?.message;
     if (!message) return { ok: true };
+    // Only a refusal that is actually about the range counts. The chain's own
+    // node answers a wide unfiltered query with "internal server errror" when
+    // it is having a moment, and reading that as a cap had the server accuse
+    // the one endpoint on this chain that has no cap at all.
+    if (!namesARangeLimit(message)) return { ok: true, reason: trim(message) };
     return { ok: false, reason: trim(message), suggested: suggestedWidth(message) };
   } catch (e) {
     // Unreachable is a different problem with a different fix, and the read
     // client's own fallback already covers it. Don't report it as a cap.
     return { ok: true, reason: e instanceof Error ? e.message : String(e) };
   }
+}
+
+/**
+ * Whether a refusal is about how much was asked for, rather than the endpoint
+ * having a bad day. Providers word it differently, but all of them name the
+ * size of the ask; none of them do for a genuine internal error.
+ */
+function namesARangeLimit(message: string): boolean {
+  const m = message.toLowerCase();
+  return (
+    m.includes("range") ||
+    m.includes("limit") ||
+    m.includes("too large") ||
+    m.includes("too many") ||
+    m.includes("more than") ||
+    m.includes("exceed")
+  );
 }
 
 function trim(message: string): string {

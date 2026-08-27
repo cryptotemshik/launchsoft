@@ -139,6 +139,21 @@ const ENV_RPCS = splitRpcs(process.env.SNIPE_RPCS);
  */
 const SCAN_ENV_RPCS = splitRpcs(process.env.SNIPE_SCAN_RPCS);
 
+/**
+ * The endpoints a queued mint uses, when that is to be kept clean too.
+ *
+ * The broadcast itself races every endpoint at once with the sequencer first,
+ * so a key here is one racer among several and not the deciding factor. What
+ * it does decide is the arming: a hundred wallets is a hundred balance reads
+ * and a hundred nonce reads, fired two minutes before the stage opens. Those
+ * go to a single endpoint — the first in this list — and if it is busy serving
+ * a sweep or a wallet refresh at that moment, the arm is what suffers, with
+ * nobody watching.
+ *
+ * Unset, a mint uses SNIPE_RPCS like everything else.
+ */
+const MINT_ENV_RPCS = splitRpcs(process.env.SNIPE_MINT_RPCS);
+
 function splitRpcs(raw: string | undefined): string[] {
   return (raw ?? "")
     .split(/[\s,]+/)
@@ -890,11 +905,14 @@ function buildRequest(body: Record<string, unknown>): Omit<RunOptions, "keys"> {
     // The box's own endpoints lead whatever the caller sent. A panel that has
     // never pushed an RPC would otherwise mint through the public node, which
     // is the one place on this server where being metered costs a drop.
-    extraRpcs: withEnvRpcs(
-      Array.isArray(body.extraRpcs)
-        ? (body.extraRpcs as unknown[]).filter((x): x is string => typeof x === "string")
-        : cfg.extraRpcs,
-    ),
+    extraRpcs: [
+      ...MINT_ENV_RPCS,
+      ...withEnvRpcs(
+        Array.isArray(body.extraRpcs)
+          ? (body.extraRpcs as unknown[]).filter((x): x is string => typeof x === "string")
+          : cfg.extraRpcs,
+      ).filter((u) => !MINT_ENV_RPCS.includes(u)),
+    ],
     gas: {
       maxFeeGwei: gasIn.maxFeeGwei ?? cfg.gas.maxFeeGwei,
       tipGwei: gasIn.tipGwei ?? cfg.gas.tipGwei,
@@ -1191,6 +1209,14 @@ async function checkScanEndpoint(cfg: SnipeConfig): Promise<void> {
   }
 }
 
+/**
+ * Hosts, without repeats. Two keys from one provider are two endpoints with
+ * the same host, and printing both made the startup line read like a bug.
+ */
+function uniq(hosts: string[]): string[] {
+  return [...new Set(hosts)];
+}
+
 /** Host only — the full URL usually carries a provider API key. */
 function rpcHost(url: string): string {
   try {
@@ -1248,9 +1274,23 @@ function readRpcs(cfg: SnipeConfig): string[] {
  * is the single-key case and the default.
  */
 function scanRpcs(cfg: SnipeConfig): string[] {
-  if (SCAN_ENV_RPCS.length === 0) return readRpcs(cfg);
-  const out = [...SCAN_ENV_RPCS];
-  for (const u of cfg.extraRpcs) if (!out.includes(u)) out.push(u);
+  return layered(SCAN_ENV_RPCS, cfg);
+}
+
+/** Every endpoint a queued mint may arm and broadcast through, best first. */
+function mintRpcs(cfg: SnipeConfig): string[] {
+  return layered(MINT_ENV_RPCS, cfg);
+}
+
+/**
+ * A dedicated list in front, the general one behind, and nothing duplicated.
+ * An empty dedicated list means this job has none of its own and simply uses
+ * the general endpoints — which is the one-key case, and the default.
+ */
+function layered(dedicated: readonly string[], cfg: SnipeConfig): string[] {
+  if (dedicated.length === 0) return readRpcs(cfg);
+  const out = [...dedicated];
+  for (const u of readRpcs(cfg)) if (!out.includes(u)) out.push(u);
   return out;
 }
 
@@ -2428,16 +2468,20 @@ server.listen(PORT, HOST, () => {
     // Which endpoint reads go through, said out loud at startup. A box quietly
     // on the chain's public node — metered, and the cause of every rate limit
     // in today's log — was invisible until something failed because of it.
-    const hosts = readRpcs(cfg).map(rpcHost);
+    const hosts = uniq(readRpcs(cfg).map(rpcHost));
+    const general = MINT_ENV_RPCS.length > 0 ? "wallets and sweeps go" : "reads and mints go";
     log(
       hosts.length > 0
-        ? `mints through ${hosts.join(", ")}`
-        : "mints through the chain's PUBLIC RPC, which meters — set SNIPE_RPCS in snipe.env to use your own",
+        ? `${general} through ${hosts.join(", ")}`
+        : `${general} through the chain's PUBLIC RPC, which meters — set SNIPE_RPCS in snipe.env to use your own`,
     );
     // Only worth a second line when the two are actually different: on one key
     // it would just be the same host twice and read like a misconfiguration.
+    if (MINT_ENV_RPCS.length > 0) {
+      log(`arms and mints through ${uniq(mintRpcs(cfg).map(rpcHost)).join(", ")} — kept to itself`);
+    }
     if (SCAN_ENV_RPCS.length > 0) {
-      log(`scans through ${scanRpcs(cfg).map(rpcHost).join(", ")} — kept off the mint path`);
+      log(`scans through ${uniq(scanRpcs(cfg).map(rpcHost)).join(", ")} — kept off the mint path`);
     }
     // And whether that endpoint can actually serve a scan. The read client is
     // a fallback chain, so an endpoint that refuses every getLogs still leaves

@@ -8,8 +8,14 @@
 # throughput limit is per key, so a calendar refresh on the same key as the
 # mint is spending the same allowance:
 #
-#   bash set-rpc.sh --mint https://…/v2/MINT_KEY
-#   bash set-rpc.sh --scan https://…/v2/SCAN_KEY
+#   bash set-rpc.sh --snipe https://…/v2/SNIPE_KEY   (arming + broadcast only)
+#   bash set-rpc.sh --scan  https://…/v2/SCAN_KEY    (scanner, live, calendar)
+#   bash set-rpc.sh        https://…/v2/GENERAL_KEY  (everything else)
+#
+# The snipe one is the one worth keeping quiet: arming a hundred wallets is a
+# hundred balance reads and a hundred nonce reads down a single endpoint, two
+# minutes before the stage opens. A sweep or a wallet refresh landing on that
+# same key at that moment is what loses the drop.
 #
 # Without this the box reads the chain through its public RPC, which meters:
 # a scan then spends its time being rate-limited and split into ever smaller
@@ -36,15 +42,16 @@ warn() { printf '  \033[33m!\033[0m %s\n' "$*"; }
 die()  { printf '\n\033[31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
 
 VAR=SNIPE_RPCS
-WHAT="mints and reads"
+WHAT="wallets, sweeps, and anything without its own endpoint"
 case "${1:-}" in
-  --mint) VAR=SNIPE_RPCS;      WHAT="mints and reads";                       shift ;;
-  --scan) VAR=SNIPE_SCAN_RPCS; WHAT="scanner, live feed, calendar, profit";  shift ;;
-  --*)    die "unknown option $1 — use --mint or --scan, or neither" ;;
+  --snipe) VAR=SNIPE_MINT_RPCS; WHAT="arming and broadcasting a queued mint";        shift ;;
+  --scan)  VAR=SNIPE_SCAN_RPCS; WHAT="scanner, live feed, calendar, profit report";  shift ;;
+  --mint)  die "renamed: --mint used to mean everything. Use --snipe for the mint path alone, or no flag for the general endpoint" ;;
+  --*)     die "unknown option $1 — use --snipe or --scan, or neither" ;;
 esac
 
 URL="${1:-}"
-[ -n "$URL" ] || die "Usage: bash set-rpc.sh [--mint|--scan] https://your-endpoint/… (comma-separate several, best first)"
+[ -n "$URL" ] || die "Usage: bash set-rpc.sh [--snipe|--scan] https://your-endpoint/… (comma-separate several, best first)"
 
 # ── 1. Is it real, and is it this chain? ────────────────────────────────────
 # Worth one round trip: a typo'd endpoint or one pointed at the wrong network
@@ -90,7 +97,7 @@ if command -v pm2 >/dev/null 2>&1 && pm2 describe snipe-api >/dev/null 2>&1; the
   ok "snipe-api restarted with the new environment"
   sleep 2
   echo
-  pm2 logs snipe-api --lines 60 --nostream 2>/dev/null | grep -iE 'mints through|scans through' | tail -2 \
+  pm2 logs snipe-api --lines 60 --nostream 2>/dev/null | grep -iE 'go through|scans through|mints through|scan endpoint' | tail -4 \
     || warn "no endpoint line in the log yet — run: pm2 logs snipe-api --lines 60"
 else
   warn "pm2 isn't running snipe-api here — start it, or restart it yourself with:"

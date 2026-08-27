@@ -50,6 +50,20 @@ describe("asking an endpoint whether it can serve a scan", () => {
     expect(v.ok).toBe(true);
   });
 
+  it("does not call a bad day a cap", async () => {
+    // The chain's own node answers a wide unfiltered query this way when it is
+    // struggling, and it is the one endpoint here with no range cap at all.
+    // Reading it as a cap had the server accuse the wrong endpoint entirely.
+    const v = await probeLogRange(
+      "https://x/",
+      ADDR,
+      1_000_000n,
+      answering({ error: { message: "internal server errror" } }),
+    );
+    expect(v.ok).toBe(true);
+    expect(v.reason).toBe("internal server errror");
+  });
+
   it("does not accuse an endpoint it could not reach", async () => {
     const dead = (async () => {
       throw new Error("ECONNREFUSED");
