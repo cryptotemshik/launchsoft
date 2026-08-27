@@ -26,6 +26,7 @@ import { setPendingTarget } from "../lib/snipeTarget";
 import { sndFeedTick } from "../lib/sound";
 import Addr from "./Addr";
 import StaleServer from "./StaleServer";
+import WatchButton from "./WatchButton";
 
 interface LiveRow {
   contract: `0x${string}`;
@@ -117,7 +118,13 @@ function Spark({ spark }: { spark: readonly number[] }) {
   );
 }
 
-export default function LiveTab({ onSnipe }: { onSnipe?: (contract: string) => void }) {
+export default function LiveTab({
+  onSnipe,
+  onWatch,
+}: {
+  onSnipe?: (contract: string) => void;
+  onWatch?: () => void;
+}) {
   const { url, setUrl, token, setToken, base, call, save, serverVersion } = useRunnerApi();
   const { urls: customRpcs } = useCustomRpcs();
   const [view, setView] = useState<LiveView | null>(null);
@@ -405,7 +412,7 @@ export default function LiveTab({ onSnipe }: { onSnipe?: (contract: string) => v
                 <col style={{ width: 96 }} />
                 <col style={{ width: 104 }} />
                 <col style={{ width: 118 }} />
-                <col style={{ width: 74 }} />
+                <col style={{ width: 132 }} />
               </colgroup>
               <thead>
                 <tr>
@@ -549,17 +556,28 @@ export default function LiveTab({ onSnipe }: { onSnipe?: (contract: string) => v
                         </span>
                       </td>
                       <td className="num" data-label="">
-                        <button
-                          className="secondary"
-                          style={{ padding: "2px 10px", fontSize: 11, width: "auto" }}
-                          title="Load this collection in the Snipe tab"
-                          onClick={() => {
-                            setPendingTarget(r.contract);
-                            onSnipe?.(r.contract);
-                          }}
-                        >
-                          snipe
-                        </button>
+                        <div className="row-actions">
+                          <button
+                            className="secondary"
+                            style={{ padding: "2px 10px", fontSize: 11, width: "auto" }}
+                            title="Load this collection in the Snipe tab"
+                            onClick={() => {
+                              setPendingTarget(r.contract);
+                              onSnipe?.(r.contract);
+                            }}
+                          >
+                            snipe
+                          </button>
+                          <WatchButton
+                            draft={{
+                              name: r.name ?? r.contract,
+                              contract: r.contract,
+                              twitter: info[r.contract.toLowerCase()]?.twitter,
+                              supply: r.maxSupply,
+                            }}
+                            onAdded={onWatch}
+                          />
+                        </div>
                       </td>
                     </tr>
                   );

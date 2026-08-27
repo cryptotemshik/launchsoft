@@ -275,3 +275,42 @@ describe("buildUpcoming", () => {
     expect("mint" in a && "mint" in b && a.mint.id !== b.mint.id).toBe(true);
   });
 });
+
+describe("buildUpcoming with a contract", () => {
+  const NOW_C = Date.UTC(2026, 7, 27, 12, 0, 0) / 1000;
+  const ADDR = "0xcF541A3DB9328322e8FDAa6381242061D03875B8";
+
+  it("takes a contract alongside a handle", () => {
+    const r = buildUpcoming({ name: "Pipe Dogs", twitter: "@pipedogsnft", contract: ADDR }, NOW_C);
+    expect(r).toMatchObject({ mint: { contract: ADDR.toLowerCase() } });
+  });
+
+  it("accepts a drop that has a contract and no account yet", () => {
+    // The scanner's case: found on-chain before anyone announced it.
+    expect(buildUpcoming({ name: "Unannounced", contract: ADDR }, NOW_C)).toMatchObject({
+      mint: { contract: ADDR.toLowerCase(), twitter: "" },
+    });
+  });
+
+  it("still accepts a drop that has an account and no contract yet", () => {
+    // The bot's case, and the reason this list exists.
+    expect(buildUpcoming({ name: "Rumour", twitter: "someone" }, NOW_C)).toMatchObject({
+      mint: { twitter: "https://x.com/someone", contract: undefined },
+    });
+  });
+
+  it("refuses a drop with neither", () => {
+    expect(buildUpcoming({ name: "Nothing" }, NOW_C)).toHaveProperty("error");
+  });
+
+  it("refuses something that is not an address", () => {
+    expect(buildUpcoming({ name: "X", contract: "0xnope" }, NOW_C)).toHaveProperty("error");
+    expect(buildUpcoming({ name: "X", contract: ADDR.slice(0, -1) }, NOW_C)).toHaveProperty("error");
+  });
+
+  it("stores the address in one case, so two spellings are one drop", () => {
+    const a = buildUpcoming({ name: "X", contract: ADDR }, NOW_C);
+    const b = buildUpcoming({ name: "X", contract: ADDR.toLowerCase() }, NOW_C);
+    expect("mint" in a && "mint" in b && a.mint.contract === b.mint.contract).toBe(true);
+  });
+});

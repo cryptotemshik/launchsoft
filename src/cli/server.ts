@@ -1738,6 +1738,7 @@ const server = createServer(async (req, res) => {
         {
           name: String(body.name ?? ""),
           twitter: String(body.twitter ?? ""),
+          contract: body.contract === undefined ? undefined : String(body.contract),
           supply: body.supply === undefined ? undefined : String(body.supply),
           when: body.when === undefined ? undefined : String(body.when),
         },

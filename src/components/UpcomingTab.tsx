@@ -12,6 +12,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRunnerApi } from "../lib/runnerClient";
 import { sortByDate, twitterHandle, type UpcomingMint } from "../lib/upcoming";
+import { setPendingTarget } from "../lib/snipeTarget";
+import Addr from "./Addr";
 import StaleServer from "./StaleServer";
 
 type SortKey = "date" | "name" | "supply";
@@ -36,7 +38,7 @@ function whenLabel(m: UpcomingMint): string {
   return `${day}, ${d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}`;
 }
 
-export default function UpcomingTab() {
+export default function UpcomingTab({ onSnipe }: { onSnipe?: (contract: string) => void }) {
   const { url, setUrl, token, setToken, base, call, save, serverVersion } = useRunnerApi();
   const [list, setList] = useState<UpcomingMint[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -45,7 +47,7 @@ export default function UpcomingTab() {
   const [desc, setDesc] = useState(false);
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
   const [adding, setAdding] = useState(false);
-  const [draft, setDraft] = useState({ name: "", twitter: "", supply: "", when: "" });
+  const [draft, setDraft] = useState({ name: "", twitter: "", contract: "", supply: "", when: "" });
   const [addError, setAddError] = useState<string | null>(null);
   const [addBusy, setAddBusy] = useState(false);
 
@@ -78,7 +80,7 @@ export default function UpcomingTab() {
         body: JSON.stringify(draft),
       })) as unknown as { upcoming?: UpcomingMint[] };
       setList(Array.isArray(r.upcoming) ? r.upcoming : []);
-      setDraft({ name: "", twitter: "", supply: "", when: "" });
+      setDraft({ name: "", twitter: "", contract: "", supply: "", when: "" });
       setAdding(false);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -152,12 +154,13 @@ export default function UpcomingTab() {
   return (
     <div>
       <div className="panel">
-        <h2>Watchlist — drops with nothing to snipe yet</h2>
+        <h2>Watchlist — drops to come back to</h2>
         <p className="dim" style={{ marginTop: 0 }}>
-          Drops that have a Twitter account and nothing else — no OpenSea page,
-          no contract, nothing to paste into the Snipe tab. Add them from the
-          phone through the Telegram bot, or here when you are at the desk;
-          both go through the same checks and land in the same list.
+          Drops worth coming back to. Some are only an account and a rumour,
+          with no contract to paste anywhere yet; others came from the scanner
+          or the feed and already have one, and those carry a <b>snipe</b>
+          button straight through. Add them from the phone through the Telegram
+          bot, from the rows in Scanner and Live, or by hand here.
         </p>
 
         <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
@@ -206,6 +209,14 @@ export default function UpcomingTab() {
                   placeholder="@pipedogsnft or a link"
                 />
               </div>
+              <div className="field" style={{ gridColumn: "span 2" }}>
+                <label>contract</label>
+                <input
+                  value={draft.contract}
+                  onChange={(e) => setDraft({ ...draft, contract: e.target.value })}
+                  placeholder="0x… if there is one yet"
+                />
+              </div>
               <div className="field">
                 <label>supply</label>
                 <input
@@ -226,7 +237,8 @@ export default function UpcomingTab() {
             </div>
             {addError ? <p className="error">{addError}</p> : null}
             <p className="dim hint" style={{ margin: "6px 0 0" }}>
-              Only the name and the Twitter are needed. A blank date means
+              The name, plus a Twitter or a contract — either is enough to find
+              it again. A blank date means
               &ldquo;not announced&rdquo; — the same as answering TBA in the bot
               — and dates are read the way you would type them: <code>1.9</code>,{" "}
               <code>01.09.2026</code>, either with <code>18:00</code> after it.
@@ -297,11 +309,20 @@ export default function UpcomingTab() {
                     <tr key={m.id} className="project-row">
                       <td data-label="collection">
                         <span className="cell-name">{m.name}</span>
+                        {m.contract ? (
+                          <span className="cell-sub dim">
+                            <Addr value={m.contract} head={8} />
+                          </span>
+                        ) : null}
                       </td>
                       <td data-label="twitter">
-                        <a href={m.twitter} target="_blank" rel="noreferrer">
-                          {twitterHandle(m.twitter)}
-                        </a>
+                        {m.twitter ? (
+                          <a href={m.twitter} target="_blank" rel="noreferrer">
+                            {twitterHandle(m.twitter)}
+                          </a>
+                        ) : (
+                          <span className="faint">—</span>
+                        )}
                       </td>
                       <td className="num" data-label="supply">
                         {m.supply ? m.supply.toLocaleString("en-US") : <span className="dim">?</span>}
@@ -319,14 +340,32 @@ export default function UpcomingTab() {
                         )}
                       </td>
                       <td className="num">
-                        <button
-                          className="secondary"
-                          style={{ padding: "2px 9px", fontSize: 11, width: "auto" }}
-                          disabled={busy}
-                          onClick={() => void remove(m)}
-                        >
-                          remove
-                        </button>
+                        <div className="row-actions">
+                          {/* Only once there is something to aim at. A drop
+                              that is still just an account has nothing the
+                              Snipe tab could read. */}
+                          {m.contract ? (
+                            <button
+                              className="secondary"
+                              style={{ padding: "2px 9px", fontSize: 11, width: "auto" }}
+                              title="Load this collection in the Snipe tab"
+                              onClick={() => {
+                                setPendingTarget(m.contract!);
+                                onSnipe?.(m.contract!);
+                              }}
+                            >
+                              snipe
+                            </button>
+                          ) : null}
+                          <button
+                            className="secondary"
+                            style={{ padding: "2px 9px", fontSize: 11, width: "auto" }}
+                            disabled={busy}
+                            onClick={() => void remove(m)}
+                          >
+                            remove
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   );

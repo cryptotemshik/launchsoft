@@ -17,8 +17,16 @@ export interface UpcomingMint {
   /** Short and stable — it travels in Telegram callback data, capped at 64 bytes. */
   id: string;
   name: string;
-  /** Always a full URL by the time it is stored. */
+  /** Always a full URL by the time it is stored. Empty when only a contract is known. */
   twitter: string;
+  /**
+   * The collection, once there is one.
+   *
+   * Optional because the point of this list is drops that exist as a Twitter
+   * account and nothing else — but a drop found in the scanner already has a
+   * contract, and throwing it away would mean looking it up again later.
+   */
+  contract?: string;
   /** How many NFTs the drop will have. Undefined when nobody has said yet. */
   supply?: number;
   /** Unix seconds of the expected mint. Undefined means "to be announced". */
@@ -167,7 +175,7 @@ export function makeId(seed: string): string {
  * end here.
  */
 export function buildUpcoming(
-  input: { name: string; twitter: string; supply?: string; when?: string },
+  input: { name: string; twitter?: string; contract?: string; supply?: string; when?: string },
   now: number,
   tzOffsetMin = DEFAULT_TZ_OFFSET,
 ): { mint: UpcomingMint } | { error: string } {
@@ -175,8 +183,22 @@ export function buildUpcoming(
   if (!name) return { error: "a name is needed" };
   if (name.length > 80) return { error: "that name is too long" };
 
-  const twitter = normaliseTwitter(input.twitter);
-  if (!twitter) return { error: "that doesn't look like a Twitter handle or link" };
+  const rawTwitter = (input.twitter ?? "").trim();
+  const twitter = (rawTwitter ? normaliseTwitter(rawTwitter) : "") ?? "";
+  if (rawTwitter && !twitter) return { error: "that doesn't look like a Twitter handle or link" };
+
+  const rawContract = (input.contract ?? "").trim();
+  if (rawContract && !/^0x[0-9a-fA-F]{40}$/.test(rawContract)) {
+    return { error: "that doesn't look like a contract address" };
+  }
+  const contract = rawContract ? rawContract.toLowerCase() : undefined;
+
+  // One or the other is enough to find the thing again. Requiring both would
+  // rule out the two cases this list exists for: an account with no contract
+  // yet, and a contract the scanner found before anyone announced it.
+  if (!twitter && !contract) {
+    return { error: "a Twitter handle or a contract address is needed" };
+  }
 
   let supply: number | undefined;
   const raw = (input.supply ?? "").trim();
@@ -195,9 +217,10 @@ export function buildUpcoming(
 
   return {
     mint: {
-      id: makeId(`${twitter}${name}${now}`),
+      id: makeId(`${twitter || contract}${name}${now}`),
       name,
       twitter,
+      contract,
       supply,
       at: when.at,
       dayOnly: when.dayOnly,

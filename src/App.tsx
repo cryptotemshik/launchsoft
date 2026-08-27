@@ -194,9 +194,13 @@ export default function App() {
       {tab === "snipe" ? <SnipeTab /> : null}
       {tab === "serverwallets" ? <ServerWalletsTab /> : null}
       {tab === "funding" ? <FundingTab /> : null}
-      {tab === "upcoming" ? <UpcomingTab /> : null}
-      {tab === "scanner" ? <ScannerTab onSnipe={() => setTab("snipe")} /> : null}
-      {tab === "live" ? <LiveTab onSnipe={() => setTab("snipe")} /> : null}
+      {tab === "upcoming" ? <UpcomingTab onSnipe={() => setTab("snipe")} /> : null}
+      {tab === "scanner" ? (
+        <ScannerTab onSnipe={() => setTab("snipe")} onWatch={() => setTab("upcoming")} />
+      ) : null}
+      {tab === "live" ? (
+        <LiveTab onSnipe={() => setTab("snipe")} onWatch={() => setTab("upcoming")} />
+      ) : null}
       <div className="footer">
         {info.label} · explorer:{" "}
         <a href={info.explorerUrl} target="_blank" rel="noreferrer">

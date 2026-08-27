@@ -33,6 +33,7 @@ import { setPendingTarget } from "../lib/snipeTarget";
 import { sndFeedTick } from "../lib/sound";
 import Addr from "./Addr";
 import StaleServer from "./StaleServer";
+import WatchButton from "./WatchButton";
 
 interface ScanView {
   drops: ScannedDrop[];
@@ -305,7 +306,13 @@ function RiskDetail({
   );
 }
 
-export default function ScannerTab({ onSnipe }: { onSnipe?: (contract: string) => void }) {
+export default function ScannerTab({
+  onSnipe,
+  onWatch,
+}: {
+  onSnipe?: (contract: string) => void;
+  onWatch?: () => void;
+}) {
   const { url, setUrl, token, setToken, base, call, save, serverVersion } = useRunnerApi();
   const { urls: customRpcs } = useCustomRpcs();
   const [rpcNote, setRpcNote] = useState<string | null>(null);
@@ -992,7 +999,7 @@ export default function ScannerTab({ onSnipe }: { onSnipe?: (contract: string) =
                 <col style={{ width: 80 }} />
                 <col style={{ width: 96 }} />
                 <col style={{ width: 82 }} />
-                <col style={{ width: 74 }} />
+                <col style={{ width: 132 }} />
               </colgroup>
               <thead>
                 <tr>
@@ -1256,18 +1263,30 @@ export default function ScannerTab({ onSnipe }: { onSnipe?: (contract: string) =
                         )}
                       </td>
                       <td className="num" data-label="">
-                        <button
-                          className="secondary"
-                          style={{ padding: "2px 10px", fontSize: 11, width: "auto" }}
-                          title="Load this collection in the Snipe tab"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setPendingTarget(d.contract);
-                            onSnipe?.(d.contract);
-                          }}
-                        >
-                          snipe
-                        </button>
+                        <div className="row-actions">
+                          <button
+                            className="secondary"
+                            style={{ padding: "2px 10px", fontSize: 11, width: "auto" }}
+                            title="Load this collection in the Snipe tab"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setPendingTarget(d.contract);
+                              onSnipe?.(d.contract);
+                            }}
+                          >
+                            snipe
+                          </button>
+                          <WatchButton
+                            draft={{
+                              name: d.name ?? d.contract,
+                              contract: d.contract,
+                              twitter: meta?.twitter,
+                              supply: d.maxSupply,
+                              startTime: d.startTime,
+                            }}
+                            onAdded={onWatch}
+                          />
+                        </div>
                       </td>
                     </tr>
                     {open ? (

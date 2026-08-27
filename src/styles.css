@@ -2238,3 +2238,12 @@ button.secondary.link-btn {
     grid-template-columns: minmax(0, 1fr) 96px;
   }
 }
+
+/* Two or three small buttons at the end of a row, wrapping rather than
+   stretching the column. */
+.row-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
