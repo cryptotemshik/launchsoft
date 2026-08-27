@@ -207,6 +207,11 @@ async function readBody(req: IncomingMessage): Promise<Record<string, unknown>> 
  * than one missing a price column, so every failure here is swallowed: the job
  * is queued either way and simply shows less.
  */
+/** What the marketplace lookup has for one contract, if it has landed yet. */
+function creatorsMeta(contract: string) {
+  return lookupCollections("", [contract], 0).known[contract.toLowerCase()];
+}
+
 async function peekDrop(
   collection: `0x${string}`,
   extraRpcs: readonly string[],
@@ -1717,6 +1722,55 @@ const server = createServer(async (req, res) => {
       json(res, 200, {
         ...found,
         twitters: creators.relatedFor(Object.keys(found.known)).twitters,
+      });
+      return;
+    }
+
+    /**
+     * Everything known about one collection, for filling a form in.
+     *
+     * Typing a contract into the watchlist should not then mean typing its
+     * name, supply and handle as well — they are all readable, and the reason
+     * they were being retyped is that nothing had asked for them together.
+     *
+     * The handle comes from the marketplace lookup, which answers in the
+     * background; this waits a few seconds for it rather than making the form
+     * poll, and returns without it if it does not land. A missing handle costs
+     * that field, not the reply.
+     */
+    if (url.pathname === "/api/collection-preview" && req.method === "GET") {
+      const contract = (url.searchParams.get("contract") ?? "").trim();
+      if (!/^0x[0-9a-fA-F]{40}$/.test(contract)) {
+        json(res, 400, { error: "not a contract address" });
+        return;
+      }
+      const cfg = loadConfig(CONFIG_PATH);
+      const info = getChainInfo(cfg.chainId);
+      const addr = contract as `0x${string}`;
+
+      const dropPromise = peekDrop(addr, []);
+      lookupCollections(info?.openSeaSlug ?? "ethereum", [addr], 4, (n: string) => log(n));
+
+      const drop = await dropPromise;
+      let meta = creatorsMeta(addr);
+      for (let i = 0; i < 7 && !meta; i++) {
+        await new Promise((r) => setTimeout(r, 500));
+        meta = creatorsMeta(addr);
+      }
+
+      json(res, 200, {
+        contract: addr,
+        name: drop?.name,
+        maxSupply: drop?.maxSupply,
+        totalSupply: drop?.totalSupply,
+        priceWei: drop?.priceWei,
+        startTime: drop?.startTime,
+        endTime: drop?.endTime,
+        perWallet: drop?.perWallet,
+        twitter: meta?.twitter ?? null,
+        site: meta?.site ?? null,
+        /** False when the chain had nothing configured for this address. */
+        onChain: drop !== undefined,
       });
       return;
     }

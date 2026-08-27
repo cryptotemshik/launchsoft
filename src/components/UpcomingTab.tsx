@@ -30,6 +30,13 @@ function until(at: number, now: number): { label: string; tone: string } {
   return { label: `in ${Math.round(secs / 86_400)} days`, tone: "" };
 }
 
+/** A start time in the format the date parser reads back. */
+function whenInput(at: number): string {
+  const d = new Date(at * 1000);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${p(d.getDate())}.${p(d.getMonth() + 1)}.${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
 function whenLabel(m: UpcomingMint): string {
   if (m.at === undefined) return "not announced";
   const d = new Date(m.at * 1000);
@@ -50,6 +57,8 @@ export default function UpcomingTab({ onSnipe }: { onSnipe?: (contract: string) 
   const [draft, setDraft] = useState({ name: "", twitter: "", contract: "", supply: "", when: "" });
   const [addError, setAddError] = useState<string | null>(null);
   const [addBusy, setAddBusy] = useState(false);
+  const [looking, setLooking] = useState(false);
+  const [found, setFound] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setBusy(true);
@@ -70,6 +79,61 @@ export default function UpcomingTab({ onSnipe }: { onSnipe?: (contract: string) 
       setBusy(false);
     }
   }, [call, save]);
+
+  /**
+   * Fill the form in from the chain once a contract is typed.
+   *
+   * Everything else on the form is readable from the address — the name and
+   * supply from the contract, the start from its public stage, the handle from
+   * the marketplace — so asking for them again is asking someone to copy what
+   * the machine could fetch. Only blank fields are filled: what you have
+   * already typed is what you meant, and an autofill that overwrites it is
+   * worse than none.
+   */
+  useEffect(() => {
+    const c = draft.contract.trim();
+    if (!adding || !base || !token || !/^0x[0-9a-fA-F]{40}$/.test(c)) {
+      setFound(null);
+      return;
+    }
+    let alive = true;
+    const t = setTimeout(async () => {
+      setLooking(true);
+      try {
+        const r = (await call(`/api/collection-preview?contract=${c}`)) as unknown as {
+          name?: string;
+          maxSupply?: string;
+          startTime?: number;
+          twitter?: string | null;
+          onChain?: boolean;
+        };
+        if (!alive) return;
+        setDraft((d) => ({
+          ...d,
+          name: d.name.trim() || r.name || d.name,
+          twitter: d.twitter.trim() || r.twitter || d.twitter,
+          supply: d.supply.trim() || (r.maxSupply && r.maxSupply !== "0" ? r.maxSupply : d.supply),
+          when: d.when.trim() || (r.startTime ? whenInput(r.startTime) : d.when),
+        }));
+        setFound(
+          r.onChain
+            ? `read ${r.name ?? "the collection"}${r.twitter ? ` · @${r.twitter}` : " · no account connected"}`
+            : "nothing configured on-chain for that address yet — fill the rest in by hand",
+        );
+      } catch {
+        if (alive) setFound(null);
+      } finally {
+        if (alive) setLooking(false);
+      }
+    }, 600);
+    return () => {
+      alive = false;
+      clearTimeout(t);
+    };
+    // Only the address drives this: re-running it as the other fields are
+    // typed would fight whoever is typing them.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draft.contract, adding, base, token, call]);
 
   const add = useCallback(async () => {
     setAddBusy(true);
@@ -214,7 +278,7 @@ export default function UpcomingTab({ onSnipe }: { onSnipe?: (contract: string) 
                 <input
                   value={draft.contract}
                   onChange={(e) => setDraft({ ...draft, contract: e.target.value })}
-                  placeholder="0x… if there is one yet"
+                  placeholder="0x… — the rest fills itself in"
                 />
               </div>
               <div className="field">
@@ -235,10 +299,20 @@ export default function UpcomingTab({ onSnipe }: { onSnipe?: (contract: string) 
                 />
               </div>
             </div>
+            {looking ? (
+              <p className="dim" style={{ margin: "6px 0 0" }}>
+                <span className="spin">reading the contract</span>
+              </p>
+            ) : found ? (
+              <p className="ok" style={{ margin: "6px 0 0", fontSize: 12 }}>
+                {found}
+              </p>
+            ) : null}
             {addError ? <p className="error">{addError}</p> : null}
             <p className="dim hint" style={{ margin: "6px 0 0" }}>
               The name, plus a Twitter or a contract — either is enough to find
-              it again. A blank date means
+              it again, and typing a contract fills the rest in from the chain.
+              A blank date means
               &ldquo;not announced&rdquo; — the same as answering TBA in the bot
               — and dates are read the way you would type them: <code>1.9</code>,{" "}
               <code>01.09.2026</code>, either with <code>18:00</code> after it.
