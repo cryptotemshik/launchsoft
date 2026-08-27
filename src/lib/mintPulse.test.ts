@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   concentration,
+  cumulativeFromSpark,
+  sparkline,
+  trendScore,
   mintCurve,
   mintsPerMinute,
   pulseByCollection,
@@ -176,5 +179,64 @@ describe("mintCurve", () => {
 
   it("drops events with no timestamp rather than pinning them to 1970", () => {
     expect(mintCurve([ev({ t: 0 }), ev({ t: 500 })])).toEqual([{ t: 500, cum: 1 }]);
+  });
+});
+
+describe("sparkline", () => {
+  it("buckets by time, oldest first", () => {
+    const spark = sparkline(
+      [ev({ t: NOW - 10, quantity: 7 }), ev({ t: NOW - 3500, quantity: 4 })],
+      NOW,
+      30,
+      120,
+    );
+    expect(spark).toHaveLength(30);
+    expect(spark[29]).toBe(7);
+    expect(spark[0]).toBe(4);
+    expect(spark.reduce((a, b) => a + b, 0)).toBe(11);
+  });
+
+  it("leaves out what falls outside the span entirely", () => {
+    expect(sparkline([ev({ t: NOW - 99_999 }), ev({ t: NOW + 60 })], NOW).every((v) => v === 0))
+      .toBe(true);
+  });
+});
+
+describe("trendScore", () => {
+  it("is zero for a collection nobody is minting", () => {
+    expect(trendScore({ perMin: 0, uniqueness: 1, lastT: NOW }, NOW)).toBe(0);
+  });
+
+  it("discounts a fast drop coming out of one wallet", () => {
+    const many = trendScore({ perMin: 100, uniqueness: 1, lastT: NOW }, NOW);
+    const one = trendScore({ perMin: 100, uniqueness: 0, lastT: NOW }, NOW);
+    expect(one).toBeCloseTo(many / 2, 5);
+  });
+
+  it("treats an unmeasured wallet spread as neither clean nor washed", () => {
+    const unknown = trendScore({ perMin: 100, uniqueness: null, lastT: NOW }, NOW);
+    expect(unknown).toBeGreaterThan(trendScore({ perMin: 100, uniqueness: 0, lastT: NOW }, NOW));
+    expect(unknown).toBeLessThan(trendScore({ perMin: 100, uniqueness: 1, lastT: NOW }, NOW));
+  });
+
+  it("decays as a drop goes quiet", () => {
+    const now = trendScore({ perMin: 50, uniqueness: 1, lastT: NOW }, NOW);
+    const stale = trendScore({ perMin: 50, uniqueness: 1, lastT: NOW - 1200 }, NOW);
+    expect(stale).toBeLessThan(now / 5);
+  });
+});
+
+describe("cumulativeFromSpark", () => {
+  it("accumulates the buckets", () => {
+    expect(cumulativeFromSpark([2, 0, 3, 5])).toEqual([2, 2, 5, 10]);
+  });
+
+  it("stays flat through a quiet stretch after a wall", () => {
+    // The shape worth being able to see: everything in one bucket, nothing after.
+    expect(cumulativeFromSpark([100, 0, 0, 0])).toEqual([100, 100, 100, 100]);
+  });
+
+  it("handles an empty sample", () => {
+    expect(cumulativeFromSpark([])).toEqual([]);
   });
 });

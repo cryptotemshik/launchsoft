@@ -237,3 +237,41 @@ describe("riskBand", () => {
     expect(riskBand(null)).toBe("unknown");
   });
 });
+
+describe("the owner-reuse check", () => {
+  it("warns on a handful of collections from one address", () => {
+    const c = find({ siblings: 2, siblingWindowHours: 24 }, "siblings");
+    expect(c.status).toBe("warn");
+    expect(c.detail).toContain("2 other collections");
+    expect(c.detail).toContain("last 24h");
+  });
+
+  it("fails an address running a production line", () => {
+    expect(find({ siblings: 9, siblingWindowHours: 24 }, "siblings").status).toBe("bad");
+  });
+
+  it("refuses to call zero siblings a clean record", () => {
+    // The honest limit of this check: a six-hour window shows no siblings for
+    // a wallet that has launched forty drops this year. Absence of evidence
+    // must not score as evidence of absence.
+    const c = find({ siblings: 0, siblingWindowHours: 6 }, "siblings");
+    expect(c.status).toBe("info");
+    expect(c.detail).toContain("too short a look");
+  });
+
+  it("is left out entirely when the owner was never read", () => {
+    expect(larpChecks(input()).some((c) => c.id === "siblings")).toBe(false);
+  });
+
+  it("only ever lowers a score, never raises one", () => {
+    const without = larpReport(input({ twitter: "a", followers: 9000, joinedMs: NOW * 1000 - 900 * DAY }));
+    const withClean = larpReport(
+      input({ twitter: "a", followers: 9000, joinedMs: NOW * 1000 - 900 * DAY, siblings: 0 }),
+    );
+    const withSerial = larpReport(
+      input({ twitter: "a", followers: 9000, joinedMs: NOW * 1000 - 900 * DAY, siblings: 8 }),
+    );
+    expect(withClean.score).toBe(without.score);
+    expect(withSerial.score!).toBeLessThan(without.score!);
+  });
+});

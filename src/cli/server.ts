@@ -494,6 +494,76 @@ const PULSE_TTL_MS = 30_000;
 let pulseCache: { at: number; by: Record<string, MintPulse> } | null = null;
 let pulseInflight: Promise<Record<string, MintPulse>> | null = null;
 
+/**
+ * The live feed's rows: what is minting, with enough about each to read.
+ *
+ * A collection minting right now is not necessarily in the scanner's window —
+ * its stage may have been configured days ago — so the names cannot be
+ * borrowed from the scan and are read here. That is one multicall over the
+ * few dozen collections that saw a mint in the hour, which rides on the same
+ * thirty-second cache as the pulse itself.
+ */
+export interface LiveRow {
+  contract: `0x${string}`;
+  name?: string;
+  maxSupply?: number;
+  minted?: number;
+  pulse: MintPulse;
+}
+
+let liveCache: { at: number; rows: LiveRow[] } | null = null;
+let liveInflight: Promise<LiveRow[]> | null = null;
+/** Enriching every quiet collection would be reads spent on empty rows. */
+const LIVE_MAX_ROWS = 60;
+
+async function liveRows(
+  client: Parameters<typeof readMints>[0],
+  tip: bigint,
+  blocksPerHour: number,
+): Promise<LiveRow[]> {
+  if (liveCache && Date.now() - liveCache.at < PULSE_TTL_MS) return liveCache.rows;
+  if (liveInflight) return liveInflight;
+  liveInflight = (async () => {
+    const by = await mintPulse(client, tip, blocksPerHour);
+    const ranked = Object.entries(by)
+      .sort((a, b) => b[1].trend - a[1].trend || b[1].quantity - a[1].quantity)
+      .slice(0, LIVE_MAX_ROWS);
+    const enriched = await enrichDrops(
+      client as never,
+      ranked.map(([contract]) => ({
+        contract: contract as `0x${string}`,
+        priceWei: "0",
+        startTime: 0,
+        endTime: 0,
+        maxPerWallet: 0,
+        feeBps: 0,
+        block: 0,
+      })),
+    );
+    const meta = new Map(enriched.map((e) => [e.contract.toLowerCase(), e]));
+    const rows = ranked.map(([contract, pulse]) => {
+      const m = meta.get(contract);
+      return {
+        contract: contract as `0x${string}`,
+        name: m?.name,
+        maxSupply: m?.maxSupply,
+        minted: m?.minted,
+        pulse,
+      };
+    });
+    liveCache = { at: Date.now(), rows };
+    return rows;
+  })()
+    .catch((e) => {
+      log(`live failed: ${e instanceof Error ? e.message : e}`);
+      return [] as LiveRow[];
+    })
+    .finally(() => {
+      liveInflight = null;
+    });
+  return liveInflight;
+}
+
 async function mintPulse(
   client: Parameters<typeof readMints>[0],
   tip: bigint,
@@ -1513,6 +1583,30 @@ const server = createServer(async (req, res) => {
      * read in the background. The panel asks about the rows on screen and
      * asks again a moment later.
      */
+    /**
+     * What is minting right now, ranked. Same hour of logs the scanner's
+     * columns come from, so asking for both costs one query, not two.
+     */
+    if (url.pathname === "/api/live" && req.method === "GET") {
+      const cfg = loadConfig(CONFIG_PATH);
+      const info = getChainInfo(cfg.chainId);
+      if (!info) throw new Error(`chain ${cfg.chainId} isn't in the registry`);
+      const client = makeReadClient(info.chain, cfg.extraRpcs);
+      const tip = await client.getBlockNumber();
+      if (!blockRate || Date.now() - blockRate.at > BLOCK_RATE_TTL_MS) {
+        blockRate = { at: Date.now(), perHour: await measureBlockRate(client as never, tip) };
+      }
+      json(res, 200, {
+        rows: await liveRows(client as never, tip, blockRate.perHour),
+        hours: PULSE_HOURS,
+        now: Math.floor(Date.now() / 1000),
+        chain: info.label,
+        openSeaSlug: info.openSeaSlug,
+        cachedAt: liveCache?.at,
+      });
+      return;
+    }
+
     if (url.pathname === "/api/collection-info" && req.method === "GET") {
       const contracts = (url.searchParams.get("contracts") ?? "")
         .split(",")

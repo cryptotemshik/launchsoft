@@ -46,6 +46,8 @@ export interface ScannedDrop {
   /** Where the art is served from. Empty string means "not revealed yet". */
   baseURI?: string;
   provenanceHash?: string;
+  /** Who the contract answers to. Lower-cased comparisons only. */
+  owner?: string;
 }
 
 /** What a drop is doing right now. */
@@ -142,6 +144,7 @@ export function mergeScans(
       minted: prev?.minted,
       baseURI: prev?.baseURI,
       provenanceHash: prev?.provenanceHash,
+      owner: prev?.owner,
     });
     fresh.push(d.contract);
   }

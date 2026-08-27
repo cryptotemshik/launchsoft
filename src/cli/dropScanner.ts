@@ -37,10 +37,12 @@ const COLLECTION_ABI = [
   // trip: where the art is served from, and whether it was committed to.
   { type: "function", name: "baseURI", stateMutability: "view", inputs: [], outputs: [{ type: "string" }] },
   { type: "function", name: "provenanceHash", stateMutability: "view", inputs: [], outputs: [{ type: "bytes32" }] },
+  // Who launched it, so serial issuance from one wallet is visible.
+  { type: "function", name: "owner", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
 ] as const;
 
 /** How many calls each collection contributes to a multicall batch. */
-const CALLS_PER_COLLECTION = 5;
+const CALLS_PER_COLLECTION = 6;
 
 /** Below this, splitting costs more round trips than it saves. */
 const MIN_SPAN = 5_000n;
@@ -194,6 +196,7 @@ export async function enrichDrops(
           { address: d.contract, abi: COLLECTION_ABI, functionName: "totalSupply" },
           { address: d.contract, abi: COLLECTION_ABI, functionName: "baseURI" },
           { address: d.contract, abi: COLLECTION_ABI, functionName: "provenanceHash" },
+          { address: d.contract, abi: COLLECTION_ABI, functionName: "owner" },
         ]) as never,
       })) as never;
     } catch {
@@ -224,6 +227,7 @@ export async function enrichDrops(
         // it is kept as "" rather than folded into undefined with the misses.
         baseURI: at(3)?.status === "success" ? String(at(3).result) : undefined,
         provenanceHash: str(4),
+        owner: str(5),
       });
     });
   }

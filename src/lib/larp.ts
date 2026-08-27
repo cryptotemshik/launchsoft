@@ -102,6 +102,13 @@ export interface LarpInput {
   top1?: number;
   /** Seconds since the newest mint, when one has been seen. */
   quietFor?: number | null;
+  /**
+   * Other collections in the scanned window owned by the same address, this
+   * one excluded. Undefined when the owner was not read.
+   */
+  siblings?: number;
+  /** How much history that count was drawn from, for the evidence line. */
+  siblingWindowHours?: number;
   now: number;
 }
 
@@ -263,6 +270,34 @@ export function larpChecks(d: LarpInput): LarpCheck[] {
       detail: `${pct(d.top1)} of the last hour's mints came from one wallet`,
       weight: 2,
     });
+  }
+
+  // ── Who else this address has launched ──────────────────────────────────
+  // Measured on this chain: three of six collections sampled shared a single
+  // owner. Serial issuance is the sharpest thing available here and it costs
+  // nothing — the owner is read in the same batch as the name.
+  if (d.siblings !== undefined) {
+    const window = d.siblingWindowHours ? `the last ${d.siblingWindowHours}h` : "this window";
+    if (d.siblings === 0) {
+      // Deliberately not a pass. A window a few hours wide would show no
+      // siblings for a wallet that has launched forty drops this year, so
+      // absence here is a short lookback, not a clean record.
+      checks.push({
+        id: "siblings",
+        label: "Other drops by this owner",
+        status: "info",
+        detail: `none in ${window} — too short a look to call it a first drop`,
+        weight: 2,
+      });
+    } else {
+      checks.push({
+        id: "siblings",
+        label: "Other drops by this owner",
+        status: d.siblings >= 4 ? "bad" : "warn",
+        detail: `the same address launched ${d.siblings} other collection${d.siblings === 1 ? "" : "s"} in ${window}`,
+        weight: 2,
+      });
+    }
   }
 
   // ── The art ─────────────────────────────────────────────────────────────

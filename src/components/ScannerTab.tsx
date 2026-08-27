@@ -25,7 +25,7 @@ import {
 import { twitterUrl, type CollectionInfo } from "../lib/collectionInfo";
 import { accountAge, compactCount } from "../lib/twitterStats";
 import { larpReport, riskBand, type LarpReport } from "../lib/larp";
-import type { MintPulse } from "../lib/mintPulse";
+import { cumulativeFromSpark, type MintPulse } from "../lib/mintPulse";
 import { openSeaCollectionUrlBySlug } from "../chains";
 import { setPendingTarget } from "../lib/snipeTarget";
 import { sndFeedTick } from "../lib/sound";
@@ -143,8 +143,32 @@ function numberOrUndefined(v: string): number | undefined {
 function fmtRate(perMin: number): string {
   if (perMin <= 0) return "quiet";
   if (perMin < 1) return `${perMin.toFixed(1)}/m`;
-  if (perMin < 100) return `${Math.round(perMin)}/m`;
+  if (perMin < 1000) return `${Math.round(perMin)}/m`;
   return `${(perMin / 1000).toFixed(1)}k/m`;
+}
+
+/**
+ * The shape of the last hour's minting.
+ *
+ * Drawn from the buckets the server already sends, so it costs nothing extra.
+ * The shape is the point: a wall in one bucket and a flat line after it is a
+ * different drop from a steady climb, even when both end at the same supply.
+ */
+function MintCurve({ spark }: { spark: readonly number[] }) {
+  const cum = cumulativeFromSpark(spark);
+  const total = cum[cum.length - 1] ?? 0;
+  if (total <= 0) return null;
+  const W = 240;
+  const H = 54;
+  const step = cum.length > 1 ? W / (cum.length - 1) : W;
+  const pts = cum.map((v, i) => `${(i * step).toFixed(1)},${(H - (v / total) * H).toFixed(1)}`);
+  return (
+    <svg className="mint-curve" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" role="img"
+      aria-label={`${total} minted over the last hour`}>
+      <polyline points={`0,${H} ${pts.join(" ")} ${W},${H}`} className="mc-fill" />
+      <polyline points={pts.join(" ")} className="mc-line" />
+    </svg>
+  );
 }
 
 const STATUS_CLASS: Record<string, string> = {
@@ -198,6 +222,7 @@ function RiskDetail({
       <div className="risk-side">
         {pulse && pulse.txs > 0 ? (
           <>
+            <MintCurve spark={pulse.spark ?? []} />
             <div className="risk-stat">
               <span className="rs-label">minted, last hour</span>
               <span className="rs-value">{pulse.quantity.toLocaleString("en-US")}</span>
@@ -240,6 +265,14 @@ function RiskDetail({
             </a>
           </div>
         ) : null}
+        {drop.owner ? (
+          <div className="risk-stat">
+            <span className="rs-label">owner</span>
+            <span className="rs-value">
+              <Addr value={drop.owner} head={10} />
+            </span>
+          </div>
+        ) : null}
         <div className="risk-stat">
           <span className="rs-label">contract</span>
           <span className="rs-value">
@@ -267,6 +300,9 @@ export default function ScannerTab({ onSnipe }: { onSnipe?: (contract: string) =
   const [minSupply, setMinSupply] = useState("");
   const [maxSupply, setMaxSupply] = useState("");
   const [minPerWallet, setMinPerWallet] = useState("");
+  const [minRisk, setMinRisk] = useState("");
+  const [minFollowers, setMinFollowers] = useState("");
+  const [mintingNow, setMintingNow] = useState(false);
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<SortKey>("start");
   const [desc, setDesc] = useState(false);
@@ -423,6 +459,24 @@ export default function ScannerTab({ onSnipe }: { onSnipe?: (contract: string) =
   }, [view, filter, withTwitter, info, orderAt]);
 
   /**
+   * How many collections in this scan each owner launched.
+   *
+   * Counted across the whole window rather than the filtered rows: the
+   * question is what this address has been doing, and a filter that happens to
+   * hide eleven of its twelve drops must not make the twelfth look like a
+   * one-off.
+   */
+  const ownerCounts = useMemo(() => {
+    const by = new Map<string, number>();
+    for (const d of view?.drops ?? []) {
+      if (!d.owner) continue;
+      const key = d.owner.toLowerCase();
+      by.set(key, (by.get(key) ?? 0) + 1);
+    }
+    return by;
+  }, [view]);
+
+  /**
    * The risk report for every row that survived the filters.
    *
    * Scored here rather than on the server because every input is already in
@@ -459,6 +513,9 @@ export default function ScannerTab({ onSnipe }: { onSnipe?: (contract: string) =
         uniqueness: p ? p.uniqueness : undefined,
         mintTxs: p?.txs,
         top1: p?.top1,
+        // This collection excluded — the question is who else it came with.
+        siblings: d.owner ? Math.max(0, (ownerCounts.get(d.owner.toLowerCase()) ?? 1) - 1) : undefined,
+        siblingWindowHours: view.hours,
         now,
       });
     }
@@ -467,11 +524,32 @@ export default function ScannerTab({ onSnipe }: { onSnipe?: (contract: string) =
     // rebuilding a few hundred reports every second to watch it would be the
     // one thing on this page that is expensive for no reason.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filtered, info, view]);
+  }, [filtered, info, view, ownerCounts]);
+
+  /**
+   * The filters that run on what the browser worked out rather than on what
+   * the chain said. They stack with all the others; they just cannot live in
+   * `applyFilter`, which is pure over a scanned drop and knows nothing about
+   * follower counts or scores.
+   */
+  const visible = useMemo(() => {
+    const risk = numberOrUndefined(minRisk);
+    const followers = numberOrUndefined(minFollowers);
+    if (risk === undefined && followers === undefined && !mintingNow) return filtered;
+    return filtered.filter((d) => {
+      const key = d.contract.toLowerCase();
+      // A row whose score could not be worked out is not a row that scored
+      // badly, so a minimum excludes it rather than passing it silently.
+      if (risk !== undefined && (reports[key]?.score ?? -1) < risk) return false;
+      if (followers !== undefined && (info[key]?.followers ?? -1) < followers) return false;
+      if (mintingNow && !((view?.pulse?.[key]?.perMin ?? 0) > 0)) return false;
+      return true;
+    });
+  }, [filtered, reports, info, view, minRisk, minFollowers, mintingNow]);
 
   const rows = useMemo(() => {
     if (sort === "start") {
-      const s = sortForScan(filtered, orderAt);
+      const s = sortForScan(visible, orderAt);
       return desc ? s.reverse() : s;
     }
     const dir = desc ? -1 : 1;
@@ -479,7 +557,7 @@ export default function ScannerTab({ onSnipe }: { onSnipe?: (contract: string) =
     // unfilled column never floats to the top and looks like a result.
     const at = (d: ScannedDrop) => info[d.contract.toLowerCase()];
     const pulseOf = (d: ScannedDrop) => view?.pulse?.[d.contract.toLowerCase()];
-    return [...filtered].sort((a, b) => {
+    return [...visible].sort((a, b) => {
       if (sort === "name") return dir * (a.name ?? a.contract).localeCompare(b.name ?? b.contract);
       if (sort === "price") return dir * (Number(a.priceWei) - Number(b.priceWei));
       if (sort === "wallet")
@@ -496,7 +574,7 @@ export default function ScannerTab({ onSnipe }: { onSnipe?: (contract: string) =
       }
       return dir * ((a.maxSupply ?? 0) - (b.maxSupply ?? 0));
     });
-  }, [filtered, info, view, reports, sort, desc, orderAt]);
+  }, [visible, info, view, reports, sort, desc, orderAt]);
 
   /**
    * Who the collections on screen are, and what their floors are.
@@ -564,18 +642,24 @@ export default function ScannerTab({ onSnipe }: { onSnipe?: (contract: string) =
     minSupply.trim() !== "" ||
     maxSupply.trim() !== "" ||
     minPerWallet.trim() !== "" ||
+    minRisk.trim() !== "" ||
+    minFollowers.trim() !== "" ||
     search.trim() !== "" ||
     freeOnly ||
-    withTwitter;
+    withTwitter ||
+    mintingNow;
 
   function clearBounds() {
     setMaxPrice("");
     setMinSupply("");
     setMaxSupply("");
     setMinPerWallet("");
+    setMinRisk("");
+    setMinFollowers("");
     setSearch("");
     setFreeOnly(false);
     setWithTwitter(false);
+    setMintingNow(false);
   }
 
   function header(key: SortKey, label: string, className = "") {
@@ -772,6 +856,13 @@ export default function ScannerTab({ onSnipe }: { onSnipe?: (contract: string) =
                 >
                   has twitter
                 </button>
+                <button
+                  className={mintingNow ? "secondary active-chip" : "secondary"}
+                  onClick={() => setMintingNow(!mintingNow)}
+                  title="Only collections that took a mint in the last hour"
+                >
+                  minting now
+                </button>
               </div>
             </div>
 
@@ -809,6 +900,24 @@ export default function ScannerTab({ onSnipe }: { onSnipe?: (contract: string) =
                   inputMode="numeric"
                   value={minPerWallet}
                   onChange={(e) => setMinPerWallet(e.target.value)}
+                  placeholder="any"
+                />
+              </div>
+              <div className="field">
+                <label>risk ≥</label>
+                <input
+                  inputMode="numeric"
+                  value={minRisk}
+                  onChange={(e) => setMinRisk(e.target.value)}
+                  placeholder="any"
+                />
+              </div>
+              <div className="field">
+                <label>followers ≥</label>
+                <input
+                  inputMode="numeric"
+                  value={minFollowers}
+                  onChange={(e) => setMinFollowers(e.target.value)}
                   placeholder="any"
                 />
               </div>

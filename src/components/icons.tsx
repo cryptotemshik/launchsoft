@@ -108,6 +108,13 @@ export const CalendarIcon = (p: SVGProps<SVGSVGElement>) => (
   </svg>
 );
 
+/** A running trace — the live feed, distinct from Status's heartbeat. */
+export const ActivityIcon = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...base(p)}>
+    <polyline points="2 13 6 13 9 5 13 19 16 11 18 13 22 13" />
+  </svg>
+);
+
 export const RadarIcon = (p: SVGProps<SVGSVGElement>) => (
   <svg {...base(p)}>
     <circle cx="12" cy="12" r="9" />

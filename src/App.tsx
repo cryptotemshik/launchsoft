@@ -4,6 +4,7 @@ import ConnectBar from "./components/ConnectBar";
 import DashboardTab from "./components/DashboardTab";
 import UpcomingTab from "./components/UpcomingTab";
 import ScannerTab from "./components/ScannerTab";
+import LiveTab from "./components/LiveTab";
 import LaunchTab from "./components/LaunchTab";
 import RevealTab from "./components/RevealTab";
 import FundingTab from "./components/FundingTab";
@@ -23,6 +24,7 @@ import {
   CalendarIcon,
   KeyIcon,
   RadarIcon,
+  ActivityIcon,
   PulseIcon,
   RocketIcon,
   WalletIcon,
@@ -38,7 +40,8 @@ type Tab =
   | "serverwallets"
   | "funding"
   | "upcoming"
-  | "scanner";
+  | "scanner"
+  | "live";
 
 const TAB_ICON = {
   launch: RocketIcon,
@@ -51,6 +54,7 @@ const TAB_ICON = {
   funding: CoinsIcon,
   upcoming: CalendarIcon,
   scanner: RadarIcon,
+  live: ActivityIcon,
 } as const;
 
 export default function App() {
@@ -87,7 +91,7 @@ export default function App() {
     // The scanner is a ten-column table; every other tab is a form or a short
     // list. Rather than making all of them as wide as the widest, the page
     // widens for the one that needs it.
-    <div className={`app-enter${tab === "scanner" ? " roomy" : ""}`}>
+    <div className={`app-enter${tab === "scanner" || tab === "live" ? " roomy" : ""}`}>
       <ConnectBar
         onHome={() => {
           localStorage.removeItem("launchpad.entered");
@@ -99,6 +103,7 @@ export default function App() {
           ["wallets", "TRACKER"],
           ["upcoming", "UPCOMING"],
           ["scanner", "SCANNER"],
+          ["live", "LIVE"],
         ] as const).map(([t, label]) => {
           const Icon = TAB_ICON[t];
           return (
@@ -194,6 +199,7 @@ export default function App() {
       {tab === "funding" ? <FundingTab /> : null}
       {tab === "upcoming" ? <UpcomingTab /> : null}
       {tab === "scanner" ? <ScannerTab onSnipe={() => setTab("snipe")} /> : null}
+      {tab === "live" ? <LiveTab onSnipe={() => setTab("snipe")} /> : null}
       <div className="footer">
         {info.label} · explorer:{" "}
         <a href={info.explorerUrl} target="_blank" rel="noreferrer">

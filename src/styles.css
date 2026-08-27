@@ -2047,3 +2047,38 @@ button.secondary.link-btn {
     grid-column: 2;
   }
 }
+
+/* The last hour's minting as a shape. Stretched to the panel it sits in, so
+   it reads as a shape rather than a chart to measure things off. */
+.mint-curve {
+  width: 100%;
+  height: 54px;
+  margin-bottom: 6px;
+  overflow: visible;
+}
+.mint-curve .mc-line {
+  fill: none;
+  stroke: var(--green-bright);
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+.mint-curve .mc-fill {
+  fill: rgba(0, 230, 118, 0.12);
+  stroke: none;
+}
+
+/* An hour of minting as thirty bars, scaled to the row's own peak. */
+.spark {
+  display: flex;
+  align-items: flex-end;
+  gap: 1px;
+  height: 26px;
+  width: 100%;
+}
+.spark-bar {
+  flex: 1;
+  min-width: 1px;
+  background: var(--green);
+  opacity: 0.85;
+  border-radius: 1px 1px 0 0;
+}

@@ -129,6 +129,54 @@ export function concentration(events: readonly MintEvent[], top = 10): Concentra
   };
 }
 
+/**
+ * How many buckets the retained hour is cut into, and how wide each is.
+ *
+ * Thirty two-minute buckets: fine enough that a wall of minting in one minute
+ * still reads as a wall, coarse enough that the whole shape fits in a cell
+ * and in a JSON payload repeated across fifty collections.
+ */
+export const SPARK_BUCKETS = 30;
+export const SPARK_BUCKET_SEC = 120;
+
+/** Per-bucket quantities, oldest first, ending at `now`. */
+export function sparkline(
+  events: readonly MintEvent[],
+  now: number,
+  buckets = SPARK_BUCKETS,
+  bucketSec = SPARK_BUCKET_SEC,
+): number[] {
+  const out = new Array<number>(buckets).fill(0);
+  const start = now - buckets * bucketSec;
+  for (const e of events) {
+    if (e.t <= start || e.t > now) continue;
+    const i = Math.min(buckets - 1, Math.floor((e.t - start) / bucketSec));
+    out[i] += e.quantity;
+  }
+  return out;
+}
+
+/**
+ * One number to rank a live feed by.
+ *
+ * Rate is the substance; the rest are discounts on how much to believe it. A
+ * drop minting fast from one wallet is discounted toward half, a drop that has
+ * gone quiet decays away over about ten minutes, and a drop whose uniqueness
+ * nobody could measure yet is treated as neither clean nor washed.
+ *
+ *   score = rate × (0.5 + 0.5 × uniqueness) × e^(−silence / 600)
+ */
+export function trendScore(p: {
+  perMin: number;
+  uniqueness: number | null;
+  lastT: number;
+}, now: number): number {
+  if (p.perMin <= 0) return 0;
+  const believable = 0.5 + 0.5 * (p.uniqueness ?? 0.5);
+  const silence = p.lastT > 0 ? Math.max(0, now - p.lastT) : 0;
+  return p.perMin * believable * Math.exp(-silence / 600);
+}
+
 export interface MintPulse {
   /** NFTs a minute over the trailing 15 minutes. */
   perMin: number;
@@ -145,6 +193,10 @@ export interface MintPulse {
   burst: number;
   /** Unix seconds of the most recent mint seen. */
   lastT: number;
+  /** Quantities per two-minute bucket over the retained hour, oldest first. */
+  spark: number[];
+  /** Ranking number for a live feed; see {@link trendScore}. */
+  trend: number;
 }
 
 /**
@@ -160,16 +212,21 @@ export interface MintPulse {
  */
 export function pulseOf(events: readonly MintEvent[], now: number): MintPulse {
   const c = concentration(events, 5);
+  const perMin = mintsPerMinute(events, now);
+  const uniq = uniqueness(events, now, Infinity);
+  const lastT = events.reduce((m, e) => (e.t > m ? e.t : m), 0);
   return {
-    perMin: mintsPerMinute(events, now),
-    uniqueness: uniqueness(events, now, Infinity),
+    perMin,
+    uniqueness: uniq,
     txs: c.txs,
     quantity: c.quantity,
     wallets: c.wallets,
     top1: c.top1,
     top5: c.top5,
     burst: c.burst,
-    lastT: events.reduce((m, e) => (e.t > m ? e.t : m), 0),
+    lastT,
+    spark: sparkline(events, now),
+    trend: trendScore({ perMin, uniqueness: uniq, lastT }, now),
   };
 }
 
@@ -194,6 +251,20 @@ export interface CurvePoint {
   t: number;
   /** NFTs minted up to and including t. */
   cum: number;
+}
+
+/**
+ * The cumulative shape of a mint, from its buckets.
+ *
+ * Drawn from the sparkline rather than from raw events because the buckets are
+ * what actually crosses the wire — fifty collections' worth of individual
+ * mints would be megabytes, and the shape is the whole point: a wall in one
+ * bucket and a flat line after it is a different drop from a steady climb,
+ * even when both end at the same supply.
+ */
+export function cumulativeFromSpark(spark: readonly number[]): number[] {
+  let cum = 0;
+  return spark.map((q) => (cum += q));
 }
 
 /** The cumulative mint curve, time-sorted and thinned to at most `maxPoints`. */
