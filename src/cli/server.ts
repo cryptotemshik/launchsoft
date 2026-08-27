@@ -36,7 +36,7 @@ import { formatEther, parseEther } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { collect, disperse } from "./funding";
 import { scanChain } from "./holdings";
-import { lookupSocials } from "./socialLookup";
+import { lookupCollections } from "./collectionLookup";
 import { costByCollection, loadMints, recordMint } from "./ledger";
 import {
   blockTimes,
@@ -1414,14 +1414,15 @@ const server = createServer(async (req, res) => {
     }
 
     /**
-     * Who a collection is, as far as anyone off-chain has said.
+     * Who a collection is and what its floor is, as far as anyone off-chain
+     * has said. Neither is on the chain.
      *
      * Answers cost a large page fetch each, so this never blocks on one: it
      * returns what is cached and reports the rest as pending while they are
      * read in the background. The panel asks about the rows on screen and
      * asks again a moment later.
      */
-    if (url.pathname === "/api/socials" && req.method === "GET") {
+    if (url.pathname === "/api/collection-info" && req.method === "GET") {
       const contracts = (url.searchParams.get("contracts") ?? "")
         .split(",")
         .map((c) => c.trim())
@@ -1433,7 +1434,7 @@ const server = createServer(async (req, res) => {
       const cfg = loadConfig(CONFIG_PATH);
       const info = getChainInfo(cfg.chainId);
       json(res, 200, {
-        ...lookupSocials(info?.openSeaSlug ?? "ethereum", contracts.slice(0, 120), 60, (n) =>
+        ...lookupCollections(info?.openSeaSlug ?? "ethereum", contracts.slice(0, 120), 60, (n: string) =>
           log(n),
         ),
       });

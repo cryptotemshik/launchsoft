@@ -1,5 +1,5 @@
 /**
- * Whether a collection has a Twitter account attached to it.
+ * What the marketplace knows about a collection that the chain does not.
  *
  * There is no on-chain answer to this. I looked for one: `contractURI()` is
  * empty on 88 of 90 collections sampled on this chain, and the two that return
@@ -9,9 +9,14 @@
  * link exists is the marketplace the creator connected it on, and reading it
  * means reading OpenSea's page for the collection.
  *
+ * The floor price rides along in the same page, so it costs nothing extra —
+ * one fetch answers both questions. It is genuinely absent on most drops here,
+ * because a collection with no listings has no floor, and that is reported as
+ * absent rather than as zero.
+ *
  * That payload is a large escaped-JSON blob inside a script tag, which is why
- * this is a regex over text rather than a parse: pulling two fields out of two
- * megabytes is not worth reconstructing the document for.
+ * this is a regex over text rather than a parse: pulling a few fields out of
+ * two megabytes is not worth reconstructing the document for.
  *
  * The one rule that matters here is the difference between "no account" and
  * "could not tell". A page that has never heard of `twitterUsername` is not a
@@ -23,14 +28,27 @@
  * signal worth showing.
  */
 
-export interface CollectionSocials {
+/** The cheapest listing, in whatever coin the chain prices in. */
+export interface FloorPrice {
+  unit: number;
+  /** USDG and ETH both occur on this chain — never assume which. */
+  symbol: string;
+  usd: number | null;
+}
+
+export interface CollectionInfo {
   /** Handle without the @, or null when the creator connected nothing. */
   twitter: string | null;
   /** The project's own site, when it has one. */
   site: string | null;
+  /** Null when nothing is listed — which is normal for a drop that is early. */
+  floor: FloorPrice | null;
+  /** Filled in separately, once there is a handle to ask about. */
+  followers?: number;
+  joinedMs?: number;
 }
 
-export const NO_SOCIALS: CollectionSocials = { twitter: null, site: null };
+export const NO_INFO: CollectionInfo = { twitter: null, site: null, floor: null };
 
 /**
  * Where the collection's own social record sits.
@@ -56,12 +74,34 @@ function cleanHandle(raw: string | null | undefined): string | null {
 }
 
 /**
- * The collection's accounts, or null when the page did not say.
+ * The floor, read from the one place the page states it.
+ *
+ * `floorPrice` occurs exactly once per page — measured across collections with
+ * a floor and without — while `bestOffer` occurs fifty times, once per item on
+ * screen. Only the unique one can be attributed to this collection.
+ */
+function parseFloor(html: string): FloorPrice | null {
+  const head = html.match(/\\?"floorPrice\\?"\s*:\s*(\{|null)/);
+  // A collection with nothing listed writes `null` here. Scanning past that
+  // for the next `unit` in the page finds some other record's price and
+  // reports it as a floor of zero — which is what this guard is for.
+  if (!head || head.index === undefined || head[1] !== "{") return null;
+  const at = head.index + head[0].length;
+  const near = html.slice(at, at + 500);
+  const unit = Number(near.match(/\\?"unit\\?"\s*:\s*([0-9.eE+-]+)/)?.[1]);
+  const symbol = near.match(/\\?"symbol\\?"\s*:\s*\\?"([A-Za-z]{1,10})\\?"/)?.[1];
+  if (!Number.isFinite(unit) || !symbol) return null;
+  const usd = Number(near.match(/\\?"usd\\?"\s*:\s*([0-9.eE+-]+)/)?.[1]);
+  return { unit, symbol, usd: Number.isFinite(usd) ? usd : null };
+}
+
+/**
+ * What the page says about this collection, or null when it did not say.
  *
  * Null is the "ask again later" answer; a returned object with a null handle
  * is the "nothing connected" answer. They look alike and mean opposite things.
  */
-export function parseSocials(html: string): CollectionSocials | null {
+export function parseCollectionPage(html: string): CollectionInfo | null {
   const m = html.match(TWITTER);
   if (!m || m.index === undefined) return null;
 
@@ -69,7 +109,7 @@ export function parseSocials(html: string): CollectionSocials | null {
   const near = html.slice(from, m.index + NEARBY);
   const site = near.match(/\\?"externalUrl\\?"\s*:\s*\\?"(https?:[^"\\]{0,300})\\?"/)?.[1];
 
-  return { twitter: cleanHandle(m[1]), site: site ?? null };
+  return { twitter: cleanHandle(m[1]), site: site ?? null, floor: parseFloor(html) };
 }
 
 export function twitterUrl(handle: string): string {

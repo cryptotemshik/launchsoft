@@ -21,7 +21,8 @@ import {
   type DropState,
   type ScannedDrop,
 } from "../lib/dropScan";
-import { twitterUrl, type CollectionSocials } from "../lib/socials";
+import { twitterUrl, type CollectionInfo } from "../lib/collectionInfo";
+import { accountAge, compactCount } from "../lib/twitterStats";
 import { openSeaCollectionUrlBySlug } from "../chains";
 import { setPendingTarget } from "../lib/snipeTarget";
 import { sndFeedTick } from "../lib/sound";
@@ -78,7 +79,7 @@ const STATES: { key: DropState | "all"; label: string }[] = [
   { key: "all", label: "everything" },
 ];
 
-type SortKey = "start" | "name" | "price" | "supply" | "wallet";
+type SortKey = "start" | "name" | "price" | "supply" | "wallet" | "twitter" | "floor";
 
 /**
  * How often the table is allowed to reorder itself.
@@ -138,7 +139,7 @@ export default function ScannerTab({ onSnipe }: { onSnipe?: (contract: string) =
   const [orderAt, setOrderAt] = useState(() => Math.floor(Date.now() / 1000));
   const [every, setEvery] = useState(0);
   const [nextIn, setNextIn] = useState(0);
-  const [socials, setSocials] = useState<Record<string, CollectionSocials>>({});
+  const [info, setInfo] = useState<Record<string, CollectionInfo>>({});
   // Contracts that appeared in the most recent refresh, so a new arrival is
   // visible without hunting for it.
   const [justIn, setJustIn] = useState<Set<string>>(new Set());
@@ -254,24 +255,29 @@ export default function ScannerTab({ onSnipe }: { onSnipe?: (contract: string) =
     // on something read off-chain, and a row whose lookup has not landed yet
     // must not be claimed to have no account.
     if (withTwitter) {
-      filtered = filtered.filter((d) => socials[d.contract.toLowerCase()]?.twitter);
+      filtered = filtered.filter((d) => info[d.contract.toLowerCase()]?.twitter);
     }
     if (sort === "start") {
       const s = sortForScan(filtered, orderAt);
       return desc ? s.reverse() : s;
     }
     const dir = desc ? -1 : 1;
+    // Rows whose lookup has not landed sort as if they had nothing, so an
+    // unfilled column never floats to the top and looks like a result.
+    const at = (d: ScannedDrop) => info[d.contract.toLowerCase()];
     return [...filtered].sort((a, b) => {
       if (sort === "name") return dir * (a.name ?? a.contract).localeCompare(b.name ?? b.contract);
       if (sort === "price") return dir * (Number(a.priceWei) - Number(b.priceWei));
       if (sort === "wallet")
         return dir * ((a.maxPerWallet || Infinity) - (b.maxPerWallet || Infinity));
+      if (sort === "twitter") return dir * ((at(a)?.followers ?? -1) - (at(b)?.followers ?? -1));
+      if (sort === "floor") return dir * ((at(a)?.floor?.unit ?? -1) - (at(b)?.floor?.unit ?? -1));
       return dir * ((a.maxSupply ?? 0) - (b.maxSupply ?? 0));
     });
-  }, [view, filter, withTwitter, socials, sort, desc, orderAt]);
+  }, [view, filter, withTwitter, info, sort, desc, orderAt]);
 
   /**
-   * Who the collections on screen are.
+   * Who the collections on screen are, and what their floors are.
    *
    * Each answer is a two-megabyte page fetch on the server, so this asks only
    * about the rows actually being looked at, and only about the ones it has no
@@ -283,8 +289,13 @@ export default function ScannerTab({ onSnipe }: { onSnipe?: (contract: string) =
       rows
         .slice(0, 40)
         .map((d) => d.contract)
-        .filter((c) => !(c.toLowerCase() in socials)),
-    [rows, socials],
+        .filter((c) => {
+          const have = info[c.toLowerCase()];
+          // A handle whose follower count is still being read counts as
+          // unanswered, so the second half of the cell arrives too.
+          return !have || (have.twitter !== null && have.followers === undefined);
+        }),
+    [rows, info],
   );
 
   useEffect(() => {
@@ -293,13 +304,15 @@ export default function ScannerTab({ onSnipe }: { onSnipe?: (contract: string) =
     let timer: ReturnType<typeof setTimeout>;
     const ask = async (round: number) => {
       try {
-        const r = (await call(`/api/socials?contracts=${wanted.join(",")}`)) as unknown as {
-          known?: Record<string, CollectionSocials>;
+        const r = (await call(
+          `/api/collection-info?contracts=${wanted.join(",")}`,
+        )) as unknown as {
+          known?: Record<string, CollectionInfo>;
           pending?: string[];
         };
         if (!alive) return;
         if (r.known && Object.keys(r.known).length > 0) {
-          setSocials((prev) => ({ ...prev, ...r.known }));
+          setInfo((prev) => ({ ...prev, ...r.known }));
         }
         // Background reads finish in a second or two; a handful of rounds is
         // plenty, and stopping is better than asking forever about a page
@@ -351,7 +364,9 @@ export default function ScannerTab({ onSnipe }: { onSnipe?: (contract: string) =
           if (sort === key) setDesc(!desc);
           else {
             setSort(key);
-            setDesc(key === "supply" || key === "price");
+            // The interesting end differs per column: the biggest supply and
+            // the largest following, but the cheapest floor.
+            setDesc(key === "supply" || key === "price" || key === "twitter");
           }
         }}
       >
@@ -574,20 +589,22 @@ export default function ScannerTab({ onSnipe }: { onSnipe?: (contract: string) =
                   from "1h 00m" to "59m 59s" cannot re-measure the whole table
                   under the reader. */}
               <colgroup>
-                <col style={{ width: 140 }} />
+                <col style={{ width: 124 }} />
                 <col />
-                <col style={{ width: 128 }} />
-                <col style={{ width: 92 }} />
-                <col style={{ width: 104 }} />
-                <col style={{ width: 84 }} />
-                <col style={{ width: 78 }} />
+                <col style={{ width: 130 }} />
+                <col style={{ width: 82 }} />
+                <col style={{ width: 90 }} />
+                <col style={{ width: 100 }} />
+                <col style={{ width: 80 }} />
+                <col style={{ width: 74 }} />
               </colgroup>
               <thead>
                 <tr>
                   {header("start", "opens")}
                   {header("name", "collection")}
-                  <th>twitter</th>
+                  {header("twitter", "twitter")}
                   {header("price", "price", "num")}
+                  {header("floor", "floor", "num")}
                   {header("supply", "supply", "num")}
                   {header("wallet", "per wallet", "num")}
                   <th />
@@ -598,7 +615,7 @@ export default function ScannerTab({ onSnipe }: { onSnipe?: (contract: string) =
                   const st = classify(d, now);
                   const sold = isSoldOut(d);
                   const away = d.startTime ? d.startTime - now : null;
-                  const soc = socials[d.contract.toLowerCase()];
+                  const meta = info[d.contract.toLowerCase()];
                   return (
                     <tr
                       key={d.contract}
@@ -641,44 +658,85 @@ export default function ScannerTab({ onSnipe }: { onSnipe?: (contract: string) =
                         </span>
                       </td>
                       <td data-label="twitter" className="cell-clip">
-                        {soc === undefined ? (
+                        {meta === undefined ? (
                           /* Not looked up yet — which is not the same claim as
                              "has none", so it does not say so. */
                           <span className="faint" title="looking this one up">
                             ···
                           </span>
-                        ) : soc.twitter ? (
-                          <a
-                            className="cell-name tw-handle"
-                            href={twitterUrl(soc.twitter)}
-                            target="_blank"
-                            rel="noreferrer"
-                            title={`@${soc.twitter}`}
-                          >
-                            @{soc.twitter}
-                          </a>
+                        ) : meta.twitter ? (
+                          <>
+                            <a
+                              className="cell-name tw-handle"
+                              href={twitterUrl(meta.twitter)}
+                              target="_blank"
+                              rel="noreferrer"
+                              title={`@${meta.twitter}`}
+                            >
+                              @{meta.twitter}
+                            </a>
+                            <span className="cell-sub dim">
+                              {meta.followers === undefined ? (
+                                <span className="faint">···</span>
+                              ) : (
+                                <>
+                                  {/* A handle says nothing on its own; these
+                                      two numbers are what it is read for. */}
+                                  <span className={meta.followers < 100 ? "warn" : ""}>
+                                    {compactCount(meta.followers)}
+                                  </span>{" "}
+                                  followers
+                                  {meta.joinedMs
+                                    ? ` · ${accountAge(meta.joinedMs, now * 1000)}`
+                                    : ""}
+                                </>
+                              )}
+                            </span>
+                          </>
                         ) : (
-                          <span className="faint" title="no account connected on OpenSea">
-                            —
-                          </span>
+                          <>
+                            <span className="faint" title="no account connected on OpenSea">
+                              —
+                            </span>
+                            {meta.site ? (
+                              <a
+                                className="cell-sub dim"
+                                href={meta.site}
+                                target="_blank"
+                                rel="noreferrer"
+                                title={meta.site}
+                              >
+                                {meta.site.replace(/^https?:\/\/(www\.)?/, "").replace(/\/$/, "")}
+                              </a>
+                            ) : null}
+                          </>
                         )}
-                        {soc?.site ? (
-                          <a
-                            className="cell-sub dim"
-                            href={soc.site}
-                            target="_blank"
-                            rel="noreferrer"
-                            title={soc.site}
-                          >
-                            {soc.site.replace(/^https?:\/\/(www\.)?/, "").replace(/\/$/, "")}
-                          </a>
-                        ) : null}
                       </td>
                       <td className="num" data-label="price">
                         {BigInt(d.priceWei) === 0n ? (
                           <span className="ok">free</span>
                         ) : (
                           formatEther(BigInt(d.priceWei))
+                        )}
+                      </td>
+                      <td className="num" data-label="floor">
+                        {meta === undefined ? (
+                          <span className="faint">···</span>
+                        ) : meta.floor ? (
+                          <>
+                            <span className="cell-name">
+                              {meta.floor.unit} <span className="dim">{meta.floor.symbol}</span>
+                            </span>
+                            {meta.floor.usd !== null ? (
+                              <span className="cell-sub dim">${meta.floor.usd.toFixed(2)}</span>
+                            ) : null}
+                          </>
+                        ) : (
+                          /* No listings yet, which is normal for a drop this
+                             early — and very different from a floor of zero. */
+                          <span className="faint" title="nothing listed yet">
+                            —
+                          </span>
                         )}
                       </td>
                       <td className="num" data-label="supply">
