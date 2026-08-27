@@ -103,16 +103,18 @@ describe("concentration", () => {
 });
 
 describe("pulseOf", () => {
-  it("judges the wallet spread over the whole sample, not just the live minutes", () => {
+  it("judges the wallet spread over the whole sample, whatever the rate says", () => {
     // The case that caught this: a collection that took ten thousand mints
-    // earlier in the hour and has since gone quiet. Its rate is rightly zero;
-    // its uniqueness is the most useful thing known about it.
+    // earlier in the hour and has since gone quiet. Ask for the last five
+    // minutes and its rate is rightly zero — but the evidence about who was
+    // minting is the most useful thing known about it, and it survives.
     const done = Array.from({ length: 40 }, (_, i) =>
       ev({ minter: `0x${String(i).padStart(40, "c")}`, t: NOW - 2400 - i }),
     );
-    const p = pulseOf(done, NOW);
-    expect(p.perMin).toBe(0);
-    expect(p.uniqueness).toBe(1);
+    expect(pulseOf(done, NOW, { spanSec: 300 })).toMatchObject({ perMin: 0, uniqueness: 1 });
+    // Over the hour it happened in, it is not quiet — that is the same data
+    // answering a different question, which is why the window is a choice.
+    expect(pulseOf(done, NOW, { spanSec: 3600 }).perMin).toBeGreaterThan(0);
   });
 
   it("puts the rate and the wallet spread side by side", () => {
@@ -238,5 +240,35 @@ describe("cumulativeFromSpark", () => {
 
   it("handles an empty sample", () => {
     expect(cumulativeFromSpark([])).toEqual([]);
+  });
+});
+
+describe("the chosen window", () => {
+  it("measures the rate over the span asked for, not a fixed one", () => {
+    // Five mints in the last five minutes is one a minute over five minutes
+    // and a third of that over fifteen. Both are true; only one answers
+    // "what is happening right now".
+    const recent = Array.from({ length: 5 }, (_, i) => ev({ t: NOW - i * 60, quantity: 1 }));
+    expect(pulseOf(recent, NOW, { spanSec: 300 }).perMin).toBeCloseTo(1, 5);
+    expect(pulseOf(recent, NOW, { spanSec: 900 }).perMin).toBeCloseTo(1 / 3, 5);
+  });
+
+  it("keeps the sparkline the same width whatever the span", () => {
+    // Thirty bars of two minutes for an hour, thirty of ten seconds for five
+    // minutes — the shape stays comparable across windows.
+    for (const spanSec of [300, 900, 3600, 86_400]) {
+      expect(pulseOf(spread(20), NOW, { spanSec }).spark).toHaveLength(30);
+    }
+  });
+
+  it("puts a mint in the right bucket for a short window", () => {
+    const p = pulseOf([ev({ t: NOW - 5, quantity: 3 })], NOW, { spanSec: 300 });
+    expect(p.spark[29]).toBe(3);
+    expect(p.spark.slice(0, 29).every((v) => v === 0)).toBe(true);
+  });
+
+  it("carries the window through to every collection", () => {
+    const out = pulseByCollection(spread(5), NOW, { spanSec: 300 });
+    expect(out[C].perMin).toBeCloseTo(1, 5);
   });
 });

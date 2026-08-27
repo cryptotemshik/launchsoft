@@ -79,6 +79,26 @@ const log = (msg: string) => console.log(`[${stamp()}] ${msg}`);
 const PORT = Number(process.env.SNIPE_PORT ?? 8787);
 const HOST = process.env.SNIPE_HOST ?? "127.0.0.1";
 const TOKEN = process.env.SNIPE_TOKEN ?? "";
+/**
+ * A second token that can only look.
+ *
+ * The main token is the box: with it you can fire, fund, add wallets and read
+ * the tunnel URL. Handing that to a friend so they can watch the mint feed
+ * would hand them the wallets too, so watching gets its own credential and a
+ * fixed list of routes it may reach. Unset by default — sharing is something
+ * you turn on, not something that is on until you notice.
+ */
+const VIEW_TOKEN = process.env.SNIPE_VIEW_TOKEN ?? "";
+
+/**
+ * Everything a view token may reach, and nothing else.
+ *
+ * An allowlist rather than a blocklist, and GET-only, because the failure mode
+ * of getting this wrong is somebody else's money. `/api/rpcs` is deliberately
+ * absent even though it is small and useful: it would let a viewer point the
+ * server's reads at a node they control.
+ */
+const VIEW_PATHS = new Set(["/api/live", "/api/scan", "/api/collection-info"]);
 /** Comma-separated list; "*" allows any origin (only sane behind a tunnel + token). */
 const ORIGINS = (process.env.SNIPE_ORIGINS ?? "*").split(",").map((s) => s.trim());
 const CONFIG_PATH = process.env.SNIPE_CONFIG ?? "snipe.config.json";
@@ -158,13 +178,23 @@ const jobs: Job[] = [];
 /** At most one job may be armed/firing — see the nonce note in the header. */
 let activeJobId: string | null = null;
 
-function tokenOk(header: string | undefined): boolean {
+function matches(header: string | undefined, secret: string): boolean {
+  if (!secret) return false;
   const given = (header ?? "").replace(/^Bearer\s+/i, "");
   const a = Buffer.from(given);
-  const b = Buffer.from(TOKEN);
+  const b = Buffer.from(secret);
   // timingSafeEqual throws on length mismatch, so equalise first.
   if (a.length !== b.length) return false;
   return timingSafeEqual(a, b);
+}
+
+function tokenOk(header: string | undefined): boolean {
+  return matches(header, TOKEN);
+}
+
+/** A viewer may read the market data routes, and only by GET. */
+function viewOk(header: string | undefined, method: string | undefined, path: string): boolean {
+  return matches(header, VIEW_TOKEN) && method === "GET" && VIEW_PATHS.has(path);
 }
 
 function cors(req: IncomingMessage, res: ServerResponse) {
@@ -502,8 +532,25 @@ const creators = new CreatorIndex();
 
 const PULSE_HOURS = 1;
 const PULSE_TTL_MS = 30_000;
-let pulseCache: { at: number; by: Record<string, MintPulse> } | null = null;
-let pulseInflight: Promise<Record<string, MintPulse>> | null = null;
+/**
+ * The windows the live feed offers, in minutes.
+ *
+ * A day of this chain is around a hundred thousand mints, which the splitting
+ * reader can fetch but which is a different kind of question from "what is
+ * happening right now" — so both ends are offered and the caller picks.
+ */
+const LIVE_WINDOWS = [5, 15, 60, 240, 1440] as const;
+const DEFAULT_LIVE_MINUTES = 15;
+
+function nearestWindow(minutes: number): number {
+  return LIVE_WINDOWS.reduce((best, w) =>
+    Math.abs(w - minutes) < Math.abs(best - minutes) ? w : best,
+  );
+}
+
+/** Keyed by window: a five-minute read and a daily one are different answers. */
+const pulseCache = new Map<number, { at: number; by: Record<string, MintPulse> }>();
+const pulseInflight = new Map<number, Promise<Record<string, MintPulse>>>();
 /**
  * Why the last read of the mint feed failed, if it did.
  *
@@ -532,8 +579,8 @@ export interface LiveRow {
   pulse: MintPulse;
 }
 
-let liveCache: { at: number; rows: LiveRow[] } | null = null;
-let liveInflight: Promise<LiveRow[]> | null = null;
+const liveCache = new Map<number, { at: number; rows: LiveRow[] }>();
+const liveInflight = new Map<number, Promise<LiveRow[]>>();
 /** Enriching every quiet collection would be reads spent on empty rows. */
 const LIVE_MAX_ROWS = 60;
 
@@ -541,11 +588,15 @@ async function liveRows(
   client: Parameters<typeof readMints>[0],
   tip: bigint,
   blocksPerHour: number,
+  minutes: number,
 ): Promise<LiveRow[]> {
-  if (liveCache && Date.now() - liveCache.at < PULSE_TTL_MS) return liveCache.rows;
-  if (liveInflight) return liveInflight;
-  liveInflight = (async () => {
-    const by = await mintPulse(client, tip, blocksPerHour);
+  const hit = liveCache.get(minutes);
+  if (hit && Date.now() - hit.at < PULSE_TTL_MS) return hit.rows;
+  const flying = liveInflight.get(minutes);
+  if (flying) return flying;
+
+  const run = (async () => {
+    const by = await mintPulse(client, tip, blocksPerHour, minutes);
     const ranked = Object.entries(by)
       .sort((a, b) => b[1].trend - a[1].trend || b[1].quantity - a[1].quantity)
       .slice(0, LIVE_MAX_ROWS);
@@ -561,10 +612,10 @@ async function liveRows(
         block: 0,
       })),
     );
-    const meta = new Map(enriched.map((e) => [e.contract.toLowerCase(), e]));
     for (const e of enriched) {
       creators.remember({ contract: e.contract, name: e.name, owner: e.owner });
     }
+    const meta = new Map(enriched.map((e) => [e.contract.toLowerCase(), e]));
     const rows = ranked.map(([contract, pulse]) => {
       const m = meta.get(contract);
       return {
@@ -576,7 +627,7 @@ async function liveRows(
         pulse,
       };
     });
-    liveCache = { at: Date.now(), rows };
+    liveCache.set(minutes, { at: Date.now(), rows });
     return rows;
   })()
     .catch((e) => {
@@ -585,29 +636,37 @@ async function liveRows(
       return [] as LiveRow[];
     })
     .finally(() => {
-      liveInflight = null;
+      liveInflight.delete(minutes);
     });
-  return liveInflight;
+
+  liveInflight.set(minutes, run);
+  return run;
 }
 
 async function mintPulse(
   client: Parameters<typeof readMints>[0],
   tip: bigint,
   blocksPerHour: number,
+  minutes = 60,
 ): Promise<Record<string, MintPulse>> {
-  if (pulseCache && Date.now() - pulseCache.at < PULSE_TTL_MS) return pulseCache.by;
-  if (pulseInflight) return pulseInflight;
-  pulseInflight = (async () => {
-    const span = blocksForHours(PULSE_HOURS, blocksPerHour);
+  const hit = pulseCache.get(minutes);
+  if (hit && Date.now() - hit.at < PULSE_TTL_MS) return hit.by;
+  const flying = pulseInflight.get(minutes);
+  if (flying) return flying;
+
+  const run = (async () => {
+    const span = blocksForHours(minutes / 60, blocksPerHour);
     const events = await readMints(client, {
       fromBlock: tip > span ? tip - span : 0n,
       toBlock: tip,
       onNote: (n) => log(`pulse: ${n}`),
     });
     pulseError = null;
-    const by = pulseByCollection(events, Math.floor(Date.now() / 1000));
-    pulseCache = { at: Date.now(), by };
-    log(`pulse: ${events.length} mints across ${Object.keys(by).length} collections`);
+    const by = pulseByCollection(events, Math.floor(Date.now() / 1000), {
+      spanSec: minutes * 60,
+    });
+    pulseCache.set(minutes, { at: Date.now(), by });
+    log(`pulse: ${events.length} mints across ${Object.keys(by).length} collections in ${minutes}m`);
     return by;
   })()
     .catch((e) => {
@@ -619,9 +678,11 @@ async function mintPulse(
       return {} as Record<string, MintPulse>;
     })
     .finally(() => {
-      pulseInflight = null;
+      pulseInflight.delete(minutes);
     });
-  return pulseInflight;
+
+  pulseInflight.set(minutes, run);
+  return run;
 }
 
 async function startScan(hours: number): Promise<Record<string, unknown>> {
@@ -699,7 +760,7 @@ async function startScan(hours: number): Promise<Record<string, unknown>> {
     }
 
     const [pulse, nativeUsdRate] = await Promise.all([
-      mintPulse(client as never, tip, blocksPerHour),
+      mintPulse(client as never, tip, blocksPerHour, PULSE_HOURS * 60),
       nativeUsd(info.blockscoutApi),
     ]);
 
@@ -1443,7 +1504,8 @@ const server = createServer(async (req, res) => {
     return;
   }
 
-  if (!tokenOk(req.headers.authorization)) {
+  const full = tokenOk(req.headers.authorization);
+  if (!full && !viewOk(req.headers.authorization, req.method, url.pathname)) {
     json(res, 401, { error: "bad or missing token" });
     return;
   }
@@ -1461,6 +1523,11 @@ const server = createServer(async (req, res) => {
         // Hosts only — the full URLs carry provider API keys.
         tunnelUrl,
         rpcHosts: cfg.extraRpcs.map(rpcHost),
+        /**
+         * Handed only to a full-token caller — it is what a share link is
+         * built from, and only the owner should be able to build one.
+         */
+        viewToken: VIEW_TOKEN || null,
         readRpc: info ? rpcHost(readRpc(cfg, info)) : null,
         jobs: jobs.map(jobView),
       });
@@ -1639,19 +1706,23 @@ const server = createServer(async (req, res) => {
       if (!blockRate || Date.now() - blockRate.at > BLOCK_RATE_TTL_MS) {
         blockRate = { at: Date.now(), perHour: await measureBlockRate(client as never, tip) };
       }
-      const rows = await liveRows(client as never, tip, blockRate.perHour);
+      const minutes = nearestWindow(
+        Number(url.searchParams.get("minutes") ?? DEFAULT_LIVE_MINUTES) || DEFAULT_LIVE_MINUTES,
+      );
+      const rows = await liveRows(client as never, tip, blockRate.perHour, minutes);
       json(res, 200, {
         rows,
+        minutes,
+        windows: LIVE_WINDOWS,
         error: pulseError,
         readRpc: rpcHost(readRpc(cfg, info)),
         publicRpc: cfg.extraRpcs.length === 0,
         related: creators.relatedFor(rows.map((r) => r.contract)),
         knownCollections: creators.size,
-        hours: PULSE_HOURS,
         now: Math.floor(Date.now() / 1000),
         chain: info.label,
         openSeaSlug: info.openSeaSlug,
-        cachedAt: liveCache?.at,
+        cachedAt: liveCache.get(minutes)?.at,
       });
       return;
     }

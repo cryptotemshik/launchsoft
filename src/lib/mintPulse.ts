@@ -45,6 +45,13 @@ export function mintsPerMinute(
   return (qty * 60) / windowSec;
 }
 
+/** How the pulse is measured: the span it covers, and how finely. */
+export interface PulseWindow {
+  /** Seconds of history the sample covers. */
+  spanSec: number;
+  buckets?: number;
+}
+
 /**
  * Distinct wallets ÷ mint transactions, or null when there is nothing to
  * judge from.
@@ -210,9 +217,17 @@ export interface MintPulse {
  * being thrown away. The rate has to be recent to mean anything. The evidence
  * does not.
  */
-export function pulseOf(events: readonly MintEvent[], now: number): MintPulse {
+export function pulseOf(
+  events: readonly MintEvent[],
+  now: number,
+  window: PulseWindow = { spanSec: 3600 },
+): MintPulse {
+  const buckets = window.buckets ?? SPARK_BUCKETS;
   const c = concentration(events, 5);
-  const perMin = mintsPerMinute(events, now);
+  // The rate is measured over the window that was asked for. Picking "last
+  // five minutes" and being shown a fifteen-minute average would answer a
+  // question nobody asked.
+  const perMin = mintsPerMinute(events, now, window.spanSec);
   const uniq = uniqueness(events, now, Infinity);
   const lastT = events.reduce((m, e) => (e.t > m ? e.t : m), 0);
   return {
@@ -225,7 +240,7 @@ export function pulseOf(events: readonly MintEvent[], now: number): MintPulse {
     top5: c.top5,
     burst: c.burst,
     lastT,
-    spark: sparkline(events, now),
+    spark: sparkline(events, now, buckets, Math.max(1, Math.round(window.spanSec / buckets))),
     trend: trendScore({ perMin, uniqueness: uniq, lastT }, now),
   };
 }
@@ -234,6 +249,7 @@ export function pulseOf(events: readonly MintEvent[], now: number): MintPulse {
 export function pulseByCollection(
   events: readonly MintEvent[],
   now: number,
+  window: PulseWindow = { spanSec: 3600 },
 ): Record<string, MintPulse> {
   const by = new Map<string, MintEvent[]>();
   for (const e of events) {
@@ -243,7 +259,7 @@ export function pulseByCollection(
     else by.set(key, [e]);
   }
   const out: Record<string, MintPulse> = {};
-  for (const [key, list] of by) out[key] = pulseOf(list, now);
+  for (const [key, list] of by) out[key] = pulseOf(list, now, window);
   return out;
 }
 

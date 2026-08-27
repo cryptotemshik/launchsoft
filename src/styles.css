@@ -2185,3 +2185,77 @@ button.secondary.link-btn {
 .add-upcoming .filter-grid {
   margin-top: 0;
 }
+
+/* ── The server's wallets ────────────────────────────────────────────────
+   A summary that opens. A hundred addresses in a flat list pushes the rest of
+   the page out of reach, and the thing worth seeing without opening anything
+   is the count and how many can afford the mint. */
+.wallet-summary {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  text-align: left;
+  font-size: 12px;
+  padding: 9px 12px;
+}
+.wallet-list {
+  margin-top: 8px;
+  /* Scrolls at about a dozen rows: enough to scan, bounded so a thousand
+     wallets cost the same screen as ten. */
+  max-height: 300px;
+  overflow-y: auto;
+  border: 1px solid var(--border-dim);
+  border-radius: var(--radius);
+}
+.wallet-line {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 110px 84px 96px;
+  gap: 10px;
+  align-items: baseline;
+  padding: 6px 10px;
+  font-size: 12px;
+  border-bottom: 1px solid var(--border-dim);
+}
+.wallet-line:last-child {
+  border-bottom: none;
+}
+.wallet-line:nth-child(odd) {
+  background: rgba(255, 255, 255, 0.015);
+}
+.wallet-line .wl-addr {
+  font-family: var(--mono);
+}
+.wallet-line > span:last-child {
+  text-align: right;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 640px) {
+  .wallet-line {
+    grid-template-columns: minmax(0, 1fr) 96px;
+  }
+}
+
+/* The share link, with room to read the whole thing before sending it. */
+.share-note {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  font-size: 12px;
+}
+.share-link {
+  display: block;
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: var(--radius);
+  background: var(--panel);
+  font-family: var(--mono);
+  font-size: 11px;
+  word-break: break-all;
+  color: var(--green-bright);
+}

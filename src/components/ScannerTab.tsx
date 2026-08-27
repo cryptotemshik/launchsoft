@@ -30,6 +30,7 @@ import { reuseBand, type IndexedCollection } from "../lib/creatorIndex";
 import RelatedPopover, { ReuseBadge, anchorFrom, useRelated } from "./RelatedPopover";
 import { openSeaCollectionUrlBySlug } from "../chains";
 import { setPendingTarget } from "../lib/snipeTarget";
+import { isSharedView } from "../lib/shareLink";
 import { sndFeedTick } from "../lib/sound";
 import Addr from "./Addr";
 import StaleServer from "./StaleServer";
@@ -308,6 +309,7 @@ function RiskDetail({
 export default function ScannerTab({ onSnipe }: { onSnipe?: (contract: string) => void }) {
   const { url, setUrl, token, setToken, base, call, save, serverVersion } = useRunnerApi();
   const { urls: customRpcs } = useCustomRpcs();
+  const guest = isSharedView();
   const [rpcNote, setRpcNote] = useState<string | null>(null);
   const [view, setView] = useState<ScanView | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -726,26 +728,28 @@ export default function ScannerTab({ onSnipe }: { onSnipe?: (contract: string) =
           the ones still ahead get their name and supply filled in.
         </p>
 
-        <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
-          <div className="field" style={{ flex: 2, minWidth: 200 }}>
-            <label>server URL</label>
-            <input
-              value={url}
-              onChange={(e) => setUrl(e.target.value)}
-              placeholder="https://your-tunnel.trycloudflare.com"
-            />
+        {guest ? null : (
+          <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
+            <div className="field" style={{ flex: 2, minWidth: 200 }}>
+              <label>server URL</label>
+              <input
+                value={url}
+                onChange={(e) => setUrl(e.target.value)}
+                placeholder="https://your-tunnel.trycloudflare.com"
+              />
+            </div>
+            <div className="field" style={{ flex: 1, minWidth: 160 }}>
+              <label>token</label>
+              <input
+                type="password"
+                value={token}
+                onChange={(e) => setToken(e.target.value)}
+                placeholder="SNIPE_TOKEN"
+                autoComplete="off"
+              />
+            </div>
           </div>
-          <div className="field" style={{ flex: 1, minWidth: 160 }}>
-            <label>token</label>
-            <input
-              type="password"
-              value={token}
-              onChange={(e) => setToken(e.target.value)}
-              placeholder="SNIPE_TOKEN"
-              autoComplete="off"
-            />
-          </div>
-        </div>
+        )}
 
         {/* How much chain to read. Nothing here changes what is shown — only
             what has been fetched — which is why it sits apart from the filters

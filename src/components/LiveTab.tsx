@@ -21,6 +21,7 @@ import { reuseBand, type IndexedCollection } from "../lib/creatorIndex";
 import { twitterUrl, type CollectionInfo } from "../lib/collectionInfo";
 import { compactCount } from "../lib/twitterStats";
 import RelatedPopover, { ReuseBadge, anchorFrom, useRelated } from "./RelatedPopover";
+import { buildShareLink, isSharedView } from "../lib/shareLink";
 import { openSeaCollectionUrlBySlug } from "../chains";
 import { setPendingTarget } from "../lib/snipeTarget";
 import { sndFeedTick } from "../lib/sound";
@@ -38,7 +39,8 @@ interface LiveRow {
 
 interface LiveView {
   rows: LiveRow[];
-  hours: number;
+  /** The window this answer covers, in minutes. */
+  minutes: number;
   now: number;
   chain: string;
   openSeaSlug?: string;
@@ -56,6 +58,26 @@ const INTERVALS = [
   { secs: 30, label: "30s" },
   { secs: 60, label: "1m" },
 ] as const;
+
+/**
+ * How much history a row is judged on.
+ *
+ * Five minutes answers "what is happening right now"; a day answers "what
+ * happened today", and a collection that took ten thousand mints this morning
+ * looks quiet in the first and enormous in the second. Both are true, which is
+ * why it is a choice rather than a constant.
+ */
+const WINDOWS = [
+  { minutes: 5, label: "5m" },
+  { minutes: 15, label: "15m" },
+  { minutes: 60, label: "1h" },
+  { minutes: 240, label: "4h" },
+  { minutes: 1440, label: "24h" },
+] as const;
+
+function windowLabel(minutes: number | undefined): string {
+  return WINDOWS.find((w) => w.minutes === minutes)?.label ?? `${minutes ?? "?"}m`;
+}
 
 type SortKey = "trend" | "rate" | "unique" | "minted" | "left";
 
@@ -98,11 +120,16 @@ function Spark({ spark }: { spark: readonly number[] }) {
 
 export default function LiveTab({ onSnipe }: { onSnipe?: (contract: string) => void }) {
   const { url, setUrl, token, setToken, base, call, save, serverVersion } = useRunnerApi();
+  // A guest arrived through a link: the connection is already made for them,
+  // and the credential they hold cannot build another link anyway.
+  const guest = isSharedView();
   const { urls: customRpcs } = useCustomRpcs();
   const [view, setView] = useState<LiveView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [every, setEvery] = useState(30);
+  const [minutes, setMinutes] = useState(15);
+  const [share, setShare] = useState<{ link?: string; note: string } | null>(null);
   const [nextIn, setNextIn] = useState(0);
   const [sort, setSort] = useState<SortKey>("trend");
   const [hideWash, setHideWash] = useState(false);
@@ -113,12 +140,12 @@ export default function LiveTab({ onSnipe }: { onSnipe?: (contract: string) => v
   const seen = useRef<Set<string> | null>(null);
   const related = useRelated();
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (mins: number) => {
     setBusy(true);
     setError(null);
     try {
       save();
-      const r = (await call("/api/live")) as unknown as LiveView;
+      const r = (await call(`/api/live?minutes=${mins}`)) as unknown as LiveView;
       const rows = r.rows ?? [];
       const ids = new Set(rows.map((x) => x.contract.toLowerCase()));
       if (seen.current) {
@@ -163,7 +190,7 @@ export default function LiveTab({ onSnipe }: { onSnipe?: (contract: string) => v
 
   useEffect(() => {
     if (!base || !token) return;
-    void pushRpcs().then(() => load());
+    void pushRpcs().then(() => load(minutes));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -183,12 +210,12 @@ export default function LiveTab({ onSnipe }: { onSnipe?: (contract: string) => v
     const t = setInterval(() => {
       setNextIn((n) => {
         if (n > 1) return n - 1;
-        if (document.visibilityState === "visible") void load();
+        if (document.visibilityState === "visible") void load(minutes);
         return every;
       });
     }, 1000);
     return () => clearInterval(t);
-  }, [every, base, token, load]);
+  }, [every, minutes, base, token, load]);
 
   /**
    * The marketplace side of these rows.
@@ -238,6 +265,38 @@ export default function LiveTab({ onSnipe }: { onSnipe?: (contract: string) => v
     };
   }, [wanted, base, token, call]);
 
+  /**
+   * A link that lets someone else watch this.
+   *
+   * Built from the server's *view* token, never the one in this browser: that
+   * one fires from the wallets, and a link carrying it would hand them over.
+   * The view token only exists if it has been set on the box, so when it has
+   * not, this says how rather than quietly sharing the wrong credential.
+   */
+  const makeShareLink = useCallback(async () => {
+    try {
+      const st = (await call("/api/status")) as unknown as { viewToken?: string | null };
+      if (!st.viewToken) {
+        setShare({
+          note:
+            "No view token set on the server. Add SNIPE_VIEW_TOKEN=<a long secret> to " +
+            "snipe.env and restart it — then this button makes a link that can read the " +
+            "feed and nothing else.",
+        });
+        return;
+      }
+      const link = buildShareLink(window.location.origin, { url, token: st.viewToken });
+      try {
+        await navigator.clipboard.writeText(link);
+        setShare({ link, note: "Link copied. It can read the feed and the scanner, nothing else." });
+      } catch {
+        setShare({ link, note: "Copy this — it can read the feed and the scanner, nothing else." });
+      }
+    } catch (e) {
+      setShare({ note: e instanceof Error ? e.message : String(e) });
+    }
+  }, [call, url]);
+
   const rows = useMemo(() => {
     const all = view?.rows ?? [];
     // A collection nobody but its own creator is minting. Held behind a chip
@@ -279,26 +338,55 @@ export default function LiveTab({ onSnipe }: { onSnipe?: (contract: string) => v
       <div className="panel">
         <h2>Live — what is minting right now</h2>
         <p className="dim" style={{ marginTop: 0 }}>
-          One log query covers every mint on the chain, so this is the whole
-          hour grouped by collection. Ranked by rate discounted for how much of
+          One log query covers every mint on the chain, so this is the window
+          you pick, grouped by collection. Ranked by rate discounted for how much of
           it comes from distinct wallets and for how long the drop has been
           quiet — raw speed is the number a wash mint is best at producing, and
           ranking on it alone would put the fakes on top.
         </p>
 
-        <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
-          <div className="field" style={{ flex: 2, minWidth: 200 }}>
-            <label>server URL</label>
-            <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://your-tunnel.trycloudflare.com" />
+        {guest ? null : (
+          <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
+            <div className="field" style={{ flex: 2, minWidth: 200 }}>
+              <label>server URL</label>
+              <input
+                value={url}
+                onChange={(e) => setUrl(e.target.value)}
+                placeholder="https://your-tunnel.trycloudflare.com"
+              />
+            </div>
+            <div className="field" style={{ flex: 1, minWidth: 160 }}>
+              <label>token</label>
+              <input
+                type="password"
+                value={token}
+                onChange={(e) => setToken(e.target.value)}
+                placeholder="SNIPE_TOKEN"
+                autoComplete="off"
+              />
+            </div>
           </div>
-          <div className="field" style={{ flex: 1, minWidth: 160 }}>
-            <label>token</label>
-            <input type="password" value={token} onChange={(e) => setToken(e.target.value)} placeholder="SNIPE_TOKEN" autoComplete="off" />
-          </div>
-        </div>
+        )}
 
         <div className="scan-bar">
-          <span className="bar-label">AUTO</span>
+          <span className="bar-label">WINDOW</span>
+          <div className="chip-group">
+            {WINDOWS.map((w) => (
+              <button
+                key={w.minutes}
+                className={minutes === w.minutes ? "secondary active-chip" : "secondary"}
+                disabled={busy || !base || !token}
+                onClick={() => {
+                  setMinutes(w.minutes);
+                  void load(w.minutes);
+                }}
+              >
+                {w.label}
+              </button>
+            ))}
+          </div>
+
+          <span className="bar-label bar-gap">AUTO</span>
           <div className="chip-group">
             {INTERVALS.map((i) => (
               <button
@@ -310,11 +398,21 @@ export default function LiveTab({ onSnipe }: { onSnipe?: (contract: string) => v
                 {i.label}
               </button>
             ))}
-            <button className="secondary" disabled={busy || !base || !token} onClick={() => void load()}>
+            <button className="secondary" disabled={busy || !base || !token} onClick={() => void load(minutes)}>
               {busy ? <span className="spin">READING</span> : "refresh"}
             </button>
           </div>
           <div className="bar-tail">
+            {guest ? null : (
+              <button
+                className="secondary"
+                disabled={!base || !token}
+                onClick={() => void makeShareLink()}
+                title="A link a friend can open to watch this feed"
+              >
+                share
+              </button>
+            )}
             <button
               className={hideWash ? "secondary active-chip" : "secondary"}
               onClick={() => setHideWash(!hideWash)}
@@ -329,7 +427,8 @@ export default function LiveTab({ onSnipe }: { onSnipe?: (contract: string) => v
             ) : null}
             {view ? (
               <span className="pill ok">
-                {totals.collections} minting · {totals.quantity.toLocaleString("en-US")} in {view.hours}h
+                {totals.collections} minting · {totals.quantity.toLocaleString("en-US")} in{" "}
+                {windowLabel(view.minutes)}
               </span>
             ) : null}
             {view?.readRpc ? (
@@ -341,6 +440,19 @@ export default function LiveTab({ onSnipe }: { onSnipe?: (contract: string) => v
           </div>
         </div>
 
+        {share ? (
+          <div className="share-note">
+            <p style={{ margin: 0 }}>{share.note}</p>
+            {share.link ? <code className="share-link">{share.link}</code> : null}
+            <button
+              className="secondary link-btn"
+              onClick={() => setShare(null)}
+              style={{ marginTop: 8 }}
+            >
+              dismiss
+            </button>
+          </div>
+        ) : null}
         {error ? <p className="error">{error}</p> : null}
         <StaleServer version={serverVersion} />
 
@@ -362,7 +474,7 @@ export default function LiveTab({ onSnipe }: { onSnipe?: (contract: string) => v
                   <th>collection</th>
                   <th>twitter</th>
                   <th>creator</th>
-                  <th>last hour</th>
+                  <th>{windowLabel(view.minutes)}</th>
                   {header("rate", "rate", "num")}
                   {header("unique", "wallets", "num")}
                   {header("minted", "minted", "num")}
@@ -466,7 +578,7 @@ export default function LiveTab({ onSnipe }: { onSnipe?: (contract: string) => v
                           <span className="faint">—</span>
                         )}
                       </td>
-                      <td data-label="last hour">
+                      <td data-label="window">
                         <Spark spark={p.spark ?? []} />
                       </td>
                       <td className="num" data-label="rate">
@@ -557,7 +669,7 @@ export default function LiveTab({ onSnipe }: { onSnipe?: (contract: string) => v
         {view ? (
           <p className="dim hint" style={{ marginBottom: 0 }}>
             {totals.txs.toLocaleString("en-US")} mint transactions on {view.chain} in the last{" "}
-            {view.hours}h. The wallets column is distinct minters over mint transactions — a dash
+            {windowLabel(view.minutes)}. The wallets column is distinct minters over mint transactions — a dash
             means too few mints to judge from, which is not the same as a clean one. Sold-out rows
             stay: what a drop did is worth seeing after it is over.
           </p>

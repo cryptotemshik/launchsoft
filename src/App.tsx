@@ -5,6 +5,8 @@ import DashboardTab from "./components/DashboardTab";
 import UpcomingTab from "./components/UpcomingTab";
 import ScannerTab from "./components/ScannerTab";
 import LiveTab from "./components/LiveTab";
+import { adoptSharedLink } from "./lib/shareLink";
+import { saveRunnerCreds } from "./lib/runnerClient";
 import LaunchTab from "./components/LaunchTab";
 import RevealTab from "./components/RevealTab";
 import FundingTab from "./components/FundingTab";
@@ -57,10 +59,23 @@ const TAB_ICON = {
   live: ActivityIcon,
 } as const;
 
+/**
+ * A shared view, read from the fragment once at startup.
+ *
+ * Done at module load rather than in an effect so the first render already
+ * knows: a viewer should never see the owner's tabs flash past before being
+ * dropped into the feed. The credentials go into session storage, so they last
+ * the tab and no longer, and the fragment is wiped from the address bar so a
+ * screenshot of the page does not carry the token.
+ */
+const shared = adoptSharedLink(saveRunnerCreds);
+
 export default function App() {
-  const [tab, setTab] = useState<Tab>("dashboard");
+  const [tab, setTab] = useState<Tab>(shared ? "live" : "dashboard");
   const [entered, setEntered] = useState(
-    () => localStorage.getItem("launchpad.entered") === "1",
+    // A shared link goes straight to the feed: the landing page is an
+    // invitation to set the thing up, and a viewer has nothing to set up.
+    () => shared !== null || localStorage.getItem("launchpad.entered") === "1",
   );
   const info = useActiveChain() ?? CHAINS_BY_ID.get(DEFAULT_CHAIN_ID)!;
 
@@ -96,12 +111,18 @@ export default function App() {
         }}
       />
       <div className="tabs">
-        {([
-          ["wallets", "TRACKER"],
-          ["scanner", "SCANNER"],
-          ["live", "LIVE"],
-          ["upcoming", "WATCHLIST"],
-        ] as const).map(([t, label]) => {
+        {(shared
+          ? ([
+              ["live", "LIVE"],
+              ["scanner", "SCANNER"],
+            ] as const)
+          : ([
+              ["wallets", "TRACKER"],
+              ["scanner", "SCANNER"],
+              ["live", "LIVE"],
+              ["upcoming", "WATCHLIST"],
+            ] as const)
+        ).map(([t, label]) => {
           const Icon = TAB_ICON[t];
           return (
             <button
@@ -114,6 +135,8 @@ export default function App() {
             </button>
           );
         })}
+        {shared ? null : (
+          <>
         {/* The two things this app is for — starting a drop and taking one —
             sit together at the right, both painted as actions rather than as
             destinations. Their later stages hang beneath them. */}
@@ -185,6 +208,8 @@ export default function App() {
             </button>
           </div>
         </div>
+          </>
+        )}
       </div>
       {tab === "dashboard" ? <DashboardTab /> : null}
       {tab === "launch" ? <LaunchTab /> : null}

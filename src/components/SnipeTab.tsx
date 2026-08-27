@@ -79,7 +79,11 @@ export default function SnipeTab() {
    * Everything here is now a read against their addresses, and the firing
    * belongs to the runner below.
    */
-  const [serverWallets, setServerWallets] = useState<{ address: string; label?: string }[]>([]);
+  const [serverWallets, setServerWallets] = useState<
+    { address: string; label?: string; balance?: string | null }[]
+  >([]);
+  const [walletsOpen, setWalletsOpen] = useState(false);
+  const [walletFilter, setWalletFilter] = useState("");
   const [walletError, setWalletError] = useState<string | null>(null);
   const { base: runnerBase, token: runnerToken, call: runnerCall } = useRunnerApi();
   // Shared with the launch tab — one setting, editable from either.
@@ -92,7 +96,6 @@ export default function SnipeTab() {
   const [tipGwei, setTipGwei] = useState("0.05");
   const [gasLimitStr, setGasLimitStr] = useState("500000");
   const [baseFeeWei, setBaseFeeWei] = useState<bigint | null>(null);
-  const [balances, setBalances] = useState<Map<string, bigint>>(new Map());
 
   const [timing, setTiming] = useState<Timing>("now");
   const [phase, setPhase] = useState<Phase>("form");
@@ -109,7 +112,7 @@ export default function SnipeTab() {
     void (async () => {
       try {
         const r = (await runnerCall("/api/wallets")) as unknown as {
-          wallets?: { address: string; label?: string }[];
+          wallets?: { address: string; label?: string; balance?: string | null }[];
         };
         if (alive) {
           setServerWallets(r.wallets ?? []);
@@ -125,6 +128,19 @@ export default function SnipeTab() {
   }, [runnerBase, runnerToken, runnerCall]);
 
   const addresses = useMemo(() => serverWallets.map((w) => w.address), [serverWallets]);
+
+  const walletTotals = useMemo(
+    () => ({ funded: serverWallets.filter((w) => Number(w.balance ?? 0) > 0).length }),
+    [serverWallets],
+  );
+
+  const shownWallets = useMemo(() => {
+    const q = walletFilter.trim().toLowerCase();
+    if (!q) return serverWallets;
+    return serverWallets.filter(
+      (w) => w.address.toLowerCase().includes(q) || (w.label ?? "").toLowerCase().includes(q),
+    );
+  }, [serverWallets, walletFilter]);
 
   // Per-wallet allow-list eligibility, computed from the fetched list + pasted
   // keys. Each wallet needs its own proof, so this is exactly the same shape
@@ -187,26 +203,28 @@ export default function SnipeTab() {
     };
   }, [publicClient]);
 
-  // Wallet balances — re-checked whenever the wallet list changes.
-  useEffect(() => {
-    if (!publicClient || addresses.length === 0) {
-      setBalances(new Map());
-      return;
+  /**
+   * Balances, from the list itself.
+   *
+   * The browser used to fetch one per wallet — a request each, which at a
+   * hundred wallets is a hundred round trips for numbers the server had just
+   * sent. Worse, it keyed the map by the checksummed address and the rows
+   * looked it up in lower case, so nothing ever matched and every line sat at
+   * "checking balance…" for good.
+   */
+  const balances = useMemo(() => {
+    const by = new Map<string, bigint>();
+    for (const w of serverWallets) {
+      if (w.balance == null) continue;
+      try {
+        by.set(w.address.toLowerCase(), BigInt(w.balance));
+      } catch {
+        // A balance the server could not read arrives as null; anything else
+        // unparseable is treated the same way — unknown, not zero.
+      }
     }
-    let cancelled = false;
-    Promise.all(
-      addresses.map(
-        async (a) =>
-          [a, await publicClient.getBalance({ address: a as `0x${string}` })] as const,
-      ),
-    ).then((pairs) => {
-      if (!cancelled) setBalances(new Map(pairs));
-    });
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [addresses.join(","), publicClient]);
+    return by;
+  }, [serverWallets]);
 
   // ── Active stage: price / per-wallet limit / window depend on the stage ──
   const stagePrice = stage === "allowlist" && allowParams ? allowParams.mintPrice : target?.price ?? 0n;
@@ -454,9 +472,8 @@ export default function SnipeTab() {
         <h2>Wallets — the ones on the server</h2>
         <p className="dim" style={{ marginTop: 0 }}>
           Firing happens on the box, from the keys in <code>snipe.keys</code>.
-          This is what it holds, with each wallet&apos;s balance and — on an
-          allow-list stage — whether it proves onto the list. Which of them
-          fire is chosen in the runner below.
+          Which of them fire is chosen in the runner below; this is what it has
+          to choose from.
         </p>
         {walletError ? <p className="error">{walletError}</p> : null}
         {serverWallets.length === 0 ? (
@@ -474,35 +491,97 @@ export default function SnipeTab() {
             )}
           </div>
         ) : (
-          <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 4 }}>
-            {serverWallets.map((w) => {
-              const bal = balances.get(w.address.toLowerCase());
-              const short = bal !== undefined && bal < requiredPerWallet;
-              const el = eligByAddr.get(w.address.toLowerCase());
-              const showAllow = stage === "allowlist" && hasMerkle;
-              return (
-                <div key={w.address} className="mono-break" style={{ fontSize: 12 }}>
-                  {w.address}
-                  {w.label ? <span className="dim"> · {w.label}</span> : null}{" "}
-                  {showAllow ? (
-                    el?.eligible ? (
-                      <span className="ok">● on allow-list</span>
-                    ) : el?.proofMismatch ? (
-                      <span className="warn">● list out of date</span>
-                    ) : (
-                      <span className="dim">● not on list</span>
-                    )
-                  ) : null}{" "}
-                  <span className={short ? "error" : "dim"}>
-                    {bal === undefined ? "checking balance…" : `${weiToEth(bal)} ETH`}
-                    {short ? " — can't cover gas + mint price at this quantity" : ""}
+          <>
+            {/* A summary that opens, rather than a list that goes on forever.
+                At a hundred wallets the flat list pushed everything else off
+                the page, and the number worth seeing at a glance is not the
+                addresses — it is how many can afford the mint. */}
+            <button
+              className="secondary wallet-summary"
+              onClick={() => setWalletsOpen(!walletsOpen)}
+              aria-expanded={walletsOpen}
+            >
+              <span>
+                <b>{serverWallets.length}</b> wallet
+                {serverWallets.length === 1 ? "" : "s"}
+                {walletTotals.funded < serverWallets.length ? (
+                  <span className="dim">
+                    {" · "}
+                    {walletTotals.funded} funded
                   </span>
+                ) : null}
+                {unaffordable.length > 0 ? (
+                  <span className="warn">
+                    {" · "}
+                    {unaffordable.length} can&apos;t cover this mint
+                  </span>
+                ) : null}
+                {stage === "allowlist" && hasMerkle ? (
+                  <span className="dim">
+                    {" · "}
+                    {eligibleAddresses.length} on the allow-list
+                  </span>
+                ) : null}
+              </span>
+              <span className="dim">{walletsOpen ? "hide ▲" : "show ▼"}</span>
+            </button>
+
+            {walletsOpen ? (
+              <>
+                {serverWallets.length > 12 ? (
+                  <div className="field" style={{ marginTop: 10 }}>
+                    <label>find</label>
+                    <input
+                      value={walletFilter}
+                      onChange={(e) => setWalletFilter(e.target.value)}
+                      placeholder="address or label"
+                    />
+                  </div>
+                ) : null}
+                <div className="wallet-list">
+                  {shownWallets.map((w) => {
+                    const bal = balances.get(w.address.toLowerCase());
+                    const short = bal !== undefined && bal < requiredPerWallet;
+                    const el = eligByAddr.get(w.address.toLowerCase());
+                    const showAllow = stage === "allowlist" && hasMerkle;
+                    return (
+                      <div key={w.address} className="wallet-line">
+                        <span className="wl-addr mono-break">{w.address}</span>
+                        {w.label ? <span className="dim">{w.label}</span> : <span />}
+                        {showAllow ? (
+                          el?.eligible ? (
+                            <span className="ok">on list</span>
+                          ) : el?.proofMismatch ? (
+                            <span className="warn">list stale</span>
+                          ) : (
+                            <span className="dim">not listed</span>
+                          )
+                        ) : (
+                          <span />
+                        )}
+                        <span className={short ? "error" : "dim"}>
+                          {bal === undefined ? "—" : `${weiToEth(bal)} ETH`}
+                        </span>
+                      </div>
+                    );
+                  })}
+                  {shownWallets.length === 0 ? (
+                    <p className="dim" style={{ margin: 0 }}>
+                      nothing matches “{walletFilter}”.
+                    </p>
+                  ) : null}
                 </div>
-              );
-            })}
-          </div>
+                {shownWallets.length < serverWallets.length ? (
+                  <p className="dim hint" style={{ marginBottom: 0 }}>
+                    {shownWallets.length} of {serverWallets.length} shown.
+                  </p>
+                ) : null}
+              </>
+            ) : null}
+          </>
         )}
       </div>
+
       <div className="panel">
         <h2>Your RPC</h2>
         <p className="dim">
