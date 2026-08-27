@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRunnerApi } from "../lib/runnerClient";
 import {
   openSeaCollectionUrlBySlug,
@@ -7,6 +7,7 @@ import {
 } from "../chains";
 import StaleServer from "./StaleServer";
 import { AddrLink, TxLink } from "./Bits";
+import WalletPicker from "./WalletPicker";
 
 /**
  * Move ETH across the server's wallet set: fan it out before a mint, sweep it
@@ -113,6 +114,11 @@ export default function FundingTab() {
   // NFTs
   const [nfts, setNfts] = useState<NftsView | null>(null);
   const [nftDest, setNftDest] = useState("");
+  /**
+   * Which wallets the sweep gathers from. Empty until the wallet list lands,
+   * then all of them — the common case — and narrowed from there.
+   */
+  const [nftFrom, setNftFrom] = useState<Set<string>>(new Set());
   const [nftFilter, setNftFilter] = useState("");
   const [nResult, setNResult] = useState<SweepNftsResult | null>(null);
   // How the scan results are shown. Kept apart from the scan itself so
@@ -125,7 +131,16 @@ export default function FundingTab() {
   const refresh = useCallback(async () => {
     try {
       const v = (await call("/api/wallets")) as unknown as WalletsView;
-      setView(v);
+      setView((prev) => {
+        // First sight of the wallet set selects all of it, which is what a
+        // sweep almost always wants. After that, only drop what the server no
+        // longer has, so a refresh mid-selection doesn't undo the picking.
+        const live = new Set<string>(v.wallets.map((w) => w.address));
+        setNftFrom((chosen) =>
+          prev === null ? live : new Set([...chosen].filter((a) => live.has(a))),
+        );
+        return v;
+      });
       setConnected(true);
       setError(null);
     } catch (e) {
@@ -221,6 +236,9 @@ export default function FundingTab() {
         body: JSON.stringify({
           to: nftDest.trim(),
           collection: nftFilter.trim() || undefined,
+          // Only pin the sources when it is a strict subset; sending the whole
+          // list would freeze the sweep against wallets added later.
+          ...(nftFrom.size < (view?.wallets.length ?? 0) ? { from: [...nftFrom] } : {}),
           dryRun,
         }),
       })) as unknown as SweepNftsResult;
@@ -234,6 +252,26 @@ export default function FundingTab() {
   }
 
   const wallets = view?.wallets ?? [];
+
+  /**
+   * The wallets a sweep could gather from, each showing how many tokens it is
+   * actually holding.
+   *
+   * The count is the whole reason to annotate them: picking sources blind
+   * means ticking wallets that hold nothing, which costs a scan and moves
+   * nothing. It comes from the last scan, so it reads "—" until one is run.
+   */
+  const sweepSources = useMemo(() => {
+    const held = new Map<string, number>();
+    for (const h of nfts?.holdings ?? []) {
+      const k = h.wallet.toLowerCase();
+      held.set(k, (held.get(k) ?? 0) + h.tokenIds.length);
+    }
+    return wallets.map((w) => {
+      const n = held.get(w.address.toLowerCase()) ?? 0;
+      return { ...w, note: nfts ? (n > 0 ? `${n} NFT` : "") : undefined };
+    });
+  }, [wallets, nfts]);
   const total = wallets.reduce((n, w) => n + Number(w.balance ?? 0), 0);
   const empty = wallets.filter((w) => Number(w.balance ?? 0) === 0).length;
 
@@ -612,18 +650,45 @@ export default function FundingTab() {
               )
             ) : null}
 
+            {/* Which wallets to gather from. Sweeping the lot onto one address
+                is the common case and stays the default, but splitting a set
+                across two destinations is a real thing to want, and doing it
+                by sweeping everything and sending half back costs an extra
+                round of gas. */}
+            <WalletPicker
+              title="gather from"
+              wallets={sweepSources}
+              chosen={nftFrom}
+              setChosen={setNftFrom}
+            />
+
             <div className="field" style={{ marginTop: 12 }}>
               <label>send every token to</label>
               <input value={nftDest} onChange={(e) => setNftDest(e.target.value)} placeholder="0x…" />
             </div>
             <div style={{ display: "flex", gap: 10, marginTop: 12, flexWrap: "wrap" }}>
-              <button className="secondary" disabled={busy || !nftDest.trim()} onClick={() => void runNftSweep(true)}>
+              <button
+                className="secondary"
+                disabled={busy || !nftDest.trim() || nftFrom.size === 0}
+                onClick={() => void runNftSweep(true)}
+              >
                 DRY RUN
               </button>
-              <button className="primary" disabled={busy || !nftDest.trim()} onClick={() => void runNftSweep(false)}>
-                MOVE ALL NFTs
+              <button
+                className="primary"
+                disabled={busy || !nftDest.trim() || nftFrom.size === 0}
+                onClick={() => void runNftSweep(false)}
+              >
+                {nftFrom.size === (view?.wallets.length ?? 0)
+                  ? "MOVE ALL NFTs"
+                  : `MOVE FROM ${nftFrom.size} WALLET(S)`}
               </button>
             </div>
+            {nftFrom.size === 0 ? (
+              <p className="warn" style={{ marginBottom: 0 }}>
+                No source wallets ticked — there is nothing to gather from.
+              </p>
+            ) : null}
 
             {nResult ? (
               <>

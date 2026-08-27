@@ -2178,11 +2178,32 @@ const server = createServer(async (req, res) => {
       const cfg = loadConfig(CONFIG_PATH);
       const info = getChainInfo(cfg.chainId);
       if (!info) throw new Error(`chain ${cfg.chainId} isn't in the registry`);
-      const entries = loadKeyEntries(CONFIG_PATH, cfg.keysFile);
+      const allEntries = loadKeyEntries(CONFIG_PATH, cfg.keysFile);
+      // Which wallets to gather from. Sweeping every wallet is the common case
+      // and stays the default, but gathering a few onto one address and a few
+      // onto another is a real thing to want, and doing it by sweeping the lot
+      // and sending half back is both slower and more gas.
+      let entries = allEntries;
+      if (Array.isArray(body.from)) {
+        const want = new Set(
+          (body.from as unknown[])
+            .filter((x): x is string => typeof x === "string")
+            .map((a) => a.toLowerCase()),
+        );
+        const known = new Set(allEntries.map((e) => privateKeyToAccount(e.key).address.toLowerCase()));
+        const missing = [...want].filter((a) => !known.has(a));
+        if (missing.length > 0) {
+          throw new Error(`not wallets on this server: ${missing.slice(0, 3).join(", ")}`);
+        }
+        entries = allEntries.filter((e) =>
+          want.has(privateKeyToAccount(e.key).address.toLowerCase()),
+        );
+        if (entries.length === 0) throw new Error("no source wallets chosen — nothing to sweep from");
+      }
       const addresses = entries.map((e) => privateKeyToAccount(e.key).address);
 
-      // One scan for every wallet and every collection, so a sweep can't move
-      // what it happened to see and silently leave the rest.
+      // One scan for every chosen wallet and every collection, so a sweep
+      // can't move what it happened to see and silently leave the rest.
       const client = makeReadClient(info.chain, readRpcs(cfg));
       const scan = await scanChain(client as never, addresses, { collection: only });
 
