@@ -765,7 +765,8 @@ export default function LaunchTab() {
         <p className="dim" style={{ marginTop: 0 }}>
           Every read and receipt wait on this page goes through the first
           endpoint here, with {chainInfo.label}&apos;s public RPC only as the
-          backstop behind it. Shared with the Snipe tab — set it in either.
+          backstop behind it. Shared with the Snipe tab and the scanner — set
+          it in any of them and all of them use it.
         </p>
         <textarea
           rows={2}
@@ -776,6 +777,9 @@ export default function LaunchTab() {
         <p className="dim hint" style={{ marginBottom: 0 }}>
           reads go to <b>{primaryReadHost(chainInfo.chain, customRpcs)}</b>
           {customRpcs.length === 0 ? " (the public RPC — paste yours above)" : ""}.
+          {" "}Deploys and configuration are sent by your connected wallet, so
+          those travel through whatever node it is set to — that one is
+          MetaMask&apos;s to choose, not this page&apos;s.
         </p>
       </div>
 

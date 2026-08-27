@@ -1,12 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { usePublicClient } from "wagmi";
-import { encodeFunctionData, formatGwei, parseGwei, zeroAddress, type Hex } from "viem";
-import { privateKeyToAccount, type PrivateKeyAccount } from "viem/accounts";
+import { formatGwei, parseGwei } from "viem";
 import { clearPendingTarget, readPendingTarget } from "../lib/snipeTarget";
 import { useActiveChain } from "../signer";
 import { CHAINS_BY_ID, DEFAULT_CHAIN_ID } from "../chains";
 import { seaDropAbi, tokenAbi } from "../contracts/seadrop";
-import { pickFeeRecipient } from "../lib/collectionData";
 import { checkEligibility, type Eligibility, type MintParams } from "../lib/allowlist";
 import {
   fetchAllowListSource,
@@ -16,25 +14,18 @@ import {
 } from "../lib/allowlistSource";
 import {
   formatCountdown,
-  normalizePrivateKey,
   parseCollectionInput,
   unixToLocalAndUtc,
   weiToEth,
 } from "../lib/convert";
 import { formatEthShort } from "../lib/profit";
 import {
-  blastToAll,
-  isAlreadyKnown,
   parseRpcEndpoints,
-  prepareBlast,
-  waitForReceiptOrNull,
-  warmEndpoints,
   type RpcEndpoint,
 } from "../lib/rpcBlast";
-import { waitUntil } from "../lib/snipeTimer";
 import { makeReadClient, primaryReadHost } from "../lib/readClient";
 import { useCustomRpcs } from "../lib/customRpc";
-import { Steps, TxLink, type StepView } from "./Bits";
+import { useRunnerApi } from "../lib/runnerClient";
 import RemoteRunner from "./RemoteRunner";
 
 interface SnipeTarget {
@@ -63,60 +54,6 @@ function phaseOf(startTime: number, endTime: number, minted: bigint, supply: big
   return "live";
 }
 
-interface ParsedKey {
-  raw: string;
-  address?: `0x${string}`;
-  account?: PrivateKeyAccount;
-  error?: string;
-}
-
-function parseKeys(text: string): ParsedKey[] {
-  const seen = new Set<string>();
-  return text
-    .split("\n")
-    .map((l) => l.trim())
-    .filter(Boolean)
-    .map((raw) => {
-      try {
-        const account = privateKeyToAccount(normalizePrivateKey(raw));
-        const addr = account.address.toLowerCase();
-        if (seen.has(addr)) return { raw, error: "duplicate — already listed above" };
-        seen.add(addr);
-        return { raw, address: account.address, account };
-      } catch (e) {
-        return { raw, error: e instanceof Error ? e.message : String(e) };
-      }
-    });
-}
-
-type FireStatus =
-  | "queued"
-  | "skipped"
-  | "dispatched"
-  | "accepted"
-  | "mined"
-  | "reverted"
-  | "rejected"
-  | "timeout";
-
-interface FireRow {
-  address: `0x${string}`;
-  status: FireStatus;
-  txHash?: Hex;
-  detail?: string;
-}
-
-const STEP_STATUS: Record<FireStatus, StepView["status"]> = {
-  queued: "pending",
-  skipped: "pending",
-  dispatched: "running",
-  accepted: "running",
-  mined: "done",
-  reverted: "failed",
-  rejected: "failed",
-  timeout: "failed",
-};
-
 type Phase = "form" | "confirm" | "firing";
 type Timing = "now" | "wait";
 
@@ -132,7 +69,19 @@ export default function SnipeTab() {
   const [checkingAllow, setCheckingAllow] = useState(false);
   const [stage, setStage] = useState<Stage>("public");
 
-  const [keysText, setKeysText] = useState("");
+  /**
+   * The wallets that actually fire, read from the server.
+   *
+   * This was a box you pasted private keys into, so the browser could sign and
+   * broadcast by itself. That path is gone. The wallets live on the box beside
+   * the sequencer and the server never hands their keys back — quite rightly —
+   * so the browser could not have fired with them however the list was chosen.
+   * Everything here is now a read against their addresses, and the firing
+   * belongs to the runner below.
+   */
+  const [serverWallets, setServerWallets] = useState<{ address: string; label?: string }[]>([]);
+  const [walletError, setWalletError] = useState<string | null>(null);
+  const { base: runnerBase, token: runnerToken, call: runnerCall } = useRunnerApi();
   // Shared with the launch tab — one setting, editable from either.
   const { text: extraRpcText, setText: setExtraRpcText, urls: customRpcs } = useCustomRpcs();
   const [quantity, setQuantity] = useState(1);
@@ -148,21 +97,34 @@ export default function SnipeTab() {
   const [timing, setTiming] = useState<Timing>("now");
   const [phase, setPhase] = useState<Phase>("form");
   const [confirmChecked, setConfirmChecked] = useState(false);
-  const [countdownMs, setCountdownMs] = useState<number | null>(null);
-  const [rows, setRows] = useState<FireRow[]>([]);
-  const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     const t = setInterval(() => setNow(Math.floor(Date.now() / 1000)), 1000);
     return () => clearInterval(t);
   }, []);
 
-  const parsedKeys = useMemo(() => parseKeys(keysText), [keysText]);
-  const accounts = useMemo(
-    () => parsedKeys.map((k) => k.account).filter((a): a is PrivateKeyAccount => Boolean(a)),
-    [parsedKeys],
-  );
-  const keyErrors = parsedKeys.filter((k) => k.error);
+  useEffect(() => {
+    if (!runnerBase || !runnerToken) return;
+    let alive = true;
+    void (async () => {
+      try {
+        const r = (await runnerCall("/api/wallets")) as unknown as {
+          wallets?: { address: string; label?: string }[];
+        };
+        if (alive) {
+          setServerWallets(r.wallets ?? []);
+          setWalletError(null);
+        }
+      } catch (e) {
+        if (alive) setWalletError(e instanceof Error ? e.message : String(e));
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [runnerBase, runnerToken, runnerCall]);
+
+  const addresses = useMemo(() => serverWallets.map((w) => w.address), [serverWallets]);
 
   // Per-wallet allow-list eligibility, computed from the fetched list + pasted
   // keys. Each wallet needs its own proof, so this is exactly the same shape
@@ -171,19 +133,19 @@ export default function SnipeTab() {
     const map = new Map<string, Eligibility>();
     const allow = target?.allow;
     if (allow?.list && hasAllowList(allow.root)) {
-      for (const a of accounts) {
-        map.set(a.address.toLowerCase(), checkEligibility(allow.list, a.address, allow.root));
+      for (const a of addresses) {
+        map.set(a.toLowerCase(), checkEligibility(allow.list, a, allow.root));
       }
     }
     return map;
-  }, [target?.allow, accounts]);
+  }, [target?.allow, addresses]);
 
   const allowKind = target?.allow ? gateKind(target.allow) : "none";
   const hasMerkle = allowKind === "merkle";
-  const eligibleAccounts = accounts.filter((a) => eligByAddr.get(a.address.toLowerCase())?.eligible);
+  const eligibleAddresses = addresses.filter((a) => eligByAddr.get(a.toLowerCase())?.eligible);
   // Representative allow-list params (window/price) — same across the list.
-  const allowParams: MintParams | undefined = eligibleAccounts
-    .map((a) => eligByAddr.get(a.address.toLowerCase())?.params)
+  const allowParams: MintParams | undefined = eligibleAddresses
+    .map((a) => eligByAddr.get(a.toLowerCase())?.params)
     .find(Boolean);
 
   /**
@@ -227,14 +189,15 @@ export default function SnipeTab() {
 
   // Wallet balances — re-checked whenever the wallet list changes.
   useEffect(() => {
-    if (!publicClient || accounts.length === 0) {
+    if (!publicClient || addresses.length === 0) {
       setBalances(new Map());
       return;
     }
     let cancelled = false;
     Promise.all(
-      accounts.map(
-        async (a) => [a.address, await publicClient.getBalance({ address: a.address })] as const,
+      addresses.map(
+        async (a) =>
+          [a, await publicClient.getBalance({ address: a as `0x${string}` })] as const,
       ),
     ).then((pairs) => {
       if (!cancelled) setBalances(new Map(pairs));
@@ -243,7 +206,7 @@ export default function SnipeTab() {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [accounts.map((a) => a.address).join(","), publicClient]);
+  }, [addresses.join(","), publicClient]);
 
   // ── Active stage: price / per-wallet limit / window depend on the stage ──
   const stagePrice = stage === "allowlist" && allowParams ? allowParams.mintPrice : target?.price ?? 0n;
@@ -288,9 +251,9 @@ export default function SnipeTab() {
   const requiredPerWallet =
     (gasLimit ?? 0n) * (maxFeePerGas ?? 0n) + stagePrice * BigInt(effectiveQty);
   // In allowlist mode, only eligible wallets fire — judge affordability on those.
-  const firingAccounts = stage === "allowlist" ? eligibleAccounts : accounts;
-  const unaffordable = firingAccounts.filter((a) => {
-    const bal = balances.get(a.address.toLowerCase());
+  const firingAddresses = stage === "allowlist" ? eligibleAddresses : addresses;
+  const unaffordable = firingAddresses.filter((a) => {
+    const bal = balances.get(a.toLowerCase());
     return bal !== undefined && bal < requiredPerWallet;
   });
 
@@ -330,7 +293,6 @@ export default function SnipeTab() {
     setLoading(true);
     setError(null);
     setTarget(null);
-    setRows([]);
     setStage("public");
     try {
       const read = <T,>(functionName: string): Promise<T> =>
@@ -398,169 +360,11 @@ export default function SnipeTab() {
     }
   }
 
-  function cancelWait() {
-    abortRef.current?.abort();
-  }
 
-  async function fire() {
-    if (!target || !publicClient || !chainInfo) return;
-    if (endpoints.length === 0) {
-      setError("No RPC endpoint available for this chain — add one");
-      return;
-    }
-    if (gasError || maxFeePerGas === null || maxPriorityFeePerGas === null || gasLimit === null) {
-      setError(gasError ?? "Fix the gas settings first");
-      return;
-    }
-    if (firingAccounts.length === 0) {
-      setError(
-        stage === "allowlist"
-          ? "None of the pasted wallets are on this drop's allow-list"
-          : "Paste at least one valid private key",
-      );
-      return;
-    }
-
-    setPhase("firing");
-    setError(null);
-    // Every pasted wallet gets a row; ineligible ones (allowlist mode) are
-    // marked skipped up front so the log shows the full picture.
-    setRows(
-      accounts.map((a) => {
-        const firing = firingAccounts.some((f) => f.address === a.address);
-        return {
-          address: a.address,
-          status: firing ? "queued" : "skipped",
-          detail: firing ? undefined : "not on this drop's allow-list",
-        };
-      }),
-    );
-
-    try {
-      const feeRecipient = pickFeeRecipient(
-        chainInfo,
-        target.allowedFeeRecipients,
-        target.restrictFeeRecipients,
-      );
-      if (!feeRecipient) {
-        throw new Error("This drop restricts fee recipients and allows none — cannot mint");
-      }
-
-      // Per-wallet calldata: identical for the public stage, but each allow-list
-      // wallet carries its own proof + params, so it's built per wallet.
-      const nonces = await Promise.all(
-        firingAccounts.map((a) =>
-          publicClient.getTransactionCount({ address: a.address, blockTag: "pending" }),
-        ),
-      );
-      const prepared = await Promise.all(
-        firingAccounts.map(async (a, i) => {
-          let data: Hex;
-          let value: bigint;
-          let qty: number;
-          if (stage === "allowlist") {
-            const el = eligByAddr.get(a.address.toLowerCase())!;
-            qty = Math.min(effectiveQty, Number(el.params!.maxTotalMintableByWallet) || effectiveQty);
-            data = encodeFunctionData({
-              abi: seaDropAbi,
-              functionName: "mintAllowList",
-              args: [target.address, feeRecipient, zeroAddress, BigInt(qty), el.params!, el.proof!],
-            });
-            value = el.params!.mintPrice * BigInt(qty);
-          } else {
-            qty = effectiveQty;
-            data = encodeFunctionData({
-              abi: seaDropAbi,
-              functionName: "mintPublic",
-              args: [target.address, feeRecipient, zeroAddress, BigInt(qty)],
-            });
-            value = target.price * BigInt(qty);
-          }
-          const rawTx = await a.signTransaction({
-            chainId: chainInfo.id,
-            to: chainInfo.seaDrop,
-            data,
-            value,
-            nonce: nonces[i],
-            maxFeePerGas: maxFeePerGas!,
-            maxPriorityFeePerGas: maxPriorityFeePerGas!,
-            gas: gasLimit!,
-            type: "eip1559",
-          });
-          return { address: a.address, blast: prepareBlast(rawTx) };
-        }),
-      );
-
-      // Open every connection now so the broadcast pays only a round-trip.
-      await warmEndpoints(endpoints);
-
-      if (timing === "wait" && stageStart * 1000 > Date.now()) {
-        abortRef.current = new AbortController();
-        const outcome = await waitUntil(stageStart * 1000, {
-          onTick: setCountdownMs,
-          signal: abortRef.current.signal,
-          // Re-warm shortly before the stage opens: a long hold would
-          // otherwise let idle connections drop and hand back the TLS cost.
-          onApproach: () => void warmEndpoints(endpoints),
-        });
-        setCountdownMs(null);
-        if (outcome === "aborted") {
-          setPhase("form");
-          return;
-        }
-      }
-
-      setRows((prev) =>
-        prev.map((r) => {
-          const p = prepared.find((x) => x.address === r.address);
-          return p ? { ...r, status: "dispatched", txHash: p.blast.txHash } : r;
-        }),
-      );
-
-      await Promise.all(
-        prepared.map(async ({ address, blast }) => {
-          const { results } = blastToAll(blast, endpoints);
-          const settled = await results;
-          const accepted = settled.some((r) => r.txHash !== null || isAlreadyKnown(r.error));
-          if (!accepted) {
-            const reasons = [...new Set(settled.map((r) => r.error).filter(Boolean))].join("; ");
-            setRows((prev) =>
-              prev.map((r) => (r.address === address ? { ...r, status: "rejected", detail: reasons } : r)),
-            );
-            return;
-          }
-          setRows((prev) => prev.map((r) => (r.address === address ? { ...r, status: "accepted" } : r)));
-          const receipt = await waitForReceiptOrNull(publicClient, blast.txHash, 60_000);
-          if (!receipt) {
-            setRows((prev) =>
-              prev.map((r) =>
-                r.address === address
-                  ? { ...r, status: "timeout", detail: "no receipt yet — check the explorer link" }
-                  : r,
-              ),
-            );
-            return;
-          }
-          setRows((prev) =>
-            prev.map((r) =>
-              r.address === address
-                ? { ...r, status: receipt.status === "success" ? "mined" : "reverted" }
-                : r,
-            ),
-          );
-        }),
-      );
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setPhase("form");
-    }
-  }
-
-  const totalMintCost = stagePrice * BigInt(effectiveQty) * BigInt(firingAccounts.length);
+  const totalMintCost = stagePrice * BigInt(effectiveQty) * BigInt(firingAddresses.length);
   const canFire =
     Boolean(target) &&
-    firingAccounts.length > 0 &&
+    firingAddresses.length > 0 &&
     endpoints.length > 0 &&
     !gasError &&
     (phaseDrop === "live" || phaseDrop === "pending");
@@ -571,8 +375,8 @@ export default function SnipeTab() {
         <h2>Snipe</h2>
         <p className="dim">
           Pre-signed, multi-wallet racing for a SeaDrop drop — <b>public</b> or{" "}
-          <b>allow-list</b>. Paste any number of private keys and each wallet
-          builds and signs its transaction locally from on-chain drop data,
+          <b>allow-list</b>. Each of the server&apos;s wallets builds and signs
+          its own transaction from on-chain drop data,
           then blasts it to every configured RPC the instant the stage opens.
           Allow-list wallets each carry their own merkle proof (verified against
           the contract&apos;s root); wallets not on the list are skipped.
@@ -609,8 +413,8 @@ export default function SnipeTab() {
               checking={checkingAllow}
               hasMerkle={hasMerkle}
               allowKind={allowKind}
-              eligibleCount={eligibleAccounts.length}
-              walletCount={accounts.length}
+              eligibleCount={eligibleAddresses.length}
+              walletCount={addresses.length}
             />
             <dl className="kv" style={{ marginTop: 12 }}>
               <dt>collection</dt>
@@ -647,43 +451,39 @@ export default function SnipeTab() {
       </div>
 
       <div className="panel">
-        <h2>Wallets — for firing from this browser</h2>
-        <p className="warn" style={{ marginTop: 0 }}>
-          <b>Using the remote runner below? Leave this empty.</b> These two are
-          separate: the server fires with its own wallets (the ones in{" "}
-          <code>snipe.keys</code> on the box), and never sees what you type here.
-          This box is only for minting straight from this tab, without a server —
-          which is slower, because your transaction travels from here rather than
-          from beside the sequencer.
+        <h2>Wallets — the ones on the server</h2>
+        <p className="dim" style={{ marginTop: 0 }}>
+          Firing happens on the box, from the keys in <code>snipe.keys</code>.
+          This is what it holds, with each wallet&apos;s balance and — on an
+          allow-list stage — whether it proves onto the list. Which of them
+          fire is chosen in the runner below.
         </p>
-        <p className="dim">
-          Paste one private key per line — hidden from view, held in this
-          tab&apos;s memory only, never written to disk or sent anywhere except
-          as a locally-signed transaction. Cleared on refresh.
-        </p>
-        <textarea
-          rows={4}
-          value={keysText}
-          onChange={(e) => setKeysText(e.target.value)}
-          placeholder={"0x…\n0x…"}
-          style={{ fontFamily: "var(--mono)", WebkitTextSecurity: "disc" } as React.CSSProperties}
-        />
-        {keyErrors.length > 0 ? (
-          <p className="error" style={{ marginBottom: 0 }}>
-            {keyErrors.length} line{keyErrors.length > 1 ? "s" : ""} couldn&apos;t be read (bad key or
-            duplicate).
-          </p>
-        ) : null}
-        {accounts.length > 0 ? (
+        {walletError ? <p className="error">{walletError}</p> : null}
+        {serverWallets.length === 0 ? (
+          <div className="empty-state">
+            {runnerBase && runnerToken ? (
+              <>
+                NO WALLETS ON THE SERVER —{" "}
+                <span className="es-action">ADD THEM IN THE WALLETS TAB</span>
+              </>
+            ) : (
+              <>
+                NOT CONNECTED —{" "}
+                <span className="es-action">FILL IN THE SERVER URL AND TOKEN BELOW</span>
+              </>
+            )}
+          </div>
+        ) : (
           <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 4 }}>
-            {accounts.map((a) => {
-              const bal = balances.get(a.address.toLowerCase());
+            {serverWallets.map((w) => {
+              const bal = balances.get(w.address.toLowerCase());
               const short = bal !== undefined && bal < requiredPerWallet;
-              const el = eligByAddr.get(a.address.toLowerCase());
+              const el = eligByAddr.get(w.address.toLowerCase());
               const showAllow = stage === "allowlist" && hasMerkle;
               return (
-                <div key={a.address} className="mono-break" style={{ fontSize: 12 }}>
-                  {a.address}{" "}
+                <div key={w.address} className="mono-break" style={{ fontSize: 12 }}>
+                  {w.address}
+                  {w.label ? <span className="dim"> · {w.label}</span> : null}{" "}
                   {showAllow ? (
                     el?.eligible ? (
                       <span className="ok">● on allow-list</span>
@@ -701,9 +501,8 @@ export default function SnipeTab() {
               );
             })}
           </div>
-        ) : null}
+        )}
       </div>
-
       <div className="panel">
         <h2>Your RPC</h2>
         <p className="dim">
@@ -810,8 +609,12 @@ export default function SnipeTab() {
           ) : null}
 
           <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 12 }}>
-            <button className="primary" disabled={!canFire || phase === "firing"} onClick={() => setPhase("confirm")}>
-              REVIEW &amp; FIRE {stage === "allowlist" ? "(ALLOWLIST)" : ""}
+            <button
+              className="primary"
+              disabled={!canFire || phase === "firing"}
+              onClick={() => setPhase("confirm")}
+            >
+              REVIEW {stage === "allowlist" ? "(ALLOWLIST)" : ""}
             </button>
             {target && (phaseDrop === "ended" || phaseDrop === "soldout" || phaseDrop === "unconfigured") ? (
               <span className="dim">nothing to fire at right now</span>
@@ -830,43 +633,6 @@ export default function SnipeTab() {
         timing={timing}
       />
 
-      {phase === "firing" && countdownMs !== null ? (
-        <div className="panel">
-          <h2>Waiting for stage…</h2>
-          <p className="ok" style={{ fontSize: 20 }}>
-            {formatCountdown(Math.ceil(countdownMs / 1000))}
-          </p>
-          <button className="secondary" onClick={cancelWait}>
-            cancel
-          </button>
-        </div>
-      ) : null}
-
-      {rows.length > 0 ? (
-        <div className="panel">
-          <h2>Fire log</h2>
-          <Steps
-            steps={rows.map((r): StepView => ({
-              id: r.address,
-              label: `${r.address.slice(0, 10)}…${r.address.slice(-4)}`,
-              status: STEP_STATUS[r.status],
-              detail: (
-                <>
-                  {r.status === "queued" ? "signed, waiting to fire" : r.status}
-                  {r.txHash ? (
-                    <>
-                      {" — "}
-                      <TxLink hash={r.txHash} />
-                    </>
-                  ) : null}
-                  {r.detail ? ` — ${r.detail}` : ""}
-                </>
-              ),
-            }))}
-          />
-        </div>
-      ) : null}
-
       {phase === "confirm" && target ? (
         <div className="modal-backdrop">
           <div className="modal">
@@ -882,15 +648,15 @@ export default function SnipeTab() {
               </dd>
               <dt>wallets firing</dt>
               <dd>
-                {firingAccounts.length}
-                {stage === "allowlist" && firingAccounts.length !== accounts.length
-                  ? ` of ${accounts.length} (rest not on list)`
+                {firingAddresses.length}
+                {stage === "allowlist" && firingAddresses.length !== addresses.length
+                  ? ` of ${addresses.length} (rest not on list)`
                   : ""}
               </dd>
               <dt>quantity</dt>
               <dd>
                 {effectiveQty} / wallet{maxQuantity ? " (stage max)" : ""} ={" "}
-                {effectiveQty * firingAccounts.length} NFTs total
+                {effectiveQty * firingAddresses.length} NFTs total
               </dd>
               <dt>mint cost</dt>
               <dd>
@@ -936,10 +702,13 @@ export default function SnipeTab() {
                 disabled={!confirmChecked}
                 onClick={() => {
                   setConfirmChecked(false);
-                  void fire();
+                  setPhase("form");
+                  document
+                    .querySelector("#remote-runner")
+                    ?.scrollIntoView({ behavior: "smooth", block: "start" });
                 }}
               >
-                SIGN &amp; FIRE
+                QUEUE IT ON THE SERVER
               </button>
               <button className="secondary" onClick={() => setPhase("form")}>
                 cancel

@@ -368,7 +368,10 @@ export default function RemoteRunner(props: RemoteRunnerProps) {
     JSON.stringify(props.extraRpcs.map(hostOf)) !== JSON.stringify(status?.rpcHosts ?? []);
 
   return (
-    <div className="panel">
+    // Named so the Snipe tab above can send you here — it is where firing
+    // happens now, and the review step points at it rather than at a button
+    // that no longer exists.
+    <div className="panel" id="remote-runner">
       <h2>Remote runner (VPS) — queue</h2>
       <p className="dim" style={{ marginTop: 0 }}>
         Queue drops hours in advance on a server sitting next to the chain&apos;s
