@@ -158,6 +158,54 @@ export function makeId(seed: string): string {
   return h.toString(16).padStart(8, "0");
 }
 
+/**
+ * Build a record from four typed fields, or say what is wrong with them.
+ *
+ * The bot asks these one at a time and the panel asks them all at once, but
+ * the validation has to be the same or the two sources drift — a name the bot
+ * accepts and the form rejects is a bug that only shows up on a phone. So both
+ * end here.
+ */
+export function buildUpcoming(
+  input: { name: string; twitter: string; supply?: string; when?: string },
+  now: number,
+  tzOffsetMin = DEFAULT_TZ_OFFSET,
+): { mint: UpcomingMint } | { error: string } {
+  const name = input.name.trim();
+  if (!name) return { error: "a name is needed" };
+  if (name.length > 80) return { error: "that name is too long" };
+
+  const twitter = normaliseTwitter(input.twitter);
+  if (!twitter) return { error: "that doesn't look like a Twitter handle or link" };
+
+  let supply: number | undefined;
+  const raw = (input.supply ?? "").trim();
+  if (raw && !/^(tba|tbd|unknown|\?)$/i.test(raw)) {
+    const n = Number(raw.replace(/[\s,]/g, ""));
+    if (!Number.isFinite(n) || n <= 0 || n !== Math.floor(n)) {
+      return { error: "supply must be a whole number, or left blank" };
+    }
+    supply = n;
+  }
+
+  // An empty date means the same as the bot's "TBA": not announced, which is
+  // a real state and not a missing field.
+  const when = parseWhen((input.when ?? "").trim() || "tba", now, tzOffsetMin);
+  if (!when) return { error: "that date didn't parse — try 01.09, 1.9 18:00, or leave it blank" };
+
+  return {
+    mint: {
+      id: makeId(`${twitter}${name}${now}`),
+      name,
+      twitter,
+      supply,
+      at: when.at,
+      dayOnly: when.dayOnly,
+      addedAt: now,
+    },
+  };
+}
+
 // ── The conversation ────────────────────────────────────────────────────────
 
 export type Step = "idle" | "name" | "twitter" | "supply" | "date";

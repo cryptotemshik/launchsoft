@@ -26,6 +26,14 @@ import type { MintEvent } from "../lib/mintPulse";
 
 const EVENT = parseAbiItem(PUBLIC_DROP_UPDATED);
 
+/**
+ * SeaDrop announces every mint, so one topic covers the whole chain.
+ */
+export const SEADROP_MINT =
+  "event SeaDropMint(address indexed nftContract, address indexed minter, address indexed feeRecipient, address payer, uint256 quantityMinted, uint256 unitMintPrice, uint256 feeBps, uint256 dropStageIndex)" as const;
+
+const MINT_EVENT = parseAbiItem(SEADROP_MINT);
+
 /** Multicall3, at the same address on every chain that has it. */
 const MULTICALL3 = "0xcA11bde05977b3631167028862bE2a173976CA11" as const;
 
@@ -101,34 +109,35 @@ type DropLog = {
  * - "slow down" → wait and ask for the same range again. Splitting here is
  *   what turns a throttle into a stampede.
  */
-async function readLogs(
+async function readLogs<T>(
   client: PublicClient,
+  event: typeof EVENT | typeof MINT_EVENT,
   fromBlock: bigint,
   toBlock: bigint,
   onNote?: (s: string) => void,
   waited = 0,
-): Promise<DropLog[]> {
+): Promise<T[]> {
   try {
     return (await client.getLogs({
       address: SEADROP,
-      event: EVENT,
+      event,
       fromBlock,
       toBlock,
-    })) as unknown as DropLog[];
+    })) as unknown as T[];
   } catch (e) {
     if (isRateLimit(e)) {
       if (waited >= THROTTLE_RETRIES) throw e;
       const pause = 600 * 2 ** waited;
       onNote?.(`throttled — waiting ${pause}ms before asking again`);
       await sleep(pause);
-      return readLogs(client, fromBlock, toBlock, onNote, waited + 1);
+      return readLogs<T>(client, event, fromBlock, toBlock, onNote, waited + 1);
     }
     const span = toBlock - fromBlock;
     if (!tooWide(e) || span <= MIN_SPAN) throw e;
     onNote?.(`range of ${span} blocks refused — splitting`);
     const mid = fromBlock + span / 2n;
-    const a = await readLogs(client, fromBlock, mid, onNote, waited);
-    const b = await readLogs(client, mid + 1n, toBlock, onNote, waited);
+    const a = await readLogs<T>(client, event, fromBlock, mid, onNote, waited);
+    const b = await readLogs<T>(client, event, mid + 1n, toBlock, onNote, waited);
     return [...a, ...b];
   }
 }
@@ -146,7 +155,7 @@ export async function scanPublicDrops(
   client: PublicClient,
   opts: { fromBlock: bigint; toBlock: bigint; onNote?: (s: string) => void },
 ): Promise<ScanResult> {
-  const logs = await readLogs(client, opts.fromBlock, opts.toBlock, opts.onNote);
+  const logs = await readLogs<DropLog>(client, EVENT, opts.fromBlock, opts.toBlock, opts.onNote);
   const events = logs
     .filter((l) => l.args.nftContract && l.args.publicDrop)
     .map((l) => ({
@@ -271,27 +280,19 @@ export async function measureBlockRate(
  * producing ~35,600 blocks an hour that is accurate to a second or two, which
  * is far finer than the minute buckets anything here counts in.
  */
-export const SEADROP_MINT =
-  "event SeaDropMint(address indexed nftContract, address indexed minter, address indexed feeRecipient, address payer, uint256 quantityMinted, uint256 unitMintPrice, uint256 feeBps, uint256 dropStageIndex)" as const;
-
-const MINT_EVENT = parseAbiItem(SEADROP_MINT);
-
 export async function readMints(
   client: PublicClient,
   opts: { fromBlock: bigint; toBlock: bigint; onNote?: (s: string) => void },
 ): Promise<MintEvent[]> {
+  // Through the same reader the drop scan uses. This used to be a bare
+  // getLogs, which meant an hour of mints — four and a half thousand events —
+  // met a refusal or a rate limit with nothing but an exception, and the feed
+  // above it reported "the chain is quiet".
   const [logs, head, tail] = await Promise.all([
-    client.getLogs({
-      address: SEADROP,
-      event: MINT_EVENT,
-      fromBlock: opts.fromBlock,
-      toBlock: opts.toBlock,
-    }) as unknown as Promise<
-      {
-        blockNumber: bigint;
-        args: { nftContract?: `0x${string}`; minter?: `0x${string}`; quantityMinted?: bigint };
-      }[]
-    >,
+    readLogs<{
+      blockNumber: bigint;
+      args: { nftContract?: `0x${string}`; minter?: `0x${string}`; quantityMinted?: bigint };
+    }>(client, MINT_EVENT, opts.fromBlock, opts.toBlock, opts.onNote),
     client.getBlock({ blockNumber: opts.fromBlock }),
     client.getBlock({ blockNumber: opts.toBlock }),
   ]);

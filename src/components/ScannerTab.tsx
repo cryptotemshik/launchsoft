@@ -135,6 +135,18 @@ const STATE_CLASS: Record<DropState, string> = {
   ended: "dim",
 };
 
+/**
+ * A number from the server, or a dash.
+ *
+ * Everything in the footer line comes straight off the response, and a server
+ * one version behind — or any response that isn't the shape expected — used to
+ * take the whole tab down with "cannot read properties of undefined". A
+ * missing figure should cost that figure, not the page.
+ */
+function num(v: number | undefined): string {
+  return typeof v === "number" && Number.isFinite(v) ? v.toLocaleString("en-US") : "—";
+}
+
 /** A typed number box that stays empty rather than falling back to zero. */
 function numberOrUndefined(v: string): number | undefined {
   const t = v.trim();
@@ -792,8 +804,8 @@ export default function ScannerTab({ onSnipe }: { onSnipe?: (contract: string) =
             ) : null}
             {view ? (
               <span className="pill ok">
-                {view.collections} found · {view.enriched} read ·{" "}
-                {(view.tookMs / 1000).toFixed(1)}s
+                {num(view.collections)} found · {num(view.enriched)} read ·{" "}
+                {((view.tookMs ?? 0) / 1000).toFixed(1)}s
                 {view.cachedAt
                   ? ` · ${Math.max(0, Math.round((Date.now() - view.cachedAt) / 1000))}s ago`
                   : ""}
@@ -952,7 +964,7 @@ export default function ScannerTab({ onSnipe }: { onSnipe?: (contract: string) =
 
             <div className="filter-status">
               <span className="dim">
-                {rows.length} of {view.collections} shown
+                {rows.length} of {num(view.collections)} shown
               </span>
               {bounded ? (
                 <button className="secondary link-btn" onClick={clearBounds}>
@@ -1295,10 +1307,10 @@ export default function ScannerTab({ onSnipe }: { onSnipe?: (contract: string) =
 
         {view ? (
           <p className="dim hint" style={{ marginBottom: 0 }}>
-            Read {view.hours}h of {view.chain} — blocks{" "}
-            {view.fromBlock.toLocaleString("en-US")}–{view.toBlock.toLocaleString("en-US")} at about{" "}
-            {view.blocksPerHour.toLocaleString("en-US")} blocks an hour, {view.events} stage
-            configurations across {view.collections} collections. Allow-list stages are never
+            Read {view.hours}h of {view.chain ?? "the chain"} — blocks{" "}
+            {num(view.fromBlock)}–{num(view.toBlock)} at about{" "}
+            {num(view.blocksPerHour)} blocks an hour, {num(view.events)} stage
+            configurations across {num(view.collections)} collections. Allow-list stages are never
             reported here: this event describes the public stage alone. Twitter comes from the
             marketplace, not the chain — nothing on-chain carries it — so a dash means no account
             is connected there.

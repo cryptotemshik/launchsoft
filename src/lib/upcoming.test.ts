@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
-  formatWhen,
   IDLE,
+  buildUpcoming,
+  formatWhen,
   normaliseTwitter,
   parseWhen,
   sortByDate,
@@ -223,5 +224,54 @@ describe("the add conversation", () => {
     const r = step(IDLE, { text: "just chatting" }, NOW).reply;
     expect(r.save).toBeUndefined();
     expect(r.text).toContain("Upcoming mints");
+  });
+});
+
+describe("buildUpcoming", () => {
+  const NOW_B = Date.UTC(2026, 7, 27, 12, 0, 0) / 1000;
+
+  it("builds the same record the bot would from the same four answers", () => {
+    const r = buildUpcoming(
+      { name: "Pipe Dogs", twitter: "@pipedogsnft", supply: "5555", when: "01.09 18:00" },
+      NOW_B,
+    );
+    expect(r).toMatchObject({
+      mint: { name: "Pipe Dogs", twitter: "https://x.com/pipedogsnft", supply: 5555 },
+    });
+    expect("mint" in r && r.mint.at).toBeGreaterThan(NOW_B);
+    expect("mint" in r && r.mint.dayOnly).toBeUndefined();
+  });
+
+  it("treats a blank date as not announced rather than as an error", () => {
+    const r = buildUpcoming({ name: "X", twitter: "someone" }, NOW_B);
+    expect("mint" in r && r.mint.at).toBeUndefined();
+  });
+
+  it("accepts a supply with separators and rejects a fractional one", () => {
+    expect(buildUpcoming({ name: "X", twitter: "a", supply: "10 000" }, NOW_B)).toMatchObject({
+      mint: { supply: 10_000 },
+    });
+    expect(buildUpcoming({ name: "X", twitter: "a", supply: "5.5" }, NOW_B)).toHaveProperty("error");
+    expect(buildUpcoming({ name: "X", twitter: "a", supply: "-3" }, NOW_B)).toHaveProperty("error");
+  });
+
+  it("leaves supply out when nobody has said", () => {
+    expect(buildUpcoming({ name: "X", twitter: "a", supply: "tba" }, NOW_B)).toMatchObject({
+      mint: { supply: undefined },
+    });
+  });
+
+  it("refuses what the bot would also refuse", () => {
+    expect(buildUpcoming({ name: "  ", twitter: "a" }, NOW_B)).toHaveProperty("error");
+    expect(buildUpcoming({ name: "X", twitter: "not a handle!!" }, NOW_B)).toHaveProperty("error");
+    expect(buildUpcoming({ name: "X", twitter: "a", when: "the 45th" }, NOW_B)).toHaveProperty(
+      "error",
+    );
+  });
+
+  it("gives two drops added in the same second different ids", () => {
+    const a = buildUpcoming({ name: "One", twitter: "a" }, NOW_B);
+    const b = buildUpcoming({ name: "Two", twitter: "b" }, NOW_B);
+    expect("mint" in a && "mint" in b && a.mint.id !== b.mint.id).toBe(true);
   });
 });

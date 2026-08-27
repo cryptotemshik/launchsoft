@@ -15,6 +15,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRunnerApi } from "../lib/runnerClient";
+import { useCustomRpcs } from "../lib/customRpc";
 import type { MintPulse } from "../lib/mintPulse";
 import { reuseBand, type IndexedCollection } from "../lib/creatorIndex";
 import { twitterUrl, type CollectionInfo } from "../lib/collectionInfo";
@@ -42,6 +43,10 @@ interface LiveView {
   chain: string;
   openSeaSlug?: string;
   cachedAt?: number;
+  /** Why the read failed, when it did. Absent on a healthy hour. */
+  error?: string | null;
+  readRpc?: string;
+  publicRpc?: boolean;
   related?: { owners?: Record<string, IndexedCollection[]>; twitters?: Record<string, IndexedCollection[]> };
 }
 
@@ -93,6 +98,7 @@ function Spark({ spark }: { spark: readonly number[] }) {
 
 export default function LiveTab({ onSnipe }: { onSnipe?: (contract: string) => void }) {
   const { url, setUrl, token, setToken, base, call, save, serverVersion } = useRunnerApi();
+  const { urls: customRpcs } = useCustomRpcs();
   const [view, setView] = useState<LiveView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -124,6 +130,8 @@ export default function LiveTab({ onSnipe }: { onSnipe?: (contract: string) => v
       }
       seen.current = ids;
       setView({ ...r, rows });
+      // A failed read is not a quiet chain, and the server now says which.
+      if (r.error) setError(`could not read the mint feed: ${r.error}`);
       setNow(Math.floor(Date.now() / 1000));
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -135,8 +143,27 @@ export default function LiveTab({ onSnipe }: { onSnipe?: (contract: string) => v
     }
   }, [call, save]);
 
+  /**
+   * Install this browser's endpoint before the first read.
+   *
+   * An hour of mints is four and a half thousand events in one log query —
+   * comfortably the heaviest thing this tab asks for — and the chain's public
+   * RPC answers it with a rate limit. The endpoint is one shared setting, so
+   * every page that leans on it installs it rather than assuming another tab
+   * already did.
+   */
+  const pushRpcs = useCallback(async () => {
+    if (customRpcs.length === 0) return;
+    try {
+      await call("/api/rpcs", { method: "POST", body: JSON.stringify({ extraRpcs: customRpcs }) });
+    } catch {
+      // An older server has no such route; the stale-server notice covers it.
+    }
+  }, [call, customRpcs]);
+
   useEffect(() => {
-    if (base && token) void load();
+    if (!base || !token) return;
+    void pushRpcs().then(() => load());
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -303,6 +330,12 @@ export default function LiveTab({ onSnipe }: { onSnipe?: (contract: string) => v
             {view ? (
               <span className="pill ok">
                 {totals.collections} minting · {totals.quantity.toLocaleString("en-US")} in {view.hours}h
+              </span>
+            ) : null}
+            {view?.readRpc ? (
+              <span className={view.publicRpc ? "pill warn" : "pill"}>
+                via <b>{view.readRpc}</b>
+                {view.publicRpc ? " · public" : ""}
               </span>
             ) : null}
           </div>
@@ -495,10 +528,23 @@ export default function LiveTab({ onSnipe }: { onSnipe?: (contract: string) => v
 
         {view && rows.length === 0 ? (
           <div className="empty-state">
-            NOTHING MINTING —{" "}
-            <span className="es-action">
-              {hideWash ? "OR EVERYTHING LEFT IS WASH — CLEAR THE FILTER" : "THE CHAIN IS QUIET"}
-            </span>
+            {view.error ? (
+              <>
+                COULD NOT READ THE FEED —{" "}
+                <span className="es-action">
+                  {customRpcs.length === 0
+                    ? "THE PUBLIC RPC METERS A QUERY THIS SIZE — PASTE YOUR ENDPOINT ON THE SNIPE TAB"
+                    : "TRY AGAIN"}
+                </span>
+              </>
+            ) : (
+              <>
+                NOTHING MINTING —{" "}
+                <span className="es-action">
+                  {hideWash ? "OR EVERYTHING LEFT IS WASH — CLEAR THE FILTER" : "THE CHAIN IS QUIET"}
+                </span>
+              </>
+            )}
           </div>
         ) : null}
 

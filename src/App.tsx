@@ -88,10 +88,7 @@ export default function App() {
   }
 
   return (
-    // The scanner is a ten-column table; every other tab is a form or a short
-    // list. Rather than making all of them as wide as the widest, the page
-    // widens for the one that needs it.
-    <div className={`app-enter${tab === "scanner" || tab === "live" ? " roomy" : ""}`}>
+    <div className="app-enter">
       <ConnectBar
         onHome={() => {
           localStorage.removeItem("launchpad.entered");
@@ -101,9 +98,9 @@ export default function App() {
       <div className="tabs">
         {([
           ["wallets", "TRACKER"],
-          ["upcoming", "UPCOMING"],
           ["scanner", "SCANNER"],
           ["live", "LIVE"],
+          ["upcoming", "WATCHLIST"],
         ] as const).map(([t, label]) => {
           const Icon = TAB_ICON[t];
           return (

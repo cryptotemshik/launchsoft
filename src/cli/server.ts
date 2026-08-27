@@ -64,8 +64,8 @@ import {
 import { readDrop, runSnipe, type RunOptions, type RunResult } from "./runner";
 import { formatMintReport, sendTelegram, type MintedWallet } from "../lib/telegram";
 import { startTelegramBot } from "./telegramBot";
-import { loadUpcoming, removeUpcoming } from "./upcomingStore";
-import { sortByDate } from "../lib/upcoming";
+import { addUpcoming, loadUpcoming, removeUpcoming } from "./upcomingStore";
+import { buildUpcoming, sortByDate } from "../lib/upcoming";
 import { enrichDrops, measureBlockRate, readMints, scanPublicDrops } from "./dropScanner";
 import { blocksForHours, classify, mergeScans, sortForScan, type ScannedDrop } from "../lib/dropScan";
 import { API_VERSION } from "../lib/apiVersion";
@@ -504,6 +504,15 @@ const PULSE_HOURS = 1;
 const PULSE_TTL_MS = 30_000;
 let pulseCache: { at: number; by: Record<string, MintPulse> } | null = null;
 let pulseInflight: Promise<Record<string, MintPulse>> | null = null;
+/**
+ * Why the last read of the mint feed failed, if it did.
+ *
+ * Swallowing this was the worse half of the bug it fixes: a refused log query
+ * came back as an empty map, and a feed with nothing in it is indistinguishable
+ * from a chain with nothing happening. "Nothing minting — the chain is quiet"
+ * is a claim, and it should only ever be made when it is true.
+ */
+let pulseError: string | null = null;
 
 /**
  * The live feed's rows: what is minting, with enough about each to read.
@@ -571,7 +580,8 @@ async function liveRows(
     return rows;
   })()
     .catch((e) => {
-      log(`live failed: ${e instanceof Error ? e.message : e}`);
+      pulseError = e instanceof Error ? e.message : String(e);
+      log(`live failed: ${pulseError}`);
       return [] as LiveRow[];
     })
     .finally(() => {
@@ -592,16 +602,20 @@ async function mintPulse(
     const events = await readMints(client, {
       fromBlock: tip > span ? tip - span : 0n,
       toBlock: tip,
+      onNote: (n) => log(`pulse: ${n}`),
     });
+    pulseError = null;
     const by = pulseByCollection(events, Math.floor(Date.now() / 1000));
     pulseCache = { at: Date.now(), by };
     log(`pulse: ${events.length} mints across ${Object.keys(by).length} collections`);
     return by;
   })()
     .catch((e) => {
-      // A scan is still worth serving without it: the columns say "—" rather
-      // than the whole table failing over one extra query.
-      log(`pulse failed: ${e instanceof Error ? e.message : e}`);
+      // A scan is still worth serving without it — the columns say "—" rather
+      // than the whole table failing over one extra query — but the reason
+      // travels with the response so nobody reads a failure as a quiet chain.
+      pulseError = e instanceof Error ? e.message : String(e);
+      log(`pulse failed: ${pulseError}`);
       return {} as Record<string, MintPulse>;
     })
     .finally(() => {
@@ -715,6 +729,7 @@ async function startScan(hours: number): Promise<Record<string, unknown>> {
       /** Minting over the last hour, keyed by lower-case contract. */
       pulse,
       pulseHours: PULSE_HOURS,
+      pulseError,
       nativeSymbol: info.chain.nativeCurrency.symbol,
       nativeUsd: nativeUsdRate,
       /** Owner and handle groupings for the collections in this response. */
@@ -1627,6 +1642,9 @@ const server = createServer(async (req, res) => {
       const rows = await liveRows(client as never, tip, blockRate.perHour);
       json(res, 200, {
         rows,
+        error: pulseError,
+        readRpc: rpcHost(readRpc(cfg, info)),
+        publicRpc: cfg.extraRpcs.length === 0,
         related: creators.relatedFor(rows.map((r) => r.contract)),
         knownCollections: creators.size,
         hours: PULSE_HOURS,
@@ -1670,6 +1688,33 @@ const server = createServer(async (req, res) => {
 
     if (url.pathname === "/api/upcoming" && req.method === "GET") {
       json(res, 200, { upcoming: sortByDate(loadUpcoming(CONFIG_PATH)) });
+      return;
+    }
+
+    /**
+     * Add a drop from the panel rather than from the bot.
+     *
+     * Same four fields and the same validation — they share `buildUpcoming`,
+     * so a name the bot accepts cannot be one the form rejects.
+     */
+    if (url.pathname === "/api/upcoming" && req.method === "POST") {
+      const body = await readBody(req);
+      const built = buildUpcoming(
+        {
+          name: String(body.name ?? ""),
+          twitter: String(body.twitter ?? ""),
+          supply: body.supply === undefined ? undefined : String(body.supply),
+          when: body.when === undefined ? undefined : String(body.when),
+        },
+        Math.floor(Date.now() / 1000),
+      );
+      if ("error" in built) {
+        json(res, 400, { error: built.error });
+        return;
+      }
+      const list = addUpcoming(CONFIG_PATH, built.mint);
+      log(`upcoming: added ${built.mint.name} from the panel`);
+      json(res, 200, { added: built.mint, upcoming: sortByDate(list) });
       return;
     }
 

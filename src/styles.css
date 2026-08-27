@@ -35,16 +35,34 @@ body {
   background: rgba(0, 230, 118, 0.4);
 }
 
+/* One width for every tab.
+   The tables want room and the forms do not, and for a while the page widened
+   for the two tabs with tables in them. Switching tabs then moved everything
+   sideways, which is worse than either width would have been on its own — a
+   nav you have to re-find after every click. So the page is one size, wide
+   enough for the tables, and the forms inside it are capped instead. */
 #root {
-  max-width: 960px;
+  max-width: 1280px;
   margin: 0 auto;
   padding: 22px 18px 110px;
 }
-/* One tab needs the room; the rest read better narrow. Set on the app rather
-   than on #root so the width travels with the tab, and capped so the table
-   never becomes a stretched-out line to follow across a wide monitor. */
-#root:has(> .roomy) {
-  max-width: 1340px;
+
+/* Reading and typing want a measure; tables want the panel. A form row keeps
+   its own width rather than stretching to the full 1280. */
+.panel > p,
+.panel > .hint,
+.panel > .row,
+.panel > .field,
+.panel > .filter-grid,
+.panel > .profit-summary,
+.panel > form {
+  max-width: 900px;
+}
+.panel > .table-wrap,
+.panel > .scan-filters,
+.panel > .scan-bar,
+.panel > .empty-state {
+  max-width: none;
 }
 
 a {
@@ -2154,4 +2172,16 @@ button.secondary.link-btn {
   font-family: var(--mono);
   font-size: 11px;
   flex: none;
+}
+
+/* Adding a drop by hand: the same four fields the bot asks for, in one go. */
+.add-upcoming {
+  margin-top: 14px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+.add-upcoming .filter-grid {
+  margin-top: 0;
 }

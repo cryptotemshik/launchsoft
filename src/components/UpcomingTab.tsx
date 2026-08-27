@@ -1,10 +1,13 @@
 /**
  * Drops that haven't happened yet.
  *
- * These are entered through the Telegram bot rather than here, and on purpose:
- * they get spotted on a phone, scrolling Twitter, hours before there is an
- * OpenSea page or a contract to paste anywhere. `/add` in the bot takes the
- * four things worth knowing; this is the window onto what has been collected.
+ * They get spotted on a phone, scrolling Twitter, hours before there is an
+ * OpenSea page or a contract to paste anywhere — which is why the bot exists
+ * and why `/add` there takes the four things worth knowing.
+ *
+ * The same four can be typed here, because the phone is not always where you
+ * are. Both routes end in the same `buildUpcoming`, so a name the bot accepts
+ * cannot be one this form rejects.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRunnerApi } from "../lib/runnerClient";
@@ -41,6 +44,10 @@ export default function UpcomingTab() {
   const [sort, setSort] = useState<SortKey>("date");
   const [desc, setDesc] = useState(false);
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
+  const [adding, setAdding] = useState(false);
+  const [draft, setDraft] = useState({ name: "", twitter: "", supply: "", when: "" });
+  const [addError, setAddError] = useState<string | null>(null);
+  const [addBusy, setAddBusy] = useState(false);
 
   const load = useCallback(async () => {
     setBusy(true);
@@ -61,6 +68,27 @@ export default function UpcomingTab() {
       setBusy(false);
     }
   }, [call, save]);
+
+  const add = useCallback(async () => {
+    setAddBusy(true);
+    setAddError(null);
+    try {
+      const r = (await call("/api/upcoming", {
+        method: "POST",
+        body: JSON.stringify(draft),
+      })) as unknown as { upcoming?: UpcomingMint[] };
+      setList(Array.isArray(r.upcoming) ? r.upcoming : []);
+      setDraft({ name: "", twitter: "", supply: "", when: "" });
+      setAdding(false);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setAddError(
+        /404/.test(msg) ? "This server is too old to add from here — update it first." : msg,
+      );
+    } finally {
+      setAddBusy(false);
+    }
+  }, [call, draft]);
 
   useEffect(() => {
     if (base && token) void load();
@@ -124,11 +152,12 @@ export default function UpcomingTab() {
   return (
     <div>
       <div className="panel">
-        <h2>Upcoming mints</h2>
+        <h2>Watchlist — drops with nothing to snipe yet</h2>
         <p className="dim" style={{ marginTop: 0 }}>
-          Drops that have a Twitter account and nothing else yet — no OpenSea
-          page, no contract, nothing to paste into the Snipe tab. You add them
-          from the phone through the Telegram bot; this is the list they land in.
+          Drops that have a Twitter account and nothing else — no OpenSea page,
+          no contract, nothing to paste into the Snipe tab. Add them from the
+          phone through the Telegram bot, or here when you are at the desk;
+          both go through the same checks and land in the same list.
         </p>
 
         <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
@@ -151,9 +180,87 @@ export default function UpcomingTab() {
             />
           </div>
         </div>
+        {adding ? (
+          <form
+            className="add-upcoming"
+            onSubmit={(e) => {
+              e.preventDefault();
+              void add();
+            }}
+          >
+            <div className="filter-grid">
+              <div className="field" style={{ gridColumn: "span 2" }}>
+                <label>name</label>
+                <input
+                  autoFocus
+                  value={draft.name}
+                  onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+                  placeholder="Pipe Dogs"
+                />
+              </div>
+              <div className="field" style={{ gridColumn: "span 2" }}>
+                <label>twitter</label>
+                <input
+                  value={draft.twitter}
+                  onChange={(e) => setDraft({ ...draft, twitter: e.target.value })}
+                  placeholder="@pipedogsnft or a link"
+                />
+              </div>
+              <div className="field">
+                <label>supply</label>
+                <input
+                  inputMode="numeric"
+                  value={draft.supply}
+                  onChange={(e) => setDraft({ ...draft, supply: e.target.value })}
+                  placeholder="not announced"
+                />
+              </div>
+              <div className="field">
+                <label>when</label>
+                <input
+                  value={draft.when}
+                  onChange={(e) => setDraft({ ...draft, when: e.target.value })}
+                  placeholder="01.09 18:00, or blank"
+                />
+              </div>
+            </div>
+            {addError ? <p className="error">{addError}</p> : null}
+            <p className="dim hint" style={{ margin: "6px 0 0" }}>
+              Only the name and the Twitter are needed. A blank date means
+              &ldquo;not announced&rdquo; — the same as answering TBA in the bot
+              — and dates are read the way you would type them: <code>1.9</code>,{" "}
+              <code>01.09.2026</code>, either with <code>18:00</code> after it.
+            </p>
+            <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+              <button type="submit" disabled={addBusy || !base || !token}>
+                {addBusy ? <span className="spin">ADDING</span> : "add to watchlist"}
+              </button>
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => {
+                  setAdding(false);
+                  setAddError(null);
+                }}
+              >
+                cancel
+              </button>
+            </div>
+          </form>
+        ) : null}
+
         <div
           style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap", marginTop: 8 }}
         >
+          {!adding ? (
+            <button
+              className="secondary"
+              onClick={() => setAdding(true)}
+              disabled={!base || !token}
+            >
+              + add a drop
+            </button>
+          ) : null}
           <button
             className="secondary"
             onClick={() => void load()}
@@ -231,7 +338,7 @@ export default function UpcomingTab() {
 
         {list && list.length === 0 ? (
           <div className="empty-state">
-            NO UPCOMING MINTS — <span className="es-action">SEND /ADD TO THE TELEGRAM BOT</span>
+            NOTHING ON THE WATCHLIST — <span className="es-action">ADD ONE ABOVE, OR /ADD IN THE BOT</span>
           </div>
         ) : null}
 
