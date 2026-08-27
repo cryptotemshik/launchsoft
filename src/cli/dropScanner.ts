@@ -41,6 +41,21 @@ const COLLECTION_ABI = [
   { type: "function", name: "name", stateMutability: "view", inputs: [], outputs: [{ type: "string" }] },
   { type: "function", name: "maxSupply", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
   { type: "function", name: "totalSupply", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
+  // Asked a second way, because not every collection here answers
+  // totalSupply() at all — one was seen reverting on it with 426 of 3000
+  // minted. getMintStats is part of the SeaDrop interface all of them
+  // implement, so it answers where the other does not.
+  {
+    type: "function",
+    name: "getMintStats",
+    stateMutability: "view",
+    inputs: [{ name: "minter", type: "address" }],
+    outputs: [
+      { name: "minterNumMinted", type: "uint256" },
+      { name: "currentTotalSupply", type: "uint256" },
+      { name: "maxSupply", type: "uint256" },
+    ],
+  },
   // Two more fields in the same batch, so the risk score costs no extra round
   // trip: where the art is served from, and whether it was committed to.
   { type: "function", name: "baseURI", stateMutability: "view", inputs: [], outputs: [{ type: "string" }] },
@@ -49,8 +64,21 @@ const COLLECTION_ABI = [
   { type: "function", name: "owner", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
 ] as const;
 
+/**
+ * The middle word of getMintStats — how many exist — for a collection whose
+ * totalSupply reverted. Undefined when that call failed too, which keeps the
+ * column honestly empty rather than claiming a zero nobody reported.
+ */
+function mintedFromStats(r: { status: string; result?: unknown } | undefined): number | undefined {
+  if (r?.status !== "success") return undefined;
+  const stats = r.result as readonly bigint[] | undefined;
+  if (!stats || stats.length < 2) return undefined;
+  const v = Number(stats[1]);
+  return Number.isFinite(v) ? v : undefined;
+}
+
 /** How many calls each collection contributes to a multicall batch. */
-const CALLS_PER_COLLECTION = 6;
+const CALLS_PER_COLLECTION = 7;
 
 /** Below this, splitting costs more round trips than it saves. */
 const MIN_SPAN = 5_000n;
@@ -290,6 +318,12 @@ export async function enrichDrops(
           { address: d.contract, abi: COLLECTION_ABI, functionName: "baseURI" },
           { address: d.contract, abi: COLLECTION_ABI, functionName: "provenanceHash" },
           { address: d.contract, abi: COLLECTION_ABI, functionName: "owner" },
+          {
+            address: d.contract,
+            abi: COLLECTION_ABI,
+            functionName: "getMintStats",
+            args: ["0x0000000000000000000000000000000000000000"],
+          },
         ]) as never,
       })) as never;
     } catch {
@@ -315,7 +349,7 @@ export async function enrichDrops(
         ...d,
         name: str(0),
         maxSupply: num(1),
-        minted: num(2),
+        minted: num(2) ?? mintedFromStats(at(6)),
         // An empty baseURI is a real answer — the drop has not revealed — so
         // it is kept as "" rather than folded into undefined with the misses.
         baseURI: at(3)?.status === "success" ? String(at(3).result) : undefined,

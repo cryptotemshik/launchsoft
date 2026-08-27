@@ -128,6 +128,60 @@ export const seaDropMintEvent = parseAbiItem(
   "event SeaDropMint(address indexed nftContract, address indexed minter, address indexed feeRecipient, address payer, uint256 quantityMinted, uint256 unitMintPrice, uint256 feeBps, uint256 dropStageIndex)",
 );
 
+/**
+ * How many have been minted, asked whichever way this collection can answer.
+ *
+ * Not every collection on this chain answers `totalSupply()`. Hoodwinked
+ * (0xc60079d7…) reverts on it with 426 of 3000 minted and rising, so this is
+ * not a not-started-yet edge case and not something a collection grows out
+ * of — why that build reverts is not established, only that it does. What
+ * broke was the `Promise.all` around it: one reverting read failed the whole
+ * batch, so the name, the price and the stage all vanished and the panel
+ * refused to queue a drop that was minting at that moment.
+ *
+ * `getMintStats` is part of the SeaDrop interface every one of these
+ * implements, and it answered 426 when totalSupply would not. `totalMinted()`
+ * is the ERC721A spelling, where exposed. Nothing minted is the last resort,
+ * and the least trustworthy of the four — but it lets the rest of the read
+ * through, which is the point.
+ */
+export async function readMintedCount(
+  client: PublicClient,
+  target: `0x${string}`,
+): Promise<bigint> {
+  const attempts: (() => Promise<bigint>)[] = [
+    () =>
+      client.readContract({
+        address: target,
+        abi: tokenAbi,
+        functionName: "totalSupply",
+      }) as Promise<bigint>,
+    async () => {
+      const stats = (await client.readContract({
+        address: target,
+        abi: tokenAbi,
+        functionName: "getMintStats",
+        args: ["0x0000000000000000000000000000000000000000"],
+      })) as readonly [bigint, bigint, bigint];
+      return stats[1];
+    },
+    () =>
+      client.readContract({
+        address: target,
+        abi: tokenAbi,
+        functionName: "totalMinted",
+      }) as Promise<bigint>,
+  ];
+  for (const attempt of attempts) {
+    try {
+      return await attempt();
+    } catch {
+      // Next spelling.
+    }
+  }
+  return 0n;
+}
+
 export async function fetchCollectionStatus(
   publicClient: PublicClient,
   target: `0x${string}`,
@@ -145,7 +199,7 @@ export async function fetchCollectionStatus(
       read<string>("name"),
       read<string>("symbol"),
       read<string>("owner"),
-      read<bigint>("totalSupply"),
+      readMintedCount(publicClient, target),
       read<bigint>("maxSupply"),
       read<string>("baseURI"),
       read<string>("contractURI"),

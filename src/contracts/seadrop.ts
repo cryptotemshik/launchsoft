@@ -44,6 +44,34 @@ export const tokenAbi = [
     inputs: [],
     outputs: [{ type: "uint256" }],
   },
+  /**
+   * How many exist, asked a second way.
+   *
+   * Some SeaDrop collections revert on `totalSupply()` until the first token
+   * is minted — ERC721A computes it as the current index minus the burn
+   * count, and a build whose first id is 1 underflows at zero. The collection
+   * is perfectly fine and perfectly mintable; it simply cannot answer that one
+   * question yet. This one it can, and it carries the max supply along with
+   * it, which is the other half of what a queue entry needs.
+   */
+  {
+    type: "function",
+    name: "getMintStats",
+    stateMutability: "view",
+    inputs: [{ name: "minter", type: "address" }],
+    outputs: [
+      { name: "minterNumMinted", type: "uint256" },
+      { name: "currentTotalSupply", type: "uint256" },
+      { name: "maxSupply", type: "uint256" },
+    ],
+  },
+  {
+    type: "function",
+    name: "totalMinted",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ type: "uint256" }],
+  },
   {
     type: "function",
     name: "maxSupply",

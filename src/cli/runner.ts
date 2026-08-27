@@ -26,6 +26,7 @@ import { privateKeyToAccount, type PrivateKeyAccount } from "viem/accounts";
 import { getChainInfo, type ChainInfo } from "../chains";
 import { seaDropAbi, tokenAbi } from "../contracts/seadrop";
 import { pickFeeRecipient } from "../lib/collectionData";
+import { readMintedCount } from "../lib/collectionData";
 import { checkEligibility, type Eligibility } from "../lib/allowlist";
 import { fetchAllowListSource, gateKind } from "../lib/allowlistSource";
 import {
@@ -167,7 +168,7 @@ export async function readDrop(
     client.readContract({ address: collection, abi: tokenAbi, functionName } as never) as Promise<T>;
   const [name, totalSupply, maxSupply] = await Promise.all([
     read<string>("name"),
-    read<bigint>("totalSupply"),
+    readMintedCount(client, collection),
     read<bigint>("maxSupply"),
   ]);
   const [publicDrop, allowedFeeRecipients] = await Promise.all([
