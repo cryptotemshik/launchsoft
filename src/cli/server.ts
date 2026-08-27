@@ -929,6 +929,43 @@ function buildRequest(body: Record<string, unknown>): Omit<RunOptions, "keys"> {
 
 
 /** Addresses a job is restricted to, validated; undefined means "all wallets". */
+/**
+ * Narrow the server's wallets to the ones a caller named.
+ *
+ * Every operation that touches a set of wallets — funding them, sweeping ETH
+ * back, gathering NFTs — wants the same thing: all of them by default, a named
+ * subset when asked. Doing it three times in three routes is how the three
+ * quietly stop agreeing about what an unknown address means.
+ *
+ * An address the server does not hold is an error rather than a silent
+ * omission: a typo would otherwise look like a successful run that touched
+ * fewer wallets than asked, and the difference only shows up as money that
+ * never arrived.
+ */
+function chooseWallets<T>(
+  body: Record<string, unknown>,
+  field: string,
+  all: readonly T[],
+  addressOf: (item: T) => string,
+): T[] {
+  const raw = body[field];
+  if (!Array.isArray(raw)) return [...all];
+  const want = [
+    ...new Set(
+      (raw as unknown[])
+        .filter((x): x is string => typeof x === "string")
+        .map((a) => a.trim().toLowerCase()),
+    ),
+  ];
+  const known = new Map(all.map((item) => [addressOf(item).toLowerCase(), item]));
+  const missing = want.filter((a) => !known.has(a));
+  if (missing.length > 0) {
+    throw new Error(`not wallets on this server: ${missing.slice(0, 3).join(", ")}`);
+  }
+  if (want.length === 0) throw new Error(`${field} was empty — no wallets chosen, nothing to do`);
+  return want.map((a) => known.get(a)!);
+}
+
 function parseWalletFilter(body: Record<string, unknown>): string[] | undefined {
   if (!Array.isArray(body.wallets)) return undefined;
   const out = (body.wallets as unknown[])
@@ -2183,23 +2220,9 @@ const server = createServer(async (req, res) => {
       // and stays the default, but gathering a few onto one address and a few
       // onto another is a real thing to want, and doing it by sweeping the lot
       // and sending half back is both slower and more gas.
-      let entries = allEntries;
-      if (Array.isArray(body.from)) {
-        const want = new Set(
-          (body.from as unknown[])
-            .filter((x): x is string => typeof x === "string")
-            .map((a) => a.toLowerCase()),
-        );
-        const known = new Set(allEntries.map((e) => privateKeyToAccount(e.key).address.toLowerCase()));
-        const missing = [...want].filter((a) => !known.has(a));
-        if (missing.length > 0) {
-          throw new Error(`not wallets on this server: ${missing.slice(0, 3).join(", ")}`);
-        }
-        entries = allEntries.filter((e) =>
-          want.has(privateKeyToAccount(e.key).address.toLowerCase()),
-        );
-        if (entries.length === 0) throw new Error("no source wallets chosen — nothing to sweep from");
-      }
+      const entries = chooseWallets(body, "from", allEntries, (e) =>
+        privateKeyToAccount(e.key).address,
+      );
       const addresses = entries.map((e) => privateKeyToAccount(e.key).address);
 
       // One scan for every chosen wallet and every collection, so a sweep
@@ -2317,24 +2340,11 @@ const server = createServer(async (req, res) => {
       }
       // A caller may name the wallets to fund — the queue does, so funding a
       // job pays exactly the wallets that job fires from and no others.
-      // Anything named that the server does not hold is refused rather than
-      // silently dropped: a typo would otherwise look like a successful run
-      // that funded fewer wallets than asked.
       const stored = entries.map((e) => privateKeyToAccount(e.key).address);
-      let targets = stored;
-      if (Array.isArray(body.targets)) {
-        const want = (body.targets as unknown[])
-          .filter((x): x is string => typeof x === "string")
-          .map((a) => a.toLowerCase());
-        const byLower = new Map(stored.map((a) => [a.toLowerCase(), a]));
-        const missing = want.filter((a) => !byLower.has(a));
-        if (missing.length > 0) {
-          throw new Error(`not wallets on this server: ${missing.slice(0, 3).join(", ")}`);
-        }
-        targets = want.map((a) => byLower.get(a)!);
-      }
       // Never send a wallet its own money.
-      targets = targets.filter((a) => a.toLowerCase() !== payer);
+      const targets = chooseWallets(body, "targets", stored, (a) => a).filter(
+        (a) => a.toLowerCase() !== payer,
+      );
       if (targets.length === 0) throw new Error("no targets — the only wallet stored is the payer");
 
       // Kept as well as logged, so the panel can show what happened instead of
@@ -2374,8 +2384,17 @@ const server = createServer(async (req, res) => {
       if (!/^0x[0-9a-fA-F]{40}$/.test(to)) throw new Error("to must be a 0x address");
 
       const cfg = loadConfig(CONFIG_PATH);
-      const entries = loadKeyEntries(CONFIG_PATH, cfg.keysFile);
-      if (entries.length === 0) throw new Error("no wallets on the server to sweep");
+      const stored = loadKeyEntries(CONFIG_PATH, cfg.keysFile);
+      if (stored.length === 0) throw new Error("no wallets on the server to sweep");
+      // Which wallets to empty. All of them by default; a named subset when
+      // the panel says so, so ETH can be gathered from part of the set without
+      // draining the rest.
+      const entries = chooseWallets(body, "from", stored, (e) =>
+        privateKeyToAccount(e.key).address,
+      ).filter((e) => privateKeyToAccount(e.key).address.toLowerCase() !== to.toLowerCase());
+      if (entries.length === 0) {
+        throw new Error("nothing to sweep — the only wallet chosen is the destination");
+      }
 
       const result = await collect(
         {

@@ -119,6 +119,10 @@ export default function FundingTab() {
    * then all of them — the common case — and narrowed from there.
    */
   const [nftFrom, setNftFrom] = useState<Set<string>>(new Set());
+  /** Which wallets the fan-out pays. */
+  const [fundTo, setFundTo] = useState<Set<string>>(new Set());
+  /** Which wallets the ETH sweep empties. */
+  const [collectFrom, setCollectFrom] = useState<Set<string>>(new Set());
   const [nftFilter, setNftFilter] = useState("");
   const [nResult, setNResult] = useState<SweepNftsResult | null>(null);
   // How the scan results are shown. Kept apart from the scan itself so
@@ -136,9 +140,11 @@ export default function FundingTab() {
         // sweep almost always wants. After that, only drop what the server no
         // longer has, so a refresh mid-selection doesn't undo the picking.
         const live = new Set<string>(v.wallets.map((w) => w.address));
-        setNftFrom((chosen) =>
-          prev === null ? live : new Set([...chosen].filter((a) => live.has(a))),
-        );
+        const seed = (set: (f: (c: Set<string>) => Set<string>) => void) =>
+          set((chosen) => (prev === null ? live : new Set([...chosen].filter((a) => live.has(a)))));
+        seed(setNftFrom);
+        seed(setFundTo);
+        seed(setCollectFrom);
         return v;
       });
       setConnected(true);
@@ -173,6 +179,9 @@ export default function FundingTab() {
         amountEth: amount.trim(),
         dryRun,
         ...(skipFunded ? { skipIfAtLeastEth: amount.trim() } : {}),
+        // Only pin the targets when it is a strict subset; sending the whole
+        // list would freeze the run against wallets added later.
+        ...(fundTo.size < wallets.length ? { targets: [...fundTo] } : {}),
       };
       if (payerMode === "key") body.fromKey = payerKey.trim();
       else body.fromAddress = payerAddress;
@@ -201,7 +210,11 @@ export default function FundingTab() {
     try {
       const r = (await call("/api/collect", {
         method: "POST",
-        body: JSON.stringify({ to: dest.trim(), dryRun }),
+        body: JSON.stringify({
+          to: dest.trim(),
+          dryRun,
+          ...(collectFrom.size < wallets.length ? { from: [...collectFrom] } : {}),
+        }),
       })) as unknown as CollectResult;
       setCResult(r);
       if (!dryRun) await refresh();
@@ -235,7 +248,12 @@ export default function FundingTab() {
         method: "POST",
         body: JSON.stringify({
           to: nftDest.trim(),
-          collection: nftFilter.trim() || undefined,
+          // The chip above the table wins over the text box, because the chip
+          // is what someone just clicked. It used to narrow only the *view*:
+          // you picked one collection, the table showed it, you pressed move,
+          // and every NFT on every wallet went — which is not what the screen
+          // said was going to happen.
+          collection: onlyCollection || nftFilter.trim() || undefined,
           // Only pin the sources when it is a strict subset; sending the whole
           // list would freeze the sweep against wallets added later.
           ...(nftFrom.size < (view?.wallets.length ?? 0) ? { from: [...nftFrom] } : {}),
@@ -404,7 +422,7 @@ export default function FundingTab() {
       ) : (
         <>
           <div className="panel">
-            <h2>Send out — one wallet → all {wallets.length}</h2>
+            <h2>Send out — one wallet → {fundTo.size} of {wallets.length}</h2>
             <p className="dim" style={{ marginTop: 0 }}>
               Where the money comes from: the server has to sign one transaction
               per wallet, so it needs a key it can sign with — a browser wallet
@@ -461,18 +479,40 @@ export default function FundingTab() {
               </label>
             </div>
 
+            <WalletPicker
+              title="send to"
+              wallets={wallets}
+              chosen={fundTo}
+              setChosen={setFundTo}
+            />
+
             <div style={{ display: "flex", gap: 10, marginTop: 12, flexWrap: "wrap" }}>
-              <button className="secondary" disabled={busy} onClick={() => void runDisperse(true)}>
+              <button
+                className="secondary"
+                disabled={busy || fundTo.size === 0}
+                onClick={() => void runDisperse(true)}
+              >
                 DRY RUN
               </button>
               <button
                 className="primary"
-                disabled={busy || (payerMode === "key" ? !payerKey.trim() : !payerAddress)}
+                disabled={
+                  busy ||
+                  fundTo.size === 0 ||
+                  (payerMode === "key" ? !payerKey.trim() : !payerAddress)
+                }
                 onClick={() => void runDisperse(false)}
               >
-                SEND TO ALL WALLETS
+                {fundTo.size === wallets.length
+                  ? `SEND TO ALL ${wallets.length} WALLETS`
+                  : `SEND TO ${fundTo.size} WALLET(S)`}
               </button>
             </div>
+            {fundTo.size === 0 ? (
+              <p className="warn" style={{ marginBottom: 0 }}>
+                No wallets ticked — there is nobody to send to.
+              </p>
+            ) : null}
 
             {dResult ? (
               <>
@@ -495,24 +535,47 @@ export default function FundingTab() {
           </div>
 
           <div className="panel">
-            <h2>Collect back — all {wallets.length} → one address</h2>
+            <h2>Collect back — {collectFrom.size} of {wallets.length} → one address</h2>
             <p className="dim" style={{ marginTop: 0 }}>
-              Every wallet with a balance sends what it holds, minus the gas it
-              must reserve. Empty and dust wallets are skipped automatically —
-              nothing to type but the destination.
+              Each chosen wallet sends what it holds, minus the gas it must
+              reserve. Empty and dust wallets are skipped automatically. Tick
+              the ones to empty below — all of them by default.
             </p>
             <div className="field">
               <label>destination address</label>
               <input value={dest} onChange={(e) => setDest(e.target.value)} placeholder="0x…" />
             </div>
+
+            <WalletPicker
+              title="collect from"
+              wallets={wallets}
+              chosen={collectFrom}
+              setChosen={setCollectFrom}
+            />
+
             <div style={{ display: "flex", gap: 10, marginTop: 12, flexWrap: "wrap" }}>
-              <button className="secondary" disabled={busy || !dest.trim()} onClick={() => void runCollect(true)}>
+              <button
+                className="secondary"
+                disabled={busy || !dest.trim() || collectFrom.size === 0}
+                onClick={() => void runCollect(true)}
+              >
                 DRY RUN
               </button>
-              <button className="primary" disabled={busy || !dest.trim()} onClick={() => void runCollect(false)}>
-                COLLECT EVERYTHING
+              <button
+                className="primary"
+                disabled={busy || !dest.trim() || collectFrom.size === 0}
+                onClick={() => void runCollect(false)}
+              >
+                {collectFrom.size === wallets.length
+                  ? "COLLECT EVERYTHING"
+                  : `COLLECT FROM ${collectFrom.size} WALLET(S)`}
               </button>
             </div>
+            {collectFrom.size === 0 ? (
+              <p className="warn" style={{ marginBottom: 0 }}>
+                No wallets ticked — there is nothing to collect from.
+              </p>
+            ) : null}
 
             {cResult ? (
               <>
@@ -535,7 +598,7 @@ export default function FundingTab() {
           </div>
 
           <div className="panel">
-            <h2>Collect NFTs — all wallets → one wallet</h2>
+            <h2>Collect NFTs — {nftFrom.size} of {wallets.length} wallets → one wallet</h2>
             <p className="dim" style={{ marginTop: 0 }}>
               After a multi-wallet mint the tokens sit across every wallet, and
               listing them means signing into every wallet. This moves them onto
@@ -666,7 +729,27 @@ export default function FundingTab() {
               <label>send every token to</label>
               <input value={nftDest} onChange={(e) => setNftDest(e.target.value)} placeholder="0x…" />
             </div>
-            <div style={{ display: "flex", gap: 10, marginTop: 12, flexWrap: "wrap" }}>
+            {/* Say out loud what is about to move. The failure this replaces
+                was silent: the chips narrowed the table, the sweep ignored
+                them, and the only way to find out was afterwards. */}
+            <p className={onlyCollection ? "ok" : "dim"} style={{ marginTop: 10, marginBottom: 6 }}>
+              will move{" "}
+              <b>
+                {onlyCollection
+                  ? (nftCollections.find((c) => c.key === onlyCollection)?.name ??
+                    `${onlyCollection.slice(0, 10)}…`)
+                  : nftFilter.trim()
+                    ? `${nftFilter.trim().slice(0, 10)}…`
+                    : "every collection"}
+              </b>{" "}
+              from{" "}
+              <b>
+                {nftFrom.size === (view?.wallets.length ?? 0)
+                  ? `all ${nftFrom.size} wallets`
+                  : `${nftFrom.size} wallet(s)`}
+              </b>
+            </p>
+            <div style={{ display: "flex", gap: 10, marginTop: 4, flexWrap: "wrap" }}>
               <button
                 className="secondary"
                 disabled={busy || !nftDest.trim() || nftFrom.size === 0}
@@ -679,9 +762,7 @@ export default function FundingTab() {
                 disabled={busy || !nftDest.trim() || nftFrom.size === 0}
                 onClick={() => void runNftSweep(false)}
               >
-                {nftFrom.size === (view?.wallets.length ?? 0)
-                  ? "MOVE ALL NFTs"
-                  : `MOVE FROM ${nftFrom.size} WALLET(S)`}
+                {onlyCollection || nftFilter.trim() ? "MOVE SELECTED" : "MOVE ALL NFTs"}
               </button>
             </div>
             {nftFrom.size === 0 ? (

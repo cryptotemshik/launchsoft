@@ -36,13 +36,35 @@ export default function WalletPicker({
   title?: string;
   emptyHint?: React.ReactNode;
 }) {
-  const [drawSize, setDrawSize] = useState(10);
-  const [typed, setTyped] = useState("10");
+  /**
+   * How many to draw. Every hook sits above the early return below, so the
+   * clamp runs whether or not there are wallets to show.
+   */
+  const [drawSize, setDrawSize] = useState(() => Math.max(1, Math.min(10, wallets.length)));
+  const [typed, setTyped] = useState(() => String(Math.max(1, Math.min(10, wallets.length))));
+  const syncTyped = (n: number) => setTyped(String(n));
 
-  // The slider and the box are two views of one number, so each follows the
-  // other. Without this, dragging the slider leaves a stale figure in the box
-  // and the next keystroke silently reverts the drag.
-  useEffect(() => setTyped(String(drawSize)), [drawSize]);
+  // How many the draw can choose from: what is ticked, or everything when
+  // nothing is. Computed before the early return so the clamp below can use it.
+  const poolSize = chosen.size > 0 ? chosen.size : wallets.length;
+  const drawMax = Math.max(1, poolSize);
+
+  /**
+   * Keep the count inside the pool as the pool changes under it.
+   *
+   * Narrowing the selection to five wallets while the box says twenty leaves
+   * the button and the box disagreeing about one setting, which is worse than
+   * either being wrong on its own. Clamping on focus was tried first and was
+   * fragile: it depended on a focus event arriving before the typing, and when
+   * it did not the typed number was silently reverted.
+   */
+  useEffect(() => {
+    setDrawSize((n) => Math.min(n, drawMax));
+    setTyped((t) => {
+      const n = Math.floor(Number(t));
+      return Number.isFinite(n) && n > drawMax ? String(drawMax) : t;
+    });
+  }, [drawMax]);
 
   if (wallets.length === 0) {
     return emptyHint ? <p className="warn" style={{ marginTop: 14, marginBottom: 0 }}>{emptyHint}</p> : null;
@@ -62,17 +84,20 @@ export default function WalletPicker({
    * regardless would silently undo the filter just applied.
    */
   const pool = chosen.size > 0 ? wallets.filter((w) => chosen.has(w.address)) : wallets;
-  const drawMax = Math.max(1, pool.length);
-  const draw = () => pick(pickRandom(pool, Math.min(drawSize, drawMax)).map((w) => w.address));
+  /** What will actually be drawn: never more than the pool holds. */
+  const effective = Math.min(drawSize, drawMax);
+  const draw = () => pick(pickRandom(pool, effective).map((w) => w.address));
 
   /** A typed count, clamped to something drawable, or nothing if unreadable. */
   const commitTyped = (raw: string) => {
     const n = Math.floor(Number(raw));
     if (!Number.isFinite(n) || n < 1) {
-      setTyped(String(drawSize));
+      syncTyped(effective);
       return;
     }
-    setDrawSize(Math.min(n, drawMax));
+    const clamped = Math.min(n, drawMax);
+    setDrawSize(clamped);
+    syncTyped(clamped);
   };
 
   return (
@@ -140,14 +165,20 @@ export default function WalletPicker({
           onClick={draw}
           title="Pick this many at random out of what is ticked now"
         >
-          draw {Math.min(drawSize, drawMax)} at random
+          draw {effective} at random
         </button>
         <input
           type="range"
           min={1}
           max={drawMax}
-          value={Math.min(drawSize, drawMax)}
-          onChange={(e) => setDrawSize(Number(e.target.value))}
+          value={effective}
+          onChange={(e) => {
+            setDrawSize(Number(e.target.value));
+            // The slider and the box are two views of one number. Without
+            // this, dragging leaves a stale figure in the box and the next
+            // keystroke silently reverts the drag.
+            syncTyped(Number(e.target.value));
+          }}
           style={{ flex: "1 1 160px", minWidth: 120, accentColor: "var(--green)" }}
           aria-label="how many wallets to draw"
         />
