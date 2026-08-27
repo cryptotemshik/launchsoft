@@ -21,7 +21,6 @@ import { reuseBand, type IndexedCollection } from "../lib/creatorIndex";
 import { twitterUrl, type CollectionInfo } from "../lib/collectionInfo";
 import { compactCount } from "../lib/twitterStats";
 import RelatedPopover, { ReuseBadge, anchorFrom, useRelated } from "./RelatedPopover";
-import { buildShareLink, isSharedView } from "../lib/shareLink";
 import { openSeaCollectionUrlBySlug } from "../chains";
 import { setPendingTarget } from "../lib/snipeTarget";
 import { sndFeedTick } from "../lib/sound";
@@ -120,16 +119,12 @@ function Spark({ spark }: { spark: readonly number[] }) {
 
 export default function LiveTab({ onSnipe }: { onSnipe?: (contract: string) => void }) {
   const { url, setUrl, token, setToken, base, call, save, serverVersion } = useRunnerApi();
-  // A guest arrived through a link: the connection is already made for them,
-  // and the credential they hold cannot build another link anyway.
-  const guest = isSharedView();
   const { urls: customRpcs } = useCustomRpcs();
   const [view, setView] = useState<LiveView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [every, setEvery] = useState(30);
   const [minutes, setMinutes] = useState(15);
-  const [share, setShare] = useState<{ link?: string; note: string } | null>(null);
   const [nextIn, setNextIn] = useState(0);
   const [sort, setSort] = useState<SortKey>("trend");
   const [hideWash, setHideWash] = useState(false);
@@ -265,38 +260,6 @@ export default function LiveTab({ onSnipe }: { onSnipe?: (contract: string) => v
     };
   }, [wanted, base, token, call]);
 
-  /**
-   * A link that lets someone else watch this.
-   *
-   * Built from the server's *view* token, never the one in this browser: that
-   * one fires from the wallets, and a link carrying it would hand them over.
-   * The view token only exists if it has been set on the box, so when it has
-   * not, this says how rather than quietly sharing the wrong credential.
-   */
-  const makeShareLink = useCallback(async () => {
-    try {
-      const st = (await call("/api/status")) as unknown as { viewToken?: string | null };
-      if (!st.viewToken) {
-        setShare({
-          note:
-            "No view token set on the server. Add SNIPE_VIEW_TOKEN=<a long secret> to " +
-            "snipe.env and restart it — then this button makes a link that can read the " +
-            "feed and nothing else.",
-        });
-        return;
-      }
-      const link = buildShareLink(window.location.origin, { url, token: st.viewToken });
-      try {
-        await navigator.clipboard.writeText(link);
-        setShare({ link, note: "Link copied. It can read the feed and the scanner, nothing else." });
-      } catch {
-        setShare({ link, note: "Copy this — it can read the feed and the scanner, nothing else." });
-      }
-    } catch (e) {
-      setShare({ note: e instanceof Error ? e.message : String(e) });
-    }
-  }, [call, url]);
-
   const rows = useMemo(() => {
     const all = view?.rows ?? [];
     // A collection nobody but its own creator is minting. Held behind a chip
@@ -345,28 +308,26 @@ export default function LiveTab({ onSnipe }: { onSnipe?: (contract: string) => v
           ranking on it alone would put the fakes on top.
         </p>
 
-        {guest ? null : (
-          <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
-            <div className="field" style={{ flex: 2, minWidth: 200 }}>
-              <label>server URL</label>
-              <input
-                value={url}
-                onChange={(e) => setUrl(e.target.value)}
-                placeholder="https://your-tunnel.trycloudflare.com"
-              />
-            </div>
-            <div className="field" style={{ flex: 1, minWidth: 160 }}>
-              <label>token</label>
-              <input
-                type="password"
-                value={token}
-                onChange={(e) => setToken(e.target.value)}
-                placeholder="SNIPE_TOKEN"
-                autoComplete="off"
-              />
-            </div>
+        <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
+          <div className="field" style={{ flex: 2, minWidth: 200 }}>
+            <label>server URL</label>
+            <input
+              value={url}
+              onChange={(e) => setUrl(e.target.value)}
+              placeholder="https://your-tunnel.trycloudflare.com"
+            />
           </div>
-        )}
+          <div className="field" style={{ flex: 1, minWidth: 160 }}>
+            <label>token</label>
+            <input
+              type="password"
+              value={token}
+              onChange={(e) => setToken(e.target.value)}
+              placeholder="SNIPE_TOKEN"
+              autoComplete="off"
+            />
+          </div>
+        </div>
 
         <div className="scan-bar">
           <span className="bar-label">WINDOW</span>
@@ -403,16 +364,6 @@ export default function LiveTab({ onSnipe }: { onSnipe?: (contract: string) => v
             </button>
           </div>
           <div className="bar-tail">
-            {guest ? null : (
-              <button
-                className="secondary"
-                disabled={!base || !token}
-                onClick={() => void makeShareLink()}
-                title="A link a friend can open to watch this feed"
-              >
-                share
-              </button>
-            )}
             <button
               className={hideWash ? "secondary active-chip" : "secondary"}
               onClick={() => setHideWash(!hideWash)}
@@ -440,19 +391,6 @@ export default function LiveTab({ onSnipe }: { onSnipe?: (contract: string) => v
           </div>
         </div>
 
-        {share ? (
-          <div className="share-note">
-            <p style={{ margin: 0 }}>{share.note}</p>
-            {share.link ? <code className="share-link">{share.link}</code> : null}
-            <button
-              className="secondary link-btn"
-              onClick={() => setShare(null)}
-              style={{ marginTop: 8 }}
-            >
-              dismiss
-            </button>
-          </div>
-        ) : null}
         {error ? <p className="error">{error}</p> : null}
         <StaleServer version={serverVersion} />
 

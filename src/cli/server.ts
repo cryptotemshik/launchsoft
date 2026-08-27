@@ -79,26 +79,6 @@ const log = (msg: string) => console.log(`[${stamp()}] ${msg}`);
 const PORT = Number(process.env.SNIPE_PORT ?? 8787);
 const HOST = process.env.SNIPE_HOST ?? "127.0.0.1";
 const TOKEN = process.env.SNIPE_TOKEN ?? "";
-/**
- * A second token that can only look.
- *
- * The main token is the box: with it you can fire, fund, add wallets and read
- * the tunnel URL. Handing that to a friend so they can watch the mint feed
- * would hand them the wallets too, so watching gets its own credential and a
- * fixed list of routes it may reach. Unset by default — sharing is something
- * you turn on, not something that is on until you notice.
- */
-const VIEW_TOKEN = process.env.SNIPE_VIEW_TOKEN ?? "";
-
-/**
- * Everything a view token may reach, and nothing else.
- *
- * An allowlist rather than a blocklist, and GET-only, because the failure mode
- * of getting this wrong is somebody else's money. `/api/rpcs` is deliberately
- * absent even though it is small and useful: it would let a viewer point the
- * server's reads at a node they control.
- */
-const VIEW_PATHS = new Set(["/api/live", "/api/scan", "/api/collection-info"]);
 /** Comma-separated list; "*" allows any origin (only sane behind a tunnel + token). */
 const ORIGINS = (process.env.SNIPE_ORIGINS ?? "*").split(",").map((s) => s.trim());
 const CONFIG_PATH = process.env.SNIPE_CONFIG ?? "snipe.config.json";
@@ -178,23 +158,13 @@ const jobs: Job[] = [];
 /** At most one job may be armed/firing — see the nonce note in the header. */
 let activeJobId: string | null = null;
 
-function matches(header: string | undefined, secret: string): boolean {
-  if (!secret) return false;
+function tokenOk(header: string | undefined): boolean {
   const given = (header ?? "").replace(/^Bearer\s+/i, "");
   const a = Buffer.from(given);
-  const b = Buffer.from(secret);
+  const b = Buffer.from(TOKEN);
   // timingSafeEqual throws on length mismatch, so equalise first.
   if (a.length !== b.length) return false;
   return timingSafeEqual(a, b);
-}
-
-function tokenOk(header: string | undefined): boolean {
-  return matches(header, TOKEN);
-}
-
-/** A viewer may read the market data routes, and only by GET. */
-function viewOk(header: string | undefined, method: string | undefined, path: string): boolean {
-  return matches(header, VIEW_TOKEN) && method === "GET" && VIEW_PATHS.has(path);
 }
 
 function cors(req: IncomingMessage, res: ServerResponse) {
@@ -1504,8 +1474,7 @@ const server = createServer(async (req, res) => {
     return;
   }
 
-  const full = tokenOk(req.headers.authorization);
-  if (!full && !viewOk(req.headers.authorization, req.method, url.pathname)) {
+  if (!tokenOk(req.headers.authorization)) {
     json(res, 401, { error: "bad or missing token" });
     return;
   }
@@ -1523,11 +1492,6 @@ const server = createServer(async (req, res) => {
         // Hosts only — the full URLs carry provider API keys.
         tunnelUrl,
         rpcHosts: cfg.extraRpcs.map(rpcHost),
-        /**
-         * Handed only to a full-token caller — it is what a share link is
-         * built from, and only the owner should be able to build one.
-         */
-        viewToken: VIEW_TOKEN || null,
         readRpc: info ? rpcHost(readRpc(cfg, info)) : null,
         jobs: jobs.map(jobView),
       });

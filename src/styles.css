@@ -2238,24 +2238,3 @@ button.secondary.link-btn {
     grid-template-columns: minmax(0, 1fr) 96px;
   }
 }
-
-/* The share link, with room to read the whole thing before sending it. */
-.share-note {
-  margin-top: 12px;
-  padding: 12px 14px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  background: var(--surface-2);
-  font-size: 12px;
-}
-.share-link {
-  display: block;
-  margin-top: 8px;
-  padding: 8px 10px;
-  border-radius: var(--radius);
-  background: var(--panel);
-  font-family: var(--mono);
-  font-size: 11px;
-  word-break: break-all;
-  color: var(--green-bright);
-}
