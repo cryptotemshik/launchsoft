@@ -2269,7 +2269,7 @@ button.secondary.link-btn {
 }
 .cal-row {
   display: grid;
-  grid-template-columns: 108px minmax(0, 1fr) 62px 84px 78px 130px;
+  grid-template-columns: 108px minmax(0, 1fr) 62px 84px 78px 120px 92px;
   gap: 12px;
   align-items: baseline;
   width: 100%;
@@ -2500,7 +2500,7 @@ button.secondary.link-btn {
     display: none;
   }
   .cal-row {
-    grid-template-columns: 100px minmax(0, 1fr);
+    grid-template-columns: 100px minmax(0, 1fr) 92px;
     gap: 4px 10px;
   }
   .cal-time,
@@ -2650,4 +2650,27 @@ button.secondary.link-btn {
   width: auto;
   padding: 6px 14px;
   font-size: 11px;
+}
+
+/* A calendar row that is already on the watchlist, and the button that puts
+   it there. */
+.cal-row {
+  border-left: 2px solid transparent;
+}
+.cal-row.is-watched {
+  border-left-color: var(--green);
+  background: rgba(0, 230, 118, 0.04);
+}
+.cal-act {
+  justify-self: end;
+}
+.pill-watching {
+  display: inline-block;
+  padding: 1px 7px;
+  border: 1px solid var(--green);
+  border-radius: var(--radius);
+  color: var(--green-bright);
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.08em;
 }

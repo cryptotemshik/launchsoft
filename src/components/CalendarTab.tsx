@@ -12,7 +12,7 @@
  * migration.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { formatEther } from "viem";
+import { formatEther, parseEther } from "viem";
 import { useRunnerApi } from "../lib/runnerClient";
 import {
   applyCalendarFilter,
@@ -27,6 +27,8 @@ import {
   type EventStatus,
 } from "../lib/calendar";
 import { classify, type ScannedDrop } from "../lib/dropScan";
+import type { CollectionInfo } from "../lib/collectionInfo";
+import WatchButton from "./WatchButton";
 import { twitterUrl } from "../lib/collectionInfo";
 import type { UpcomingMint } from "../lib/upcoming";
 import { openSeaCollectionUrlBySlug } from "../chains";
@@ -46,6 +48,22 @@ const STATUS_CLASS: Record<EventStatus, string> = {
   undated: "dim",
   ended: "dim",
 };
+
+/** A price box that stays empty rather than filtering on a typo. */
+function safeEther(text: string): bigint | undefined {
+  try {
+    return parseEther(text as `${number}`);
+  } catch {
+    return undefined;
+  }
+}
+
+function numberOrUndefined(v: string): number | undefined {
+  const t = v.trim();
+  if (!t) return undefined;
+  const n = Number(t);
+  return Number.isFinite(n) && n >= 0 ? n : undefined;
+}
 
 /** A countdown a person reads at a glance. Fixed width, so it cannot jitter. */
 function countdown(secs: number): string {
@@ -92,6 +110,14 @@ export default function CalendarTab({
   const [freeOnly, setFreeOnly] = useState(false);
   const [withTwitter, setWithTwitter] = useState(false);
   const [showEnded, setShowEnded] = useState(false);
+  const [watchedOnly, setWatchedOnly] = useState(false);
+  const [maxPrice, setMaxPrice] = useState("");
+  const [minSupply, setMinSupply] = useState("");
+  const [maxSupply, setMaxSupply] = useState("");
+  const [minFollowers, setMinFollowers] = useState("");
+  /** Handles and floors, the same lookup the scanner uses. */
+  const [info, setInfo] = useState<Record<string, CollectionInfo>>({});
+  const [watching, setWatching] = useState<Set<string>>(new Set());
   const [hidden, setHidden] = useState<Set<string>>(new Set());
   const [selected, setSelected] = useState<string | null>(null);
   const [weekFrom, setWeekFrom] = useState(() => Math.floor(Date.now() / 1000));
@@ -141,6 +167,15 @@ export default function CalendarTab({
       const merged = mergeCalendar(manual, scanner, tz.offsetMin, t, prior.current);
       prior.current = merged;
       setEvents(merged);
+      // What is already on the watchlist, so a row can say so rather than
+      // letting you add it twice.
+      setWatching(
+        new Set(
+          ((watch.upcoming as UpcomingMint[]) ?? [])
+            .map((m) => m.contract?.toLowerCase())
+            .filter((c): c is string => Boolean(c)),
+        ),
+      );
       setOpenSeaSlug(scan.openSeaSlug as string | undefined);
       setNow(t);
     } catch (e) {
@@ -164,14 +199,53 @@ export default function CalendarTab({
     return () => clearInterval(t);
   }, []);
 
-  const visible = useMemo(
-    () =>
-      applyCalendarFilter(events, { freeOnly, withTwitter, hidden }).filter(
-        (e) => showEnded || statusOf(e, now) !== "ended",
-      ),
-    // `now` moves every second but only flips a row at a boundary.
-    [events, freeOnly, withTwitter, hidden, showEnded, now],
-  );
+  const visible = useMemo(() => {
+    const price = maxPrice.trim();
+    let out = applyCalendarFilter(events, {
+      freeOnly,
+      withTwitter,
+      hidden,
+      maxPriceWei: price ? safeEther(price) : undefined,
+      minSupply: numberOrUndefined(minSupply),
+      maxSupply: numberOrUndefined(maxSupply),
+    }).filter((e) => showEnded || statusOf(e, now) !== "ended");
+
+    // Two conditions that depend on what the browser worked out rather than
+    // on the event itself, so they cannot live in the pure filter.
+    const followers = numberOrUndefined(minFollowers);
+    if (followers !== undefined) {
+      out = out.filter((e) => (info[e.contract?.toLowerCase() ?? ""]?.followers ?? -1) >= followers);
+    }
+    if (watchedOnly) out = out.filter((e) => e.contract && watching.has(e.contract.toLowerCase()));
+    return out;
+  }, [
+    events, freeOnly, withTwitter, hidden, showEnded, now,
+    maxPrice, minSupply, maxSupply, minFollowers, watchedOnly, info, watching,
+  ]);
+
+  /** Handles for the rows on screen — the followers filter needs them. */
+  useEffect(() => {
+    const wanted = visible
+      .map((e) => e.contract)
+      .filter((c): c is string => Boolean(c) && !(c!.toLowerCase() in info))
+      .slice(0, 40);
+    if (!base || !token || wanted.length === 0) return;
+    let alive = true;
+    const t = setTimeout(async () => {
+      try {
+        const r = (await call(`/api/collection-info?contracts=${wanted.join(",")}`)) as unknown as {
+          known?: Record<string, CollectionInfo>;
+        };
+        if (alive && r.known) setInfo((prev) => ({ ...prev, ...r.known }));
+      } catch {
+        // An older server has no such route; the column simply stays unknown.
+      }
+    }, 400);
+    return () => {
+      alive = false;
+      clearTimeout(t);
+    };
+  }, [visible, info, base, token, call]);
 
   const groups = useMemo(() => groupByDay(visible, now, tz.offsetMin), [visible, now, tz.offsetMin]);
   const days = useMemo(() => weekDays(weekFrom, tz.offsetMin), [weekFrom, tz.offsetMin]);
@@ -181,6 +255,25 @@ export default function CalendarTab({
     const of = (s: EventStatus) => visible.filter((e) => statusOf(e, now) === s).length;
     return { live: of("live"), soon: of("soon"), total: visible.length };
   }, [visible, now]);
+
+  const bounded =
+    maxPrice.trim() !== "" ||
+    minSupply.trim() !== "" ||
+    maxSupply.trim() !== "" ||
+    minFollowers.trim() !== "" ||
+    freeOnly ||
+    withTwitter ||
+    watchedOnly;
+
+  function clearFilters() {
+    setMaxPrice("");
+    setMinSupply("");
+    setMaxSupply("");
+    setMinFollowers("");
+    setFreeOnly(false);
+    setWithTwitter(false);
+    setWatchedOnly(false);
+  }
 
   function hide(id: string) {
     setHidden(new Set([...hidden, id]));
@@ -239,34 +332,96 @@ export default function CalendarTab({
             </button>
           </div>
           <div className="bar-tail">
-            <button
-              className={freeOnly ? "secondary active-chip" : "secondary"}
-              onClick={() => setFreeOnly(!freeOnly)}
-            >
-              free only
-            </button>
-            <button
-              className={withTwitter ? "secondary active-chip" : "secondary"}
-              onClick={() => setWithTwitter(!withTwitter)}
-            >
-              has twitter
-            </button>
-            <button
-              className={showEnded ? "secondary active-chip" : "secondary"}
-              onClick={() => setShowEnded(!showEnded)}
-            >
-              show ended
-            </button>
-            {hidden.size > 0 ? (
-              <button className="secondary" onClick={() => setHidden(new Set())}>
-                unhide {hidden.size}
-              </button>
-            ) : null}
             <span className="pill">{tz.label}</span>
             <span className="pill ok">
               {counts.total} ahead
               {counts.live ? ` · ${counts.live} live` : ""}
             </span>
+          </div>
+        </div>
+
+        {/* The same shape the scanner's filters have: chips for the yes/no
+            ones, boxes for the numbers, and everything stacks. */}
+        <div className="scan-filters">
+          <div className="scan-bar">
+            <span className="bar-label">SHOW</span>
+            <div className="chip-group">
+              <button
+                className={freeOnly ? "secondary active-chip" : "secondary"}
+                onClick={() => setFreeOnly(!freeOnly)}
+              >
+                free only
+              </button>
+              <button
+                className={withTwitter ? "secondary active-chip" : "secondary"}
+                onClick={() => setWithTwitter(!withTwitter)}
+              >
+                has twitter
+              </button>
+              <button
+                className={watchedOnly ? "secondary active-chip" : "secondary"}
+                onClick={() => setWatchedOnly(!watchedOnly)}
+                title="Only what is already on your watchlist"
+              >
+                watching
+              </button>
+              <button
+                className={showEnded ? "secondary active-chip" : "secondary"}
+                onClick={() => setShowEnded(!showEnded)}
+              >
+                show ended
+              </button>
+            </div>
+            <div className="bar-tail">
+              {hidden.size > 0 ? (
+                <button className="secondary" onClick={() => setHidden(new Set())}>
+                  unhide {hidden.size}
+                </button>
+              ) : null}
+              {bounded ? (
+                <button className="secondary link-btn" onClick={clearFilters}>
+                  clear filters
+                </button>
+              ) : null}
+            </div>
+          </div>
+          <div className="filter-grid">
+            <div className="field">
+              <label>max price</label>
+              <input
+                inputMode="decimal"
+                value={maxPrice}
+                onChange={(e) => setMaxPrice(e.target.value)}
+                placeholder="any"
+              />
+            </div>
+            <div className="field">
+              <label>supply from</label>
+              <input
+                inputMode="numeric"
+                value={minSupply}
+                onChange={(e) => setMinSupply(e.target.value)}
+                placeholder="any"
+              />
+            </div>
+            <div className="field">
+              <label>supply to</label>
+              <input
+                inputMode="numeric"
+                value={maxSupply}
+                onChange={(e) => setMaxSupply(e.target.value)}
+                placeholder="any"
+              />
+            </div>
+            <div className="field">
+              <label>followers ≥</label>
+              <input
+                inputMode="numeric"
+                value={minFollowers}
+                onChange={(e) => setMinFollowers(e.target.value)}
+                placeholder="any"
+              />
+            </div>
           </div>
         </div>
 
@@ -309,7 +464,18 @@ export default function CalendarTab({
                 {g.events.map((e) => {
                   const st = statusOf(e, now);
                   return (
-                    <button key={e.id} className="cal-row" onClick={() => setSelected(e.id)}>
+                    <div
+                      key={e.id}
+                      className={`cal-row${
+                        e.contract && watching.has(e.contract.toLowerCase()) ? " is-watched" : ""
+                      }`}
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => setSelected(e.id)}
+                      onKeyDown={(k) => {
+                        if (k.key === "Enter" || k.key === " ") setSelected(e.id);
+                      }}
+                    >
                       <span className={`cal-when ${STATUS_CLASS[st]}`}>
                         {st === "live" ? (
                           <>
@@ -344,8 +510,32 @@ export default function CalendarTab({
                       <span className="cal-supply dim">
                         {e.supply === undefined ? "—" : e.supply.toLocaleString("en-US")}
                       </span>
-                      <span className="cal-tw dim">{e.twitter ? `@${e.twitter}` : "—"}</span>
-                    </button>
+                      <span className="cal-tw dim">
+                        {e.twitter ? `@${e.twitter}` : "—"}
+                      </span>
+                      <span className="cal-act">
+                        {e.contract ? (
+                          watching.has(e.contract.toLowerCase()) ? (
+                            <span className="pill-watching" title="already on your watchlist">
+                              WATCHING
+                            </span>
+                          ) : (
+                            <WatchButton
+                              draft={{
+                                name: e.name,
+                                contract: e.contract,
+                                twitter: e.twitter,
+                                supply: e.supply,
+                                startTime: e.startsAt || undefined,
+                              }}
+                              onAdded={() =>
+                                setWatching(new Set([...watching, e.contract!.toLowerCase()]))
+                              }
+                            />
+                          )
+                        ) : null}
+                      </span>
+                    </div>
                   );
                 })}
               </section>

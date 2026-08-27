@@ -11,26 +11,16 @@
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRunnerApi } from "../lib/runnerClient";
-import { sortByDate, twitterHandle, type UpcomingMint } from "../lib/upcoming";
+import type { UpcomingMint } from "../lib/upcoming";
+import type { ScannedDrop } from "../lib/dropScan";
+import { larpReport, type LarpReport } from "../lib/larp";
+import type { CollectionInfo } from "../lib/collectionInfo";
+import type { IndexedCollection } from "../lib/creatorIndex";
+import DropTable, { isReal, type SortKey } from "./DropTable";
 import { setPendingTarget } from "../lib/snipeTarget";
-import Addr from "./Addr";
-import CopyButton from "./CopyButton";
 import { openSeaCollectionUrlBySlug } from "../chains";
 import StaleServer from "./StaleServer";
 
-type SortKey = "date" | "name" | "supply";
-
-/** How far off it is, in the words a person would use. */
-function until(at: number, now: number): { label: string; tone: string } {
-  const secs = at - now;
-  if (secs < -3600) return { label: "past", tone: "faint" };
-  if (secs < 0) return { label: "now", tone: "live" };
-  const mins = Math.round(secs / 60);
-  if (mins < 60) return { label: `in ${mins} min`, tone: "soon" };
-  const hours = Math.round(secs / 3600);
-  if (hours < 48) return { label: `in ${hours} h`, tone: "soon" };
-  return { label: `in ${Math.round(secs / 86_400)} days`, tone: "" };
-}
 
 /** A start time in the format the date parser reads back. */
 function whenInput(at: number): string {
@@ -39,12 +29,19 @@ function whenInput(at: number): string {
   return `${p(d.getDate())}.${p(d.getMonth() + 1)}.${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
-function whenLabel(m: UpcomingMint): string {
-  if (m.at === undefined) return "not announced";
-  const d = new Date(m.at * 1000);
-  const day = d.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
-  if (m.dayOnly) return day;
-  return `${day}, ${d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}`;
+/**
+ * A stand-in address for an entry with no contract yet.
+ *
+ * The table keys on the contract, and the whole point of this list is drops
+ * that do not have one. Derived from the entry's own id so rows stay distinct,
+ * and shaped so `isReal` rejects it everywhere it would matter — nothing links
+ * to it, nothing offers to snipe it.
+ */
+function placeholderFor(id: string): `0x${string}` {
+  // Deliberately not hex. An id like "m2" mapped onto hex digits produced
+  // 0x0200…00, which passes for an address — and the row then offered to
+  // snipe a contract that does not exist. The "wl:" marker cannot.
+  return `0xwl:${id}` as `0x${string}`;
 }
 
 export default function UpcomingTab({ onSnipe }: { onSnipe?: (contract: string) => void }) {
@@ -52,7 +49,11 @@ export default function UpcomingTab({ onSnipe }: { onSnipe?: (contract: string) 
   const [list, setList] = useState<UpcomingMint[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [sort, setSort] = useState<SortKey>("date");
+  const [sort, setSort] = useState<SortKey>("start");
+  const [drops, setDrops] = useState<Record<string, ScannedDrop>>({});
+  const [info, setInfo] = useState<Record<string, CollectionInfo>>({});
+  const [related, setRelated] = useState<{ owners?: Record<string, IndexedCollection[]> }>({});
+  const [twitterRelated, setTwitterRelated] = useState<Record<string, IndexedCollection[]>>({});
   const [desc, setDesc] = useState(false);
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
   const [adding, setAdding] = useState(false);
@@ -72,8 +73,34 @@ export default function UpcomingTab({ onSnipe }: { onSnipe?: (contract: string) 
         upcoming?: UpcomingMint[];
         openSeaSlug?: string;
       };
-      setList(Array.isArray(r.upcoming) ? r.upcoming : []);
+      const entries = Array.isArray(r.upcoming) ? r.upcoming : [];
+      setList(entries);
       setSlug(r.openSeaSlug);
+
+      /**
+       * The public stage of everything that has a contract.
+       *
+       * This is the same table the scanner shows, and that table is about the
+       * public drop — not whatever mint happens to have run on the contract.
+       * One batch read for the stages, then the marketplace lookup the scanner
+       * already uses for handles and floors.
+       */
+      const withContract = entries.map((m) => m.contract).filter((c): c is string => Boolean(c));
+      if (withContract.length > 0) {
+        const list = withContract.join(",");
+        const [d, meta] = await Promise.all([
+          call(`/api/drops?contracts=${list}`) as Promise<Record<string, unknown>>,
+          call(`/api/collection-info?contracts=${list}`) as Promise<Record<string, unknown>>,
+        ]);
+        setDrops(
+          Object.fromEntries(
+            ((d.drops as ScannedDrop[]) ?? []).map((x) => [x.contract.toLowerCase(), x]),
+          ),
+        );
+        setRelated((d.related as { owners?: Record<string, IndexedCollection[]> }) ?? {});
+        setInfo((meta.known as Record<string, CollectionInfo>) ?? {});
+        setTwitterRelated((meta.twitters as Record<string, IndexedCollection[]>) ?? {});
+      }
       setNow(Math.floor(Date.now() / 1000));
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -168,6 +195,83 @@ export default function UpcomingTab({ onSnipe }: { onSnipe?: (contract: string) 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  /**
+   * Watchlist entries as table rows.
+   *
+   * A row that has a contract is whatever the chain says about its public
+   * stage, with the entry's own name kept — you wrote it, and the contract's
+   * lower-case version is not an improvement. A row that has no contract is
+   * still a row: it carries a placeholder address so the table can key on it,
+   * and everything unknowable about it reads as unknown.
+   */
+  const rows = useMemo((): ScannedDrop[] => {
+    return (list ?? []).map((m) => {
+      const onChain = m.contract ? drops[m.contract.toLowerCase()] : undefined;
+      if (onChain) return { ...onChain, name: m.name || onChain.name };
+      return {
+        contract: (m.contract as `0x${string}`) ?? placeholderFor(m.id),
+        name: m.name,
+        priceWei: "0",
+        startTime: m.at ?? 0,
+        endTime: 0,
+        maxPerWallet: 0,
+        feeBps: 0,
+        block: 0,
+        maxSupply: m.supply,
+      };
+    });
+  }, [list, drops]);
+
+  const reports = useMemo(() => {
+    const out: Record<string, LarpReport> = {};
+    const t = Math.floor(Date.now() / 1000);
+    for (const d of rows) {
+      // A drop with no contract has no public stage, so there is nothing to
+      // grade — and grading it on the zeros standing in for one would invent
+      // a number.
+      if (!isReal(d.contract)) continue;
+      const key = d.contract.toLowerCase();
+      const m = info[key];
+      out[key] = larpReport({
+        priceWei: d.priceWei,
+        maxPerWallet: d.maxPerWallet,
+        feeBps: d.feeBps,
+        maxSupply: d.maxSupply,
+        minted: d.minted,
+        twitter: m ? m.twitter : undefined,
+        followers: m?.followers,
+        joinedMs: m?.joinedMs,
+        floorUnit: m ? (m.floor?.unit ?? null) : undefined,
+        floorSymbol: m?.floor?.symbol ?? null,
+        floorUsd: m?.floor?.usd ?? null,
+        baseURI: d.baseURI,
+        provenanceHash: d.provenanceHash,
+        now: t,
+      });
+    }
+    return out;
+  }, [rows, info]);
+
+  /** Back from a row to the entry it came from, so remove knows what to drop. */
+  const entryFor = useCallback(
+    (contract: string) =>
+      (list ?? []).find(
+        (m) =>
+          m.contract?.toLowerCase() === contract.toLowerCase() ||
+          placeholderFor(m.id) === contract,
+      ),
+    [list],
+  );
+
+  const dated = (list ?? []).filter((m) => m.at !== undefined).length;
+  const undated = (list ?? []).length - dated;
+
+  const ownerCounts = useMemo(() => {
+    const by = new Map<string, number>();
+    for (const [owner, l] of Object.entries(related.owners ?? {})) by.set(owner, l.length);
+    return by;
+  }, [related]);
+
   // The countdown column would otherwise go stale while the tab sits open.
   useEffect(() => {
     const t = setInterval(() => setNow(Math.floor(Date.now() / 1000)), 30_000);
@@ -189,39 +293,6 @@ export default function UpcomingTab({ onSnipe }: { onSnipe?: (contract: string) 
     }
   }
 
-  const rows = useMemo(() => {
-    const all = list ?? [];
-    if (sort === "date") return sortByDate(all, desc);
-    const dir = desc ? -1 : 1;
-    return [...all].sort((a, b) =>
-      sort === "name"
-        ? dir * a.name.localeCompare(b.name)
-        : dir * ((a.supply ?? -1) - (b.supply ?? -1)),
-    );
-  }, [list, sort, desc]);
-
-  const dated = (list ?? []).filter((m) => m.at !== undefined && m.at > now).length;
-  const undated = (list ?? []).filter((m) => m.at === undefined).length;
-
-  function header(key: SortKey, label: string, className = "") {
-    return (
-      <th
-        className={`sortable ${className}`.trim()}
-        onClick={() => {
-          if (sort === key) setDesc(!desc);
-          else {
-            setSort(key);
-            // Dates read best soonest-first; everything else biggest-first.
-            setDesc(key !== "date");
-          }
-        }}
-      >
-        {label}
-        {sort === key ? (desc ? " ▼" : " ▲") : ""}
-      </th>
-    );
-  }
-
   return (
     <div>
       <div className="panel">
@@ -229,7 +300,7 @@ export default function UpcomingTab({ onSnipe }: { onSnipe?: (contract: string) 
         <p className="dim" style={{ marginTop: 0 }}>
           Drops worth coming back to. Some are only an account and a rumour,
           with no contract to paste anywhere yet; others came from the scanner
-          or the feed and already have one, and those carry a <b>snipe</b>
+          or the feed and already have one, and those carry a <b>snipe</b>{" "}
           button straight through. Add them from the phone through the Telegram
           bot, from the rows in Scanner and Live, or by hand here.
         </p>
@@ -372,110 +443,58 @@ export default function UpcomingTab({ onSnipe }: { onSnipe?: (contract: string) 
         <StaleServer version={serverVersion} />
 
         {list && list.length > 0 ? (
-          <div className="table-wrap">
-            <table className="ledger-table collapsible">
-              <thead>
-                <tr>
-                  {header("name", "collection")}
-                  <th>twitter</th>
-                  {header("supply", "supply", "num")}
-                  {header("date", "expected")}
-                  <th />
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((m) => {
-                  const near = m.at !== undefined ? until(m.at, now) : null;
-                  return (
-                    <tr key={m.id} className="project-row">
-                      <td data-label="collection" className="cell-clip">
-                        {/* The same shape as every other table here: a name
-                            that opens the collection, an address you can take
-                            with you. A drop with no contract yet has nowhere
-                            to go, so its name is text rather than a dead
-                            link. */}
-                        {m.contract ? (
-                          <span className="name-with-copy">
-                            <a
-                              className="cell-name"
-                              href={openSeaCollectionUrlBySlug(slug, m.contract)}
-                              target="_blank"
-                              rel="noreferrer"
-                              title="Open this collection on OpenSea"
-                            >
-                              {m.name}
-                            </a>
-                            <CopyButton value={m.contract} />
-                          </span>
-                        ) : (
-                          <span className="cell-name">{m.name}</span>
-                        )}
-                        <span className="cell-sub dim">
-                          {m.contract ? (
-                            <Addr value={m.contract} head={8} />
-                          ) : (
-                            "no contract yet"
-                          )}
-                        </span>
-                      </td>
-                      <td data-label="twitter">
-                        {m.twitter ? (
-                          <a href={m.twitter} target="_blank" rel="noreferrer">
-                            {twitterHandle(m.twitter)}
-                          </a>
-                        ) : (
-                          <span className="faint">—</span>
-                        )}
-                      </td>
-                      <td className="num" data-label="supply">
-                        {m.supply ? m.supply.toLocaleString("en-US") : <span className="dim">?</span>}
-                      </td>
-                      <td data-label="expected">
-                        {m.at === undefined ? (
-                          <span className="pill-tba">TBA</span>
-                        ) : (
-                          <>
-                            <span className="cell-name">{whenLabel(m)}</span>
-                            <span className={`cell-sub ${near?.tone === "soon" ? "warn" : "dim"}`}>
-                              {near?.label}
-                            </span>
-                          </>
-                        )}
-                      </td>
-                      <td className="num">
-                        <div className="row-actions">
-                          {/* Only once there is something to aim at. A drop
-                              that is still just an account has nothing the
-                              Snipe tab could read. */}
-                          {m.contract ? (
-                            <button
-                              className="secondary"
-                              style={{ padding: "2px 9px", fontSize: 11, width: "auto" }}
-                              title="Load this collection in the Snipe tab"
-                              onClick={() => {
-                                setPendingTarget(m.contract!);
-                                onSnipe?.(m.contract!);
-                              }}
-                            >
-                              snipe
-                            </button>
-                          ) : null}
-                          <button
-                            className="secondary"
-                            style={{ padding: "2px 9px", fontSize: 11, width: "auto" }}
-                            disabled={busy}
-                            onClick={() => void remove(m)}
-                          >
-                            remove
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+          <DropTable
+            rows={rows}
+            info={info}
+            reports={reports}
+            ownerCounts={ownerCounts}
+            related={related}
+            twitterRelated={twitterRelated}
+            openSeaSlug={slug}
+            now={now}
+            sort={sort}
+            desc={desc}
+            onSort={(key) => {
+              if (sort === key) setDesc(!desc);
+              else {
+                setSort(key);
+                setDesc(key === "supply" || key === "price" || key === "twitter");
+              }
+            }}
+            linkOf={(d) =>
+              isReal(d.contract) ? openSeaCollectionUrlBySlug(slug, d.contract) : null
+            }
+            actions={(d) => (
+              <>
+                {isReal(d.contract) ? (
+                  <button
+                    className="secondary"
+                    style={{ padding: "2px 10px", fontSize: 11, width: "auto" }}
+                    title="Load this collection in the Snipe tab"
+                    onClick={(ev) => {
+                      ev.stopPropagation();
+                      setPendingTarget(d.contract);
+                      onSnipe?.(d.contract);
+                    }}
+                  >
+                    snipe
+                  </button>
+                ) : null}
+                <button
+                  className="secondary"
+                  style={{ padding: "2px 10px", fontSize: 11, width: "auto" }}
+                  disabled={busy}
+                  onClick={(ev) => {
+                    ev.stopPropagation();
+                    const m = entryFor(d.contract);
+                    if (m) void remove(m);
+                  }}
+                >
+                  remove
+                </button>
+              </>
+            )}
+          />
         ) : null}
 
         {list && list.length === 0 ? (

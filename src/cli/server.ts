@@ -39,6 +39,30 @@ import { scanChain } from "./holdings";
 import { lookupCollections } from "./collectionLookup";
 import { pulseByCollection, type MintPulse } from "../lib/mintPulse";
 import { CreatorIndex } from "../lib/creatorIndex";
+import { SEADROP } from "../lib/dropScan";
+
+/** SeaDrop's view of a collection's public stage. Only ever the public one. */
+const PUBLIC_DROP_ABI = [
+  {
+    type: "function",
+    name: "getPublicDrop",
+    stateMutability: "view",
+    inputs: [{ type: "address" }],
+    outputs: [
+      {
+        type: "tuple",
+        components: [
+          { name: "mintPrice", type: "uint80" },
+          { name: "startTime", type: "uint48" },
+          { name: "endTime", type: "uint48" },
+          { name: "maxTotalMintableByWallet", type: "uint16" },
+          { name: "feeBps", type: "uint16" },
+          { name: "restrictFeeRecipients", type: "bool" },
+        ],
+      },
+    ],
+  },
+] as const;
 import { costByCollection, loadMints, recordMint } from "./ledger";
 import {
   blockTimes,
@@ -1738,6 +1762,69 @@ const server = createServer(async (req, res) => {
      * poll, and returns without it if it does not land. A missing handle costs
      * that field, not the reply.
      */
+    /**
+     * The public stage of several collections at once.
+     *
+     * The watchlist shows the same table the scanner does, and that table is
+     * about one thing: the public drop. Reading it per row would be a request
+     * each; this is one multicall for the lot, through the same enrichment the
+     * scanner uses so the two cannot disagree about what a collection is.
+     */
+    if (url.pathname === "/api/drops" && req.method === "GET") {
+      const contracts = (url.searchParams.get("contracts") ?? "")
+        .split(",")
+        .map((c) => c.trim())
+        .filter((c) => /^0x[0-9a-fA-F]{40}$/.test(c))
+        .slice(0, 120) as `0x${string}`[];
+      if (contracts.length === 0) {
+        json(res, 200, { drops: [] });
+        return;
+      }
+      const cfg = loadConfig(CONFIG_PATH);
+      const info = getChainInfo(cfg.chainId);
+      if (!info) throw new Error(`chain ${cfg.chainId} isn't in the registry`);
+      const client = makeReadClient(info.chain, cfg.extraRpcs);
+
+      // The public stage, straight off SeaDrop — never an allow-list one.
+      const stages = (await client.multicall({
+        multicallAddress: "0xcA11bde05977b3631167028862bE2a173976CA11",
+        allowFailure: true,
+        contracts: contracts.map((c) => ({
+          address: SEADROP as `0x${string}`,
+          abi: PUBLIC_DROP_ABI,
+          functionName: "getPublicDrop",
+          args: [c],
+        })) as never,
+      })) as { status: string; result?: unknown }[];
+
+      const base = contracts.map((contract, i) => {
+        const r = stages[i];
+        const d = r?.status === "success" ? (r.result as Record<string, unknown>) : undefined;
+        return {
+          contract,
+          priceWei: d ? String(d.mintPrice ?? 0n) : "0",
+          startTime: d ? Number(d.startTime ?? 0) : 0,
+          endTime: d ? Number(d.endTime ?? 0) : 0,
+          maxPerWallet: d ? Number(d.maxTotalMintableByWallet ?? 0) : 0,
+          feeBps: d ? Number(d.feeBps ?? 0) : 0,
+          block: 0,
+        };
+      });
+
+      const enriched = await enrichDrops(client as never, base);
+      for (const d of enriched) {
+        creators.remember({ contract: d.contract, name: d.name, startTime: d.startTime, owner: d.owner });
+      }
+      json(res, 200, {
+        drops: enriched,
+        openSeaSlug: info.openSeaSlug,
+        related: creators.relatedFor(enriched.map((d) => d.contract)),
+        nativeSymbol: info.chain.nativeCurrency.symbol,
+        nativeUsd: await nativeUsd(info.blockscoutApi),
+      });
+      return;
+    }
+
     if (url.pathname === "/api/collection-preview" && req.method === "GET") {
       const contract = (url.searchParams.get("contract") ?? "").trim();
       if (!/^0x[0-9a-fA-F]{40}$/.test(contract)) {
