@@ -1930,15 +1930,26 @@ const server = createServer(async (req, res) => {
       const building = startProfitBuild();
       // Give it a few seconds first: with the caches warm it is usually done
       // well inside that, and then there is nothing to come back for.
+      let why: string | null = null;
       const quick = await Promise.race([
-        building.then(() => "done" as const).catch(() => "failed" as const),
+        building
+          .then(() => "done" as const)
+          .catch((e) => {
+            why = e instanceof Error ? e.message : String(e);
+            return "failed" as const;
+          }),
         new Promise<"slow">((r) => setTimeout(() => r("slow"), PROFIT_WAIT_MS)),
       ]);
       if (quick === "done" && profitCache) {
         json(res, 200, { ...profitCache.body, cachedAt: profitCache.at });
         return;
       }
-      if (quick === "failed") throw new Error("couldn't read the chain — see the server log");
+      // The reason travels with the failure. "See the server log" is not an
+      // error message, it is an instruction to go and find one — and the whole
+      // point of a panel talking to a box over a tunnel is not having to.
+      if (quick === "failed") {
+        throw new Error(`couldn't read the chain: ${why ?? "no reason given"}`);
+      }
       json(res, 202, {
         building: true,
         // Something to show while it works, if there is anything at all.
