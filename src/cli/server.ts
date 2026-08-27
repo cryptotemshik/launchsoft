@@ -40,6 +40,7 @@ import { lookupCollections } from "./collectionLookup";
 import { pulseByCollection, type MintPulse } from "../lib/mintPulse";
 import { CreatorIndex } from "../lib/creatorIndex";
 import { SEADROP } from "../lib/dropScan";
+import { probeLogRange, PROBE_BLOCKS } from "../lib/logRangeProbe";
 
 /** SeaDrop's view of a collection's public stage. Only ever the public one. */
 const PUBLIC_DROP_ABI = [
@@ -822,6 +823,8 @@ async function startScan(hours: number): Promise<Record<string, unknown>> {
        */
       readRpc: rpcHost(scanRpc(cfg, info)),
       publicRpc: scanRpcs(cfg).length === 0,
+      /** Set when that endpoint cannot actually serve a scan at all. */
+      readRpcNote: scanRpcNote,
       /** Minting over the last hour, keyed by lower-case contract. */
       pulse,
       pulseHours: PULSE_HOURS,
@@ -1157,6 +1160,35 @@ function readRpc(cfg: SnipeConfig, info: NonNullable<ReturnType<typeof getChainI
 /** The endpoint the panel is looking at when it asks who answered a scan. */
 function scanRpc(cfg: SnipeConfig, info: NonNullable<ReturnType<typeof getChainInfo>>): string {
   return scanRpcs(cfg)[0] ?? info.chain.rpcUrls.default.http[0];
+}
+
+/**
+ * What the scan endpoint said when asked for a range worth scanning with, or
+ * null while it has not been asked or had nothing to complain about. Surfaced
+ * to the panel, so the badge stops naming an endpoint that never answers a
+ * single log request.
+ */
+let scanRpcNote: string | null = null;
+
+async function checkScanEndpoint(cfg: SnipeConfig): Promise<void> {
+  const info = getChainInfo(cfg.chainId);
+  if (!info) return;
+  const url = scanRpcs(cfg)[0];
+  if (!url) return;
+  try {
+    const client = makeReadClient(info.chain, [url]);
+    const tip = await client.getBlockNumber();
+    const verdict = await probeLogRange(url, SEADROP, tip);
+    if (verdict.ok) return;
+    const cap = verdict.suggested ? `${verdict.suggested} blocks at a time` : "a much smaller range";
+    scanRpcNote =
+      `${rpcHost(url)} won't serve eth_getLogs over ${PROBE_BLOCKS} blocks — it allows ${cap}, ` +
+      "so scans fall through to the next endpoint instead";
+    log(`scan endpoint: ${scanRpcNote}`);
+    if (verdict.reason) log(`scan endpoint said: ${verdict.reason}`);
+  } catch {
+    // Couldn't ask. Say nothing rather than accuse a working endpoint.
+  }
 }
 
 /** Host only — the full URL usually carries a provider API key. */
@@ -2407,6 +2439,11 @@ server.listen(PORT, HOST, () => {
     if (SCAN_ENV_RPCS.length > 0) {
       log(`scans through ${scanRpcs(cfg).map(rpcHost).join(", ")} — kept off the mint path`);
     }
+    // And whether that endpoint can actually serve a scan. The read client is
+    // a fallback chain, so an endpoint that refuses every getLogs still leaves
+    // the scanner working — through the public node, silently, while the panel
+    // goes on naming the paid one. Nothing short of asking it reveals that.
+    void checkScanEndpoint(cfg);
     log(cfg.telegram ? "telegram notifications ON" : "telegram notifications off (no token/chat id)");
     // The same bot, now also listening: /add collects a drop that exists
     // nowhere but Twitter yet, and the site reads the list back.

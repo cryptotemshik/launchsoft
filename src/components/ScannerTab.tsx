@@ -47,6 +47,8 @@ interface ScanView {
   readRpc?: string;
   /** True when that was the chain's public RPC, with nothing better set. */
   publicRpc?: boolean;
+  /** Set when that endpoint cannot serve a scan at all — see below. */
+  readRpcNote?: string | null;
   /** Minting over the last hour, keyed by lower-case contract. */
   pulse?: Record<string, MintPulse>;
   pulseHours?: number;
@@ -608,21 +610,34 @@ export default function ScannerTab({
             ) : null}
             {view?.readRpc ? (
               <span
-                className={view.publicRpc ? "pill warn" : "pill"}
+                className={view.publicRpc || view.readRpcNote ? "pill warn" : "pill"}
                 title={
-                  view.publicRpc
-                    ? "The chain's public RPC meters requests and answers a scan with 429. Paste your own endpoint in the Snipe tab and it is used here too."
-                    : "The endpoint this server reads through"
+                  view.readRpcNote
+                    ? view.readRpcNote
+                    : view.publicRpc
+                      ? "The chain's public RPC meters requests and answers a scan with 429. Paste your own endpoint in the Snipe tab and it is used here too."
+                      : "The endpoint this server reads through"
                 }
               >
                 via <b>{view.readRpc}</b>
-                {view.publicRpc ? " · public" : ""}
+                {/* Naming the endpoint is a lie when it refuses every log
+                    request: reads fall through to the next one in the list and
+                    the badge went on crediting the endpoint that never answered. */}
+                {view.readRpcNote ? " · not answering" : view.publicRpc ? " · public" : ""}
               </span>
             ) : null}
           </div>
         </div>
 
         {error ? <p className="error">{error}</p> : null}
+        {view?.readRpcNote ? (
+          <p className="dim hint">
+            <b>{view.readRpcNote}</b> Scanning wants wide `eth_getLogs` ranges,
+            which most free plans cap hard — an hour of this chain is around
+            35,000 blocks. Point the scan at an endpoint without that cap, or
+            leave it on the chain's own RPC, which has none.
+          </p>
+        ) : null}
         {rpcNote ? <p className="error">endpoint refused: {rpcNote}</p> : null}
         {error && /429|rate limit/i.test(error) && customRpcs.length === 0 ? (
           <p className="dim hint">
