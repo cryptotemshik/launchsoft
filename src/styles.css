@@ -2247,3 +2247,272 @@ button.secondary.link-btn {
   justify-content: flex-end;
   flex-wrap: wrap;
 }
+
+/* ── Calendar ────────────────────────────────────────────────────────────
+   Two views of one list. The week grid is a clock face turned on its side;
+   the list is the workhorse and the only one that exists on a phone. */
+.cal-list {
+  margin-top: 14px;
+}
+.cal-day {
+  margin: 16px 0 6px;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--faint);
+  font-family: var(--mono);
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 5px;
+}
+.cal-list section:first-child .cal-day {
+  margin-top: 4px;
+}
+.cal-row {
+  display: grid;
+  grid-template-columns: 108px minmax(0, 1fr) 62px 84px 78px 130px;
+  gap: 12px;
+  align-items: baseline;
+  width: 100%;
+  text-align: left;
+  padding: 9px 10px;
+  border: none;
+  border-bottom: 1px solid var(--border-dim);
+  border-radius: 0;
+  background: transparent;
+  font-size: 12px;
+  cursor: pointer;
+}
+.cal-row:hover {
+  background: var(--surface-hi);
+}
+.cal-when {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  /* Explicit: the row is a <button>, and inheriting its colour left every
+     countdown that was not live or soon almost invisible. */
+  color: var(--text-dim);
+}
+.cal-name {
+  color: var(--text);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cal-time,
+.cal-price,
+.cal-supply {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.cal-tw {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pill-src,
+.pill-resched {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 5px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  color: var(--faint);
+  vertical-align: 1px;
+}
+.pill-src.ok {
+  color: var(--green-bright);
+  border-color: var(--green-bright);
+}
+.pill-resched {
+  color: var(--warn);
+  border-color: var(--warn);
+}
+
+.week-grid {
+  display: grid;
+  grid-template-columns: 30px repeat(7, minmax(0, 1fr));
+  gap: 1px;
+  margin-top: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--line);
+}
+.week-axis {
+  position: relative;
+  background: var(--panel);
+  font-family: var(--mono);
+  font-size: 9px;
+  color: var(--faint);
+}
+.week-axis span {
+  position: absolute;
+  right: 4px;
+}
+.week-col {
+  background: var(--panel);
+  display: flex;
+  flex-direction: column;
+}
+.week-col.is-today {
+  background: var(--surface-2);
+}
+.week-head {
+  padding: 6px 8px;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--dim);
+  border-bottom: 1px solid var(--border-dim);
+}
+.week-col.is-today .week-head {
+  color: var(--green-bright);
+}
+.week-body {
+  position: relative;
+  /* A day is 560px tall: enough that two drops an hour apart do not overlap,
+     short enough that a week fits a screen without scrolling. */
+  height: 560px;
+}
+.week-now {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: var(--green-bright);
+  box-shadow: 0 0 6px var(--green-bright);
+  z-index: 2;
+}
+.week-ev {
+  position: absolute;
+  padding: 3px 5px;
+  border: 1px solid var(--line-strong);
+  border-left: 2px solid var(--green);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  font-size: 10px;
+  line-height: 1.25;
+  text-align: left;
+  cursor: pointer;
+  overflow: hidden;
+  z-index: 1;
+}
+.week-ev:hover {
+  background: var(--surface-hi);
+  z-index: 3;
+}
+.week-ev.ok {
+  border-left-color: var(--green-bright);
+  box-shadow: inset 0 0 0 1px rgba(0, 230, 118, 0.25);
+}
+.week-ev.warn {
+  border-left-color: var(--warn);
+}
+.week-ev .we-time {
+  display: block;
+  font-family: var(--mono);
+  color: var(--faint);
+}
+.week-ev .we-name {
+  display: block;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.week-ev .we-free {
+  color: var(--green-bright);
+  font-family: var(--mono);
+}
+
+/* ── A drawer, rather than a page you have to come back from ─────────── */
+.drawer-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  background: rgba(0, 0, 0, 0.5);
+}
+.drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 71;
+  width: min(420px, 100vw);
+  overflow-y: auto;
+  padding: 18px;
+  border-left: 1px solid var(--line-strong);
+  background: var(--panel);
+  animation: drawerIn 0.18s ease-out;
+}
+@keyframes drawerIn {
+  from {
+    transform: translateX(16px);
+    opacity: 0;
+  }
+}
+.drawer-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.drawer-head h3 {
+  margin: 0 0 6px;
+}
+.drawer-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 18px;
+}
+/* The drawer's buttons read as one set: same height, same weight, the one
+   that leads somewhere marked by its border rather than by a fill. */
+.drawer-actions > button,
+.drawer-actions > .btn-like {
+  width: 100%;
+  padding: 9px 14px;
+}
+.btn-like {
+  display: block;
+  padding: 9px 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  text-align: center;
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+@media (max-width: 900px) {
+  /* No week grid on a phone: seven columns at 375px is unreadable, and the
+     list answers the same question. */
+  .week-grid {
+    display: none;
+  }
+  .cal-row {
+    grid-template-columns: 100px minmax(0, 1fr);
+    gap: 4px 10px;
+  }
+  .cal-time,
+  .cal-supply,
+  .cal-tw {
+    display: none;
+  }
+  .cal-price {
+    grid-column: 2;
+    text-align: left;
+  }
+  .drawer {
+    width: 100vw;
+  }
+}

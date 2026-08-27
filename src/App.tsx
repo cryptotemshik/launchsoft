@@ -5,6 +5,7 @@ import DashboardTab from "./components/DashboardTab";
 import UpcomingTab from "./components/UpcomingTab";
 import ScannerTab from "./components/ScannerTab";
 import LiveTab from "./components/LiveTab";
+import CalendarTab from "./components/CalendarTab";
 import LaunchTab from "./components/LaunchTab";
 import RevealTab from "./components/RevealTab";
 import FundingTab from "./components/FundingTab";
@@ -21,6 +22,7 @@ import {
   EyeIcon,
   GridIcon,
   CoinsIcon,
+  CalendarGridIcon,
   CalendarIcon,
   KeyIcon,
   RadarIcon,
@@ -41,7 +43,8 @@ type Tab =
   | "funding"
   | "upcoming"
   | "scanner"
-  | "live";
+  | "live"
+  | "calendar";
 
 const TAB_ICON = {
   launch: RocketIcon,
@@ -55,6 +58,7 @@ const TAB_ICON = {
   upcoming: CalendarIcon,
   scanner: RadarIcon,
   live: ActivityIcon,
+  calendar: CalendarGridIcon,
 } as const;
 
 export default function App() {
@@ -100,6 +104,7 @@ export default function App() {
           ["wallets", "TRACKER"],
           ["scanner", "SCANNER"],
           ["live", "LIVE"],
+          ["calendar", "CALENDAR"],
           ["upcoming", "WATCHLIST"],
         ] as const).map(([t, label]) => {
           const Icon = TAB_ICON[t];
@@ -198,6 +203,7 @@ export default function App() {
       {tab === "scanner" ? (
         <ScannerTab onSnipe={() => setTab("snipe")} onWatch={() => setTab("upcoming")} />
       ) : null}
+      {tab === "calendar" ? <CalendarTab onSnipe={() => setTab("snipe")} /> : null}
       {tab === "live" ? (
         <LiveTab onSnipe={() => setTab("snipe")} onWatch={() => setTab("upcoming")} />
       ) : null}

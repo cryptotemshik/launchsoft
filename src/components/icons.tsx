@@ -115,6 +115,14 @@ export const ActivityIcon = (p: SVGProps<SVGSVGElement>) => (
   </svg>
 );
 
+/** A month grid — the calendar proper, distinct from the watchlist's date pin. */
+export const CalendarGridIcon = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...base(p)}>
+    <rect x="3" y="4" width="18" height="17" rx="2" />
+    <path d="M3 10h18M9 4v3M15 4v3M8 14h2M14 14h2M8 18h2M14 18h2" />
+  </svg>
+);
+
 export const RadarIcon = (p: SVGProps<SVGSVGElement>) => (
   <svg {...base(p)}>
     <circle cx="12" cy="12" r="9" />
