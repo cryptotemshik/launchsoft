@@ -12,6 +12,11 @@
 #   bash set-rpc.sh --scan  https://…/v2/SCAN_KEY    (scanner, live, calendar)
 #   bash set-rpc.sh        https://…/v2/GENERAL_KEY  (everything else)
 #
+# Pass "none" instead of a URL to take a tier back off, so it falls through to
+# the general endpoint again:
+#
+#   bash set-rpc.sh --scan none
+#
 # The snipe one is the one worth keeping quiet: arming a hundred wallets is a
 # hundred balance reads and a hundred nonce reads down a single endpoint, two
 # minutes before the stage opens. A sweep or a wallet refresh landing on that
@@ -53,10 +58,23 @@ esac
 URL="${1:-}"
 [ -n "$URL" ] || die "Usage: bash set-rpc.sh [--snipe|--scan] https://your-endpoint/… (comma-separate several, best first)"
 
+# Taking a tier back off again. Without this the only way to undo one was to
+# edit snipe.env by hand and remember --update-env, which is the whole thing
+# this script exists to stop people getting wrong.
+CLEAR=no
+case "$URL" in none|off|-) CLEAR=yes ;; esac
+if [ "$CLEAR" = yes ] && [ "$VAR" = SNIPE_RPCS ]; then
+  die "SNIPE_RPCS is the fallback every other tier lands on — clearing it would send everything to the chain's public RPC. Set it to an endpoint instead."
+fi
+
 # ── 1. Is it real, and is it this chain? ────────────────────────────────────
 # Worth one round trip: a typo'd endpoint or one pointed at the wrong network
 # would otherwise be discovered as a scan that returns nothing, hours later.
 bold "1/3  Checking the endpoint"
+if [ "$CLEAR" = yes ]; then
+  ok "nothing to check — clearing ${VAR}"
+fi
+if [ "$CLEAR" = no ]; then
 WANT=$(grep -o '"chainId"[[:space:]]*:[[:space:]]*[0-9]*' snipe.config.json 2>/dev/null | grep -o '[0-9]*$' || true)
 FIRST="${URL%%,*}"
 GOT_HEX=$(curl -fsS -m 15 -X POST -H 'content-type: application/json' \
@@ -68,6 +86,7 @@ if [ -n "$WANT" ] && [ "$GOT" != "$WANT" ]; then
   die "that endpoint is chain $GOT, but snipe.config.json says $WANT"
 fi
 ok "answers, chain $GOT"
+fi
 
 # ── 2. Store it ─────────────────────────────────────────────────────────────
 bold "2/3  Writing snipe.env"
@@ -78,12 +97,25 @@ if grep -q "^${VAR}=" snipe.env; then
   PREV=$(grep "^${VAR}=" snipe.env | head -1 | cut -d= -f2-)
   grep -v "^${VAR}=" snipe.env > snipe.env.tmp
   mv snipe.env.tmp snipe.env
-  [ "$PREV" = "$URL" ] && warn "unchanged — it was already set to this" || ok "replaced the previous endpoint"
+  if [ "$CLEAR" = yes ]; then
+    ok "removed the previous endpoint"
+  elif [ "$PREV" = "$URL" ]; then
+    warn "unchanged — it was already set to this"
+  else
+    ok "replaced the previous endpoint"
+  fi
+elif [ "$CLEAR" = yes ]; then
+  warn "${VAR} was not set — ${WHAT} was already falling back to SNIPE_RPCS"
+  exit 0
 else
   ok "added"
 fi
-printf '%s=%s\n' "$VAR" "$URL" >> snipe.env
-ok "${VAR} now serves: ${WHAT}"
+if [ "$CLEAR" = yes ]; then
+  ok "${VAR} cleared — ${WHAT} now falls back to SNIPE_RPCS"
+else
+  printf '%s=%s\n' "$VAR" "$URL" >> snipe.env
+  ok "${VAR} now serves: ${WHAT}"
+fi
 chmod 600 snipe.env
 
 # ── 3. Make the running process actually see it ─────────────────────────────
