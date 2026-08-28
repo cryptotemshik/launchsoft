@@ -18,6 +18,7 @@ import type { CollectionInfo } from "../lib/collectionInfo";
 import type { IndexedCollection } from "../lib/creatorIndex";
 import DropTable, { isReal, type SortKey } from "./DropTable";
 import SnipeButton from "./SnipeButton";
+import { seedWatched } from "../lib/watchedStore";
 import { openSeaCollectionUrlBySlug } from "../chains";
 import StaleServer from "./StaleServer";
 
@@ -73,6 +74,9 @@ export default function UpcomingTab() {
         upcoming?: UpcomingMint[];
         openSeaSlug?: string;
       };
+      // Every "watch" button on every tab reads this, so it knows what is
+      // already listed without asking again.
+      seedWatched(r.upcoming ?? []);
       const entries = Array.isArray(r.upcoming) ? r.upcoming : [];
       setList(entries);
       setSlug(r.openSeaSlug);

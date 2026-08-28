@@ -2085,7 +2085,15 @@ const server = createServer(async (req, res) => {
         json(res, 400, { error: built.error });
         return;
       }
-      const list = addUpcoming(CONFIG_PATH, built.mint);
+      const { list, duplicate } = addUpcoming(CONFIG_PATH, built.mint);
+      if (duplicate) {
+        // Not an error: the caller wanted this drop watched and it is. Saying
+        // so as a failure would have the panel show a red button for the one
+        // outcome that is exactly what was asked for.
+        log(`upcoming: ${built.mint.name} is already on the list — not added twice`);
+        json(res, 200, { added: duplicate, duplicate: true, upcoming: sortByDate(list) });
+        return;
+      }
       log(`upcoming: added ${built.mint.name} from the panel`);
       json(res, 200, { added: built.mint, upcoming: sortByDate(list) });
       return;

@@ -23,7 +23,7 @@ describe("upcoming store", () => {
   it("keeps what it wrote, across separate loads", () => {
     const cfg = configIn();
     addUpcoming(cfg, mint());
-    addUpcoming(cfg, mint({ id: "bbbb2222", name: "Second", at: 999 }));
+    addUpcoming(cfg, mint({ id: "bbbb2222", name: "Second", at: 999, twitter: "https://x.com/second" }));
     expect(loadUpcoming(cfg).map((m) => m.name)).toEqual(["Test Drop", "Second"]);
     expect(loadUpcoming(cfg)[1].at).toBe(999);
   });
@@ -37,10 +37,58 @@ describe("upcoming store", () => {
     expect(list[0].supply).toBe(500);
   });
 
+  it("refuses the same collection twice, and says which entry already has it", () => {
+    // Pressing "watch" on a scanner row twice used to make two entries: the id
+    // is minted from the name and the clock, so it was different every time.
+    const cfg = configIn();
+    const contract = "0xc60079d77bbfb225632999564673f4e334f8d9dd";
+    addUpcoming(cfg, mint({ id: "aaaa1111", contract }));
+    const second = addUpcoming(cfg, mint({ id: "cccc3333", name: "Same drop, typed again", contract }));
+    expect(second.duplicate?.id).toBe("aaaa1111");
+    expect(second.list).toHaveLength(1);
+    expect(loadUpcoming(cfg)).toHaveLength(1);
+  });
+
+  it("matches a contract whatever its case", () => {
+    const cfg = configIn();
+    addUpcoming(cfg, mint({ id: "aaaa1111", contract: "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd" }));
+    const again = addUpcoming(
+      cfg,
+      mint({ id: "cccc3333", contract: "0xABCDEFABCDEFABCDEFABCDEFABCDEFABCDEFABCD" }),
+    );
+    expect(again.duplicate).toBeDefined();
+  });
+
+  it("falls back to the handle when there is no contract yet", () => {
+    // Half of what lands here is an account with no contract deployed.
+    const cfg = configIn();
+    addUpcoming(cfg, mint({ id: "aaaa1111" }));
+    const again = addUpcoming(cfg, mint({ id: "cccc3333", name: "Typed again" }));
+    expect(again.duplicate?.id).toBe("aaaa1111");
+  });
+
+  it("does not fold two different drops together on name alone", () => {
+    // "Genesis" is half the chain. Losing a real drop to a name collision is
+    // worse than listing one twice.
+    const cfg = configIn();
+    addUpcoming(cfg, mint({ id: "aaaa1111", name: "Genesis", twitter: "https://x.com/one" }));
+    const other = addUpcoming(cfg, mint({ id: "cccc3333", name: "Genesis", twitter: "https://x.com/two" }));
+    expect(other.duplicate).toBeUndefined();
+    expect(loadUpcoming(cfg)).toHaveLength(2);
+  });
+
+  it("still treats the same id as an update rather than a duplicate", () => {
+    const cfg = configIn();
+    addUpcoming(cfg, mint({ supply: 100 }));
+    const again = addUpcoming(cfg, mint({ supply: 500 }));
+    expect(again.duplicate).toBeUndefined();
+    expect(loadUpcoming(cfg)[0].supply).toBe(500);
+  });
+
   it("removes by id and says what it removed", () => {
     const cfg = configIn();
     addUpcoming(cfg, mint());
-    addUpcoming(cfg, mint({ id: "bbbb2222", name: "Second" }));
+    addUpcoming(cfg, mint({ id: "bbbb2222", name: "Second", twitter: "https://x.com/second" }));
     const { removed, list } = removeUpcoming(cfg, "aaaa1111");
     expect(removed?.name).toBe("Test Drop");
     expect(list.map((m) => m.id)).toEqual(["bbbb2222"]);

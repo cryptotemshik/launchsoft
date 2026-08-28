@@ -43,12 +43,43 @@ export function saveUpcoming(configPath: string, list: readonly UpcomingMint[]):
   renameSync(tmp, target);
 }
 
-/** Add one, replacing any entry that already has its id. */
-export function addUpcoming(configPath: string, mint: UpcomingMint): UpcomingMint[] {
-  const list = loadUpcoming(configPath).filter((m) => m.id !== mint.id);
-  const next = [...list, mint];
+/**
+ * Is this the same drop as one already on the list?
+ *
+ * The id cannot answer that: it is minted from the name and the clock, so
+ * pressing "watch" on the same collection twice produced two ids and two
+ * entries. What identifies a drop is the contract, or the handle when there is
+ * no contract yet — the two things the list is keyed on for a reason.
+ *
+ * Name is deliberately not a fallback. Half the collections on this chain are
+ * called something like "Genesis", and folding two different drops together is
+ * worse than listing one twice.
+ */
+export function sameDrop(a: UpcomingMint, b: UpcomingMint): boolean {
+  if (a.contract && b.contract) return a.contract.toLowerCase() === b.contract.toLowerCase();
+  if (a.twitter && b.twitter) return a.twitter.toLowerCase() === b.twitter.toLowerCase();
+  return false;
+}
+
+/**
+ * Add one, unless the same drop is already there.
+ *
+ * Returns what is on the list either way, plus the existing entry when it
+ * refused — the caller wants to say "already watching", not "failed".
+ */
+export function addUpcoming(
+  configPath: string,
+  mint: UpcomingMint,
+): { list: UpcomingMint[]; duplicate?: UpcomingMint } {
+  const list = loadUpcoming(configPath);
+  // Same id means this is the same record being re-saved, which is an update
+  // and always allowed. Only a *different* record for a drop already listed is
+  // a duplicate.
+  const already = list.find((m) => m.id !== mint.id && sameDrop(m, mint));
+  if (already) return { list, duplicate: already };
+  const next = [...list.filter((m) => m.id !== mint.id), mint];
   saveUpcoming(configPath, next);
-  return next;
+  return { list: next };
 }
 
 /** Remove one by id. Returns what it removed, so the caller can name it. */

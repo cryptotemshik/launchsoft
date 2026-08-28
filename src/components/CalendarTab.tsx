@@ -29,6 +29,7 @@ import {
 import { classify, type ScannedDrop } from "../lib/dropScan";
 import type { CollectionInfo } from "../lib/collectionInfo";
 import WatchButton from "./WatchButton";
+import { seedWatched } from "../lib/watchedStore";
 import { twitterUrl } from "../lib/collectionInfo";
 import type { UpcomingMint } from "../lib/upcoming";
 import { openSeaCollectionUrlBySlug } from "../chains";
@@ -175,6 +176,8 @@ export default function CalendarTab() {
         supply: m.supply,
         twitter: m.twitter ? m.twitter.replace(/^https?:\/\/(www\.)?x\.com\//i, "") : null,
       }));
+
+      seedWatched((watch.upcoming as UpcomingMint[]) ?? []);
 
       const t = Math.floor(Date.now() / 1000);
       const merged = mergeCalendar(manual, scanner, tz.offsetMin, t, prior.current);
