@@ -71,85 +71,96 @@ const opts = {
 };
 const bought = (block: number, wei: string, col = COL) =>
   fill({ block, offer: [item(2, col, "1", "7")], consideration: [item(0, "0x0", parseEther(wei).toString())] });
-const bid = (block: number, wei: string, col = COL) =>
-  fill({ block, offer: [item(1, WETH, parseEther(wei).toString())], consideration: [item(2, col, "1", "9")] });
+/**
+ * One fill of a bid order. `hash` is what ties fills of the same order
+ * together — the only way the chain shows that a bid was still standing.
+ */
+const bid = (block: number, wei: string, hash = "0xorder", col = COL) =>
+  fill({
+    orderHash: hash,
+    block,
+    offer: [item(1, WETH, parseEther(wei).toString())],
+    consideration: [item(2, col, "1", "9")],
+  });
+/** A bid proven to have stood across `block`: filled before it and after. */
+const standing = (before: number, after: number, wei: string, hash = "0xorder", col = COL) => [
+  bid(before, wei, hash, col),
+  bid(after, wei, hash, col),
+];
 
 describe("finding a spread", () => {
-  it("pairs a purchase with the best offer that followed it", () => {
-    const opps = findOpportunities([bought(100, "0.01"), bid(200, "0.015"), bid(300, "0.02")], opts);
+  it("takes a bid proven to have stood across the purchase", () => {
+    const opps = findOpportunities([...standing(50, 200, "0.02"), bought(100, "0.01")], opts);
     expect(opps).toHaveLength(1);
     expect(opps[0].offerNetWei).toBe(parseEther("0.02"));
     expect(opps[0].profitWei).toBe(parseEther("0.02") - parseEther("0.01") - opts.gasWei);
   });
 
-  it("ignores an offer that was accepted before the purchase", () => {
-    // It proves a bid existed then, not now. Pairing backwards would invent
-    // opportunities out of stale prices.
+  it("refuses a bid only ever seen after the purchase", () => {
+    // The flaw this replaces. The chain shows when an order was consumed, not
+    // when it was placed, and a bid that fills more than once lives a median
+    // of twelve seconds — so one accepted five minutes later was almost
+    // certainly not there when the listing was bought. Assuming otherwise
+    // turned 7 real chances into 253 imaginary ones.
+    expect(findOpportunities([bought(100, "0.01"), bid(200, "0.02")], opts)).toEqual([]);
+    expect(findOpportunities([bought(100, "0.01"), bid(150, "0.02"), bid(200, "0.02")], opts)).toEqual([]);
+  });
+
+  it("refuses a bid only ever seen before the purchase", () => {
+    expect(findOpportunities([bid(50, "0.02"), bid(60, "0.02"), bought(100, "0.01")], opts)).toEqual([]);
+  });
+
+  it("refuses a bid seen exactly once, which cannot straddle anything", () => {
     expect(findOpportunities([bid(50, "0.02"), bought(100, "0.01")], opts)).toEqual([]);
   });
 
-  it("ignores an offer past the window", () => {
-    expect(findOpportunities([bought(100, "0.01"), bid(2000, "0.02")], opts)).toEqual([]);
+  it("ignores an order that lived far longer than the window", () => {
+    // Filled two hours apart says little about any particular second between.
+    expect(findOpportunities([...standing(1, 5000, "0.02"), bought(100, "0.01")], opts)).toEqual([]);
   });
 
   it("does not pair across collections", () => {
     const other = "0x9302243bc2F3642cbA8c59c2cc7f876bf9d83915";
-    expect(findOpportunities([bought(100, "0.01"), bid(200, "0.02", other)], opts)).toEqual([]);
+    const opps = findOpportunities(
+      [...standing(50, 200, "0.02", "0xorder", other), bought(100, "0.01")],
+      opts,
+    );
+    expect(opps).toEqual([]);
   });
 
   it("subtracts gas before judging the threshold", () => {
-    // A spread of exactly the threshold is not a trade once gas is paid.
-    const opps = findOpportunities([bought(100, "0.01"), bid(200, "0.011")], opts);
-    expect(opps).toEqual([]);
+    expect(findOpportunities([...standing(50, 200, "0.011"), bought(100, "0.01")], opts)).toEqual([]);
   });
 
   it("refuses a listing above the budget however good the spread", () => {
-    const opps = findOpportunities([bought(100, "0.5"), bid(200, "0.9")], opts);
-    expect(opps).toEqual([]);
+    expect(findOpportunities([...standing(50, 200, "0.9"), bought(100, "0.5")], opts)).toEqual([]);
   });
 
-  it("lets one accepted offer back only one purchase", () => {
-    // The flaw this replaces: a single bid of 0.329 ETH was credited against
-    // five separate listings and its profit counted five times. An accepted
-    // offer is one real trade that took one token.
+  it("lets an order back as many purchases as it had fills, and no more", () => {
+    // Two fills is two tokens taken; a third purchase has nothing left to sell
+    // into.
     const opps = findOpportunities(
-      [bought(100, "0.01"), bought(110, "0.01"), bought(120, "0.01"), bid(200, "0.05")],
-      opts,
-    );
-    expect(opps).toHaveLength(1);
-    expect(opps[0].buyBlock).toBe(100);
-  });
-
-  it("gives each purchase its own offer when there are enough to go round", () => {
-    const opps = findOpportunities(
-      [bought(100, "0.01"), bought(110, "0.01"), bid(200, "0.05"), bid(210, "0.04")],
+      [...standing(50, 200, "0.05"), bought(100, "0.01"), bought(110, "0.01"), bought(120, "0.01")],
       opts,
     );
     expect(opps).toHaveLength(2);
-    // The earlier purchase gets first pick, and takes the richer bid.
-    expect(opps[0].offerNetWei).toBe(parseEther("0.05"));
-    expect(opps[1].offerNetWei).toBe(parseEther("0.04"));
-  });
-
-  it("does not let a later purchase steal an offer already claimed", () => {
-    const opps = findOpportunities([bought(100, "0.01"), bought(150, "0.005"), bid(200, "0.05")], opts);
-    expect(opps).toHaveLength(1);
-    expect(opps[0].buyBlock).toBe(100);
   });
 
   it("adds up the spread per collection, biggest first", () => {
     const other = "0x9302243bc2F3642cbA8c59c2cc7f876bf9d83915";
     const opps = findOpportunities(
       [
-        bought(100, "0.01"), bid(150, "0.02"),
-        bought(100, "0.01", other), bid(150, "0.05", other),
+        ...standing(50, 200, "0.02", "0xa"),
+        bought(100, "0.01"),
+        ...standing(50, 200, "0.05", "0xb", other),
+        bought(100, "0.01", other),
       ],
       opts,
     );
     const rows = byCollection(opps);
     expect(rows).toHaveLength(2);
     expect(rows[0].collection).toBe(other.toLowerCase());
-    expect(rows[0].trades).toBe(1);
     expect(rows[0].profitWei > rows[1].profitWei).toBe(true);
   });
 });
+

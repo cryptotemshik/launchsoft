@@ -123,15 +123,28 @@ export default function ArbitrageTab() {
       <div className="panel">
         <h2>Arbitrage</h2>
         <p className="dim" style={{ marginTop: 0 }}>
-          A listing sold in ETH and a collection offer standing in WETH are two
-          prices for the same thing. This reads every completed Seaport trade on
-          the chain and records where the second was higher than the first.
+          A listing sold in ETH and a bid standing in WETH are two prices for
+          the same thing. This reads every completed Seaport trade on the chain
+          and records where the second was higher than the first — but only
+          where the bid can be <b>proven</b> to have been standing at the moment
+          the listing was bought.
         </p>
-        <p className="warn" style={{ marginBottom: 0 }}>
+        <p className="warn">
           Observation only. Nothing here trades, holds a key, or sends a
-          transaction. The numbers are what was <b>available</b> to whoever was
-          fastest — an upper bound, not a forecast of what this machine would
-          have won.
+          transaction. What is counted is what was <b>available</b> to whoever
+          was fastest — an upper bound, not a forecast of what this machine
+          would have won.
+        </p>
+        <p className="dim" style={{ marginBottom: 0 }}>
+          The proof matters more than it sounds. The chain shows when a bid was
+          consumed, never when it was placed, and a bid that fills more than
+          once lives a median of twelve seconds before it is swept. An earlier
+          version paired each purchase with any bid accepted within the next
+          fifteen minutes, which quietly assumes bids persist backwards in
+          time; over 5.6 hours that reported 253 chances worth 4.50 ETH where
+          only 7 worth 0.026 ETH could be shown to have existed. A row appears
+          here only when the same bid order filled both before and after the
+          purchase — so it demonstrably straddled that moment.
         </p>
       </div>
 
@@ -278,9 +291,10 @@ export default function ArbitrageTab() {
           <div className="panel">
             <h2>Where it is — last 7 days</h2>
             <p className="dim" style={{ marginTop: 0 }}>
-              Measured over three hours of live traffic while this was built,
-              four collections carried 96% of the spread. If that holds, a short
-              watch list is worth more than watching the whole chain.
+              Where the provable spread is concentrated. An earlier reading here
+              claimed four collections carried 96% of it; that number came from
+              the pairing rule since found to be wrong and should be ignored
+              until this table has a day of its own data.
             </p>
             {(view.collections ?? []).length === 0 ? (
               <div className="empty-state">
@@ -401,13 +415,13 @@ export default function ArbitrageTab() {
             )}
             <p className="dim hint" style={{ marginBottom: 0 }}>
               A row means a listing was bought for the first figure while a bid
-              stood at the second — so the difference was there. It does not
-              mean this machine would have got the listing. And read the
-              largest rows with suspicion: a <b>trait</b> offer fills
-              identically to a collection offer on chain, so an unusually rich
-              bid may only have been payable for a token with that trait, not
-              for the cheap one paired against it here. The median is the
-              honest number; the outliers need the OpenSea order to confirm.
+              order that filled both before and after stood at the second — so
+              the difference was really there. It still does not mean this
+              machine would have got the listing. One caveat remains that the
+              chain cannot settle: a <b>trait</b> offer fills identically to a
+              collection offer here, so an unusually rich bid may only have been
+              payable for a token carrying that trait, not for the cheap one
+              paired against it. Separating those needs the OpenSea order.
             </p>
           </div>
         </>

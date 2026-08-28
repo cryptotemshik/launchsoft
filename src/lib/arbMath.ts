@@ -26,6 +26,8 @@ export interface Item {
 }
 
 export interface Fill {
+  /** Seaport's hash for the order this filled — the same across its fills. */
+  orderHash?: string;
   block: number;
   offerer: string;
   recipient: string;
@@ -121,7 +123,11 @@ export interface Opportunity {
 }
 
 export interface SpreadOptions {
-  /** How far ahead of a purchase an offer still counts as the same moment. */
+  /**
+   * How long a bid order may have lived and still count as one standing
+   * moment. An order that filled across two hours says little about any
+   * particular second inside them.
+   */
   windowBlocks: number;
   /** What a two-leg execution costs in gas, in wei. */
   gasWei: bigint;
@@ -132,22 +138,33 @@ export interface SpreadOptions {
 }
 
 /**
- * Every purchase that could have been resold into a bid that was standing.
+ * Every purchase that could really have been resold into a bid that was
+ * already standing when the purchase happened.
  *
- * Each accepted offer backs **one** opportunity. That is the whole difference
- * between a measurement and a fantasy: the first version of this paired the
- * best offer in the window with every purchase that preceded it, so one bid of
- * 0.329 ETH was credited against five separate listings and counted 0.28 ETH
- * of profit five times. An accepted offer is one real trade that took one
- * token; it cannot also have taken four others.
+ * Two rules make this a measurement rather than a story, and both were learned
+ * the expensive way — by shipping without them and being unable to reconcile
+ * a single row against the marketplace.
  *
- * So offers are consumed. Purchases are considered oldest first — the order
- * they could actually have been acted on — and each takes the richest offer
- * still unclaimed inside its window.
+ * **The bid must be proven to have existed at the moment of the purchase.**
+ * The chain shows when an order was *consumed*, never when it was *placed*.
+ * The first version paired a purchase with any bid accepted within fifteen
+ * minutes after it, which quietly assumes bids persist backwards in time. They
+ * do not: measured over 60,000 blocks, a bid that fills more than once lives a
+ * median of twelve seconds and is swept five times. So a bid accepted five
+ * minutes after a purchase almost certainly did not exist when that listing
+ * was bought. The only on-chain proof available is that the *same order* also
+ * filled *before* the purchase and again after — then it straddled the moment,
+ * and it was there. Applied to 5.6 hours of live traffic, this cut 253
+ * "opportunities" worth 4.50 ETH down to 7 worth 0.026 ETH. Ninety-nine per
+ * cent of the earlier number was an artefact of the assumption.
  *
- * It is still an upper bound. It proves a bid stood at that price while that
- * listing was cheap, not that we would have won the race for the listing.
- * Anything stronger would be inventing a fill rate nobody measured.
+ * **One fill backs one trade.** An accepted offer is one real trade that took
+ * one token; it cannot also have taken four others. An order that filled five
+ * times can back five purchases, and no more.
+ *
+ * What survives is still an upper bound: it proves a bid stood at that price
+ * while that listing was cheap, not that we would have won the race for the
+ * listing.
  *
  * Collection offers apply to any token in the collection, so pairing by
  * collection rather than by token id is correct.
@@ -156,34 +173,65 @@ export function findOpportunities(
   fills: readonly Fill[],
   opts: SpreadOptions,
 ): Opportunity[] {
-  const priced = fills.map(priceFill).filter((p): p is Priced => p !== null);
+  const priced = fills.map((f, i) => ({ p: priceFill(f), hash: f.orderHash ?? `#${i}` }));
 
-  const offersBy = new Map<string, { block: number; net: bigint; taken: boolean }[]>();
-  for (const p of priced) {
-    if (p.kind !== "offer" || p.netWei === undefined) continue;
-    const list = offersBy.get(p.collection) ?? [];
-    list.push({ block: p.block, net: p.netWei, taken: false });
-    offersBy.set(p.collection, list);
+  /**
+   * Each bid order's life, as the chain can see it: the first and last block
+   * it was filled in, how many fills it had, and the best net any of them
+   * paid. An order seen only once has from === to and cannot straddle
+   * anything, which is the point.
+   */
+  interface BidOrder {
+    from: number;
+    to: number;
+    net: bigint;
+    fillsLeft: number;
+    collection: string;
   }
-  for (const list of offersBy.values()) list.sort((a, b) => a.block - b.block);
+  const orders = new Map<string, BidOrder>();
+  for (const { p, hash } of priced) {
+    if (!p || p.kind !== "offer" || p.netWei === undefined) continue;
+    const e = orders.get(hash);
+    if (!e) {
+      orders.set(hash, {
+        from: p.block, to: p.block, net: p.netWei, fillsLeft: 1, collection: p.collection,
+      });
+    } else {
+      e.from = Math.min(e.from, p.block);
+      e.to = Math.max(e.to, p.block);
+      if (p.netWei > e.net) e.net = p.netWei;
+      e.fillsLeft += 1;
+    }
+  }
+  const byCollection = new Map<string, BidOrder[]>();
+  for (const o of orders.values()) {
+    const l = byCollection.get(o.collection) ?? [];
+    l.push(o);
+    byCollection.set(o.collection, l);
+  }
 
   const buys = priced
-    .filter((p) => p.kind === "listing" && p.paidWei !== undefined && p.paidWei <= opts.maxPaidWei)
+    .map(({ p }) => p)
+    .filter(
+      (p): p is Priced =>
+        p !== null && p.kind === "listing" && p.paidWei !== undefined && p.paidWei <= opts.maxPaidWei,
+    )
     .sort((a, b) => a.block - b.block);
 
   const out: Opportunity[] = [];
   for (const p of buys) {
-    let best: { block: number; net: bigint; taken: boolean } | null = null;
-    for (const o of offersBy.get(p.collection) ?? []) {
-      if (o.taken || o.block < p.block) continue;
-      if (o.block > p.block + opts.windowBlocks) break;
+    let best: BidOrder | null = null;
+    for (const o of byCollection.get(p.collection) ?? []) {
+      // Straddles the purchase, so the bid demonstrably stood at that moment.
+      if (o.fillsLeft <= 0 || o.from >= p.block || o.to <= p.block) continue;
+      if (o.to - o.from > opts.windowBlocks) continue;
       if (!best || o.net > best.net) best = o;
     }
     if (!best) continue;
 
     const profit = best.net - p.paidWei! - opts.gasWei;
     if (profit < opts.minProfitWei) continue;
-    best.taken = true;
+    best.fillsLeft -= 1;
     out.push({
       collection: p.collection,
       tokenId: p.tokenId,
@@ -192,7 +240,7 @@ export function findOpportunities(
       gasWei: opts.gasWei,
       profitWei: profit,
       buyBlock: p.block,
-      sellBlock: best.block,
+      sellBlock: best.to,
     });
   }
   return out;

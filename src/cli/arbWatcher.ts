@@ -84,6 +84,9 @@ export async function watchOnce(
     const logs = await client.getLogs({ address: SEAPORT, event: ORDER_FULFILLED, fromBlock: s, toBlock: e });
     for (const l of logs) {
       fills.push({
+        // Ties the fills of one bid order together, which is the only way the
+        // chain shows a bid was still standing rather than just consumed.
+        orderHash: l.args.orderHash,
         block: Number(l.blockNumber),
         offerer: l.args.offerer ?? "",
         recipient: l.args.recipient ?? "",
