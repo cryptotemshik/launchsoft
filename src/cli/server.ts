@@ -99,18 +99,19 @@ import { API_VERSION } from "../lib/apiVersion";
 import { mapWithLimit, readConcurrency } from "../lib/rpcRead";
 import { makeReadClient } from "../lib/readClient";
 import { currentTunnelUrl } from "./tunnelUrl";
+import { envNumber } from "../lib/envNumber";
 
 const stamp = () => new Date().toISOString().slice(11, 23);
 const log = (msg: string) => console.log(`[${stamp()}] ${msg}`);
 
-const PORT = Number(process.env.SNIPE_PORT ?? 8787);
+const PORT = envNumber(process.env.SNIPE_PORT, 8787, 1);
 const HOST = process.env.SNIPE_HOST ?? "127.0.0.1";
 const TOKEN = process.env.SNIPE_TOKEN ?? "";
 /** Comma-separated list; "*" allows any origin (only sane behind a tunnel + token). */
 const ORIGINS = (process.env.SNIPE_ORIGINS ?? "*").split(",").map((s) => s.trim());
 const CONFIG_PATH = process.env.SNIPE_CONFIG ?? "snipe.config.json";
 /** How far ahead of a stage a job is armed (read nonces, pre-sign, warm). */
-const ARM_LEAD_MS = Number(process.env.SNIPE_ARM_LEAD_MS ?? 120_000);
+const ARM_LEAD_MS = envNumber(process.env.SNIPE_ARM_LEAD_MS, 120_000);
 /** Set to 0 to stop the server pulling its own updates. */
 /**
  * The endpoints this box reads through, set on the box.
@@ -164,7 +165,7 @@ function splitRpcs(raw: string | undefined): string[] {
 }
 
 const AUTO_UPDATE = process.env.SNIPE_AUTO_UPDATE !== "0";
-const AUTO_UPDATE_MS = Number(process.env.SNIPE_AUTO_UPDATE_MS ?? 3_600_000);
+const AUTO_UPDATE_MS = envNumber(process.env.SNIPE_AUTO_UPDATE_MS, 3_600_000, 1);
 /**
  * How close to a queued drop is too close to restart. A job arms ARM_LEAD_MS
  * before its stage; leaving only that would mean updating seconds before the
@@ -520,7 +521,7 @@ function startProfitBuild(): Promise<Record<string, unknown>> {
  */
 const scanCache = new Map<number, { at: number; body: Record<string, unknown> }>();
 const scanInflight = new Map<number, Promise<Record<string, unknown>>>();
-const SCAN_TTL_MS = Number(process.env.SNIPE_SCAN_TTL_MS ?? 60_000);
+const SCAN_TTL_MS = envNumber(process.env.SNIPE_SCAN_TTL_MS, 60_000);
 /**
  * The measured block rate, held for a while.
  *
@@ -603,13 +604,13 @@ const PULSE_HOURS = 1;
  * execution is 0.0000175 ETH — small enough that it never decides anything.
  */
 const ARB_ON = process.env.SNIPE_ARB === "1";
-const ARB_POLL_MS = Number(process.env.SNIPE_ARB_POLL_MS ?? 30_000);
+const ARB_POLL_MS = envNumber(process.env.SNIPE_ARB_POLL_MS, 30_000, 1);
 const ARB_MIN_PROFIT = process.env.SNIPE_ARB_MIN_PROFIT ?? "0.001";
 const ARB_MAX_PAID = process.env.SNIPE_ARB_MAX_PAID ?? "0.3";
 /** Fifteen minutes of this chain — how long a bid is taken to still stand. */
-const ARB_WINDOW_MIN = Number(process.env.SNIPE_ARB_WINDOW_MIN ?? 15);
+const ARB_WINDOW_MIN = envNumber(process.env.SNIPE_ARB_WINDOW_MIN, 15, 1);
 /** How much history a first run reaches back for, so the page is not empty. */
-const ARB_BACKFILL_HOURS = Number(process.env.SNIPE_ARB_BACKFILL_HOURS ?? 6);
+const ARB_BACKFILL_HOURS = envNumber(process.env.SNIPE_ARB_BACKFILL_HOURS, 6, 1);
 
 let arbStore: ArbStore | null = null;
 /** Why there is no store, when the answer is not simply "switched off". */
@@ -946,14 +947,14 @@ async function startScan(hours: number): Promise<Record<string, unknown>> {
  * the second, and two panels asking at once should not mean two full scans.
  */
 let profitCache: { at: number; body: Record<string, unknown> } | null = null;
-const PROFIT_TTL_MS = Number(process.env.SNIPE_PROFIT_TTL_MS ?? 60_000);
+const PROFIT_TTL_MS = envNumber(process.env.SNIPE_PROFIT_TTL_MS, 60_000);
 /**
  * How long a request waits for a build before answering "still working".
  *
  * Well under the tunnel's hundred-second limit, and long enough that a warm
  * report comes back on the first ask rather than the second.
  */
-const PROFIT_WAIT_MS = Number(process.env.SNIPE_PROFIT_WAIT_MS ?? 8_000);
+const PROFIT_WAIT_MS = envNumber(process.env.SNIPE_PROFIT_WAIT_MS, 8_000);
 
 /** Merge the on-disk defaults with whatever the panel supplied. */
 function buildRequest(body: Record<string, unknown>): Omit<RunOptions, "keys"> {
@@ -1063,7 +1064,7 @@ function parseWalletFilter(body: Record<string, unknown>): string[] | undefined 
 const run = promisify(execFile);
 
 /** Heap ceiling for the update's typecheck, so it cannot starve the box. */
-const TSC_HEAP_MB = Number(process.env.SNIPE_TSC_HEAP_MB ?? 320);
+const TSC_HEAP_MB = envNumber(process.env.SNIPE_TSC_HEAP_MB, 320, 1);
 /**
  * Headroom the typecheck needs beyond its own heap, for node itself.
  *
@@ -1074,7 +1075,7 @@ const TSC_HEAP_MB = Number(process.env.SNIPE_TSC_HEAP_MB ?? 320);
  * capped typecheck run without the kernel having to kill something", and swap
  * counts towards that: it makes tsc slower, never fatal.
  */
-const TSC_OVERHEAD_MB = Number(process.env.SNIPE_TSC_OVERHEAD_MB ?? 80);
+const TSC_OVERHEAD_MB = envNumber(process.env.SNIPE_TSC_OVERHEAD_MB, 80, 1);
 
 /**
  * Memory a new process could actually use, in MB — free RAM plus free swap.

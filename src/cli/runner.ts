@@ -44,6 +44,7 @@ import {
 import { fileDescriptorLimit, nodeSender, pooledSockets } from "./nodeSender";
 import { mapWithLimit, readTransport } from "../lib/rpcRead";
 import { waitUntil } from "../lib/snipeTimer";
+import { envNumber } from "../lib/envNumber";
 
 export interface RunOptions {
   chainId: number;
@@ -213,12 +214,10 @@ export function warmWarnings(
  * ceiling, not a delay — the tail leaves as soon as the head has answered.
  */
 export function waveSize(): number {
-  const raw = Number(process.env.SNIPE_WAVE_SIZE ?? "");
-  return Number.isFinite(raw) && raw >= 0 ? Math.floor(raw) : 100;
+  return envNumber(process.env.SNIPE_WAVE_SIZE, 100);
 }
-function waveGapMs(): number {
-  const raw = Number(process.env.SNIPE_WAVE_GAP_MS ?? "");
-  return Number.isFinite(raw) && raw >= 0 ? Math.floor(raw) : 40;
+export function waveGapMs(): number {
+  return envNumber(process.env.SNIPE_WAVE_GAP_MS, 40);
 }
 
 /** How often the public stage is re-read while a run holds for it to open. */

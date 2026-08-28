@@ -23,6 +23,7 @@ import { Agent, request as httpsRequest } from "node:https";
 import { Agent as HttpAgent, request as httpRequest } from "node:http";
 import { readFileSync } from "node:fs";
 import type { RpcEndpoint, RpcSender, WarmReport } from "../lib/rpcBlast";
+import { envNumber } from "../lib/envNumber";
 
 /**
  * How many sockets may be held open to each endpoint.
@@ -38,10 +39,7 @@ import type { RpcEndpoint, RpcSender, WarmReport } from "../lib/rpcBlast";
  * check below is what actually reports trouble. Override it for an unusual
  * setup with SNIPE_MAX_SOCKETS.
  */
-const MAX_SOCKETS = (() => {
-  const raw = Number(process.env.SNIPE_MAX_SOCKETS ?? "");
-  return Number.isFinite(raw) && raw >= 1 ? Math.floor(raw) : 4096;
-})();
+const MAX_SOCKETS = envNumber(process.env.SNIPE_MAX_SOCKETS, 4096, 1);
 
 const poolOptions = {
   keepAlive: true,
