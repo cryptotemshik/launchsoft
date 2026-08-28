@@ -11,7 +11,7 @@
  * REAL columns exist only so SUM() and ORDER BY happen in the database instead
  * of by pulling every row into JavaScript; nothing is ever paid out of them.
  */
-import Database from "better-sqlite3";
+import type DatabaseType from "better-sqlite3";
 import { dirname, join } from "node:path";
 import { formatEther } from "viem";
 
@@ -45,11 +45,26 @@ export function arbDbPath(configPath: string): string {
   return join(dirname(configPath) || ".", "arb.sqlite");
 }
 
-export class ArbStore {
-  private db: Database.Database;
+/**
+ * Open the store, loading the driver only now.
+ *
+ * The import is dynamic on purpose. better-sqlite3 is a native module, so
+ * `git pull` brings the dependency into package.json without bringing it into
+ * node_modules — and a top-level import of it took the whole server down on
+ * the next restart, for everyone, including boxes with arbitrage switched off.
+ * A feature that is off must cost nothing, and it certainly must not be able
+ * to stop a mint from being armed.
+ */
+export async function openArbStore(path: string): Promise<ArbStore> {
+  const { default: Database } = await import("better-sqlite3");
+  return new ArbStore(new Database(path));
+}
 
-  constructor(path: string) {
-    this.db = new Database(path);
+export class ArbStore {
+  private db: DatabaseType.Database;
+
+  constructor(db: DatabaseType.Database) {
+    this.db = db;
     // Survives a kill mid-write, and does not block readers behind the writer.
     this.db.pragma("journal_mode = WAL");
     this.db.exec(`

@@ -37,7 +37,7 @@ import { privateKeyToAccount } from "viem/accounts";
 import { collect, disperse } from "./funding";
 import { scanChain } from "./holdings";
 import { lookupCollections } from "./collectionLookup";
-import { ArbStore, arbDbPath } from "./arbStore";
+import { arbDbPath, openArbStore, type ArbStore } from "./arbStore";
 import { watchOnce } from "./arbWatcher";
 import { pulseByCollection, type MintPulse } from "../lib/mintPulse";
 import { CreatorIndex } from "../lib/creatorIndex";
@@ -612,6 +612,8 @@ const ARB_WINDOW_MIN = Number(process.env.SNIPE_ARB_WINDOW_MIN ?? 15);
 const ARB_BACKFILL_HOURS = Number(process.env.SNIPE_ARB_BACKFILL_HOURS ?? 6);
 
 let arbStore: ArbStore | null = null;
+/** Why there is no store, when the answer is not simply "switched off". */
+let arbWhy: string | null = null;
 let arbLast: { at: number; note: string } | null = null;
 
 function arbOptions(blocksPerHour: number) {
@@ -2623,7 +2625,11 @@ const server = createServer(async (req, res) => {
       if (!arbStore) {
         json(res, 200, {
           enabled: false,
-          why: "set SNIPE_ARB=1 in snipe.env and restart to start observing",
+          why:
+            arbWhy ??
+            (ARB_ON
+              ? "starting up — the database has not opened yet"
+              : "set SNIPE_ARB=1 in snipe.env and restart to start observing"),
         });
         return;
       }
@@ -2686,13 +2692,25 @@ server.listen(PORT, HOST, () => {
     // it would just be the same host twice and read like a misconfiguration.
     log(`reads up to ${readConcurrency()} chain call(s) at once (SNIPE_READ_CONCURRENCY)`);
     if (ARB_ON) {
-      arbStore = new ArbStore(arbDbPath(CONFIG_PATH));
-      log(
-        `arbitrage watch ON — observing only, no keys, no transactions · ` +
-          `min profit ${ARB_MIN_PROFIT} ETH · max buy ${ARB_MAX_PAID} ETH · ` +
-          `reaching ${ARB_BACKFILL_HOURS}h back on first run`,
-      );
-      setTimeout(() => void arbTick(), 2_000);
+      // Opening it can fail — the driver is a native module that a plain
+      // `git pull` does not install — and that must stay a line in the log
+      // rather than a dead server. Everything else here works without it.
+      void openArbStore(arbDbPath(CONFIG_PATH))
+        .then((store) => {
+          arbStore = store;
+          log(
+            `arbitrage watch ON — observing only, no keys, no transactions · ` +
+              `min profit ${ARB_MIN_PROFIT} ETH · max buy ${ARB_MAX_PAID} ETH · ` +
+              `reaching ${ARB_BACKFILL_HOURS}h back on first run`,
+          );
+          setTimeout(() => void arbTick(), 2_000);
+        })
+        .catch((e: unknown) => {
+          const why = e instanceof Error ? e.message.split("\n")[0] : String(e);
+          arbWhy = `could not open its database (${why}) — run "npm i" in the repo, then restart`;
+          log(`arbitrage watch OFF — could not open its database: ${why}`);
+          log(`arbitrage watch OFF — run "npm i" in this directory, then restart`);
+        });
     }
     if (MINT_ENV_RPCS.length > 0) {
       log(`arms and mints through ${uniq(mintRpcs(cfg).map(rpcHost)).join(", ")} — kept to itself`);

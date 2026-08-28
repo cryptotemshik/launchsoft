@@ -3,11 +3,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { parseEther } from "viem";
+import Database from "better-sqlite3";
 import { ArbStore, type StoredOpportunity } from "./arbStore";
 
 const stores: ArbStore[] = [];
 const open = () => {
-  const s = new ArbStore(join(mkdtempSync(join(tmpdir(), "arb-")), "arb.sqlite"));
+  const s = new ArbStore(new Database(join(mkdtempSync(join(tmpdir(), "arb-")), "arb.sqlite")));
   stores.push(s);
   return s;
 };
@@ -88,10 +89,10 @@ describe("storing observed arbitrage", () => {
 
   it("remembers how far it has read across a reopen", () => {
     const path = join(mkdtempSync(join(tmpdir(), "arb-")), "arb.sqlite");
-    const a = new ArbStore(path);
+    const a = new ArbStore(new Database(path));
     a.setState("lastBlock", "47919103");
     a.close();
-    const b = new ArbStore(path);
+    const b = new ArbStore(new Database(path));
     expect(b.getState("lastBlock")).toBe("47919103");
     expect(b.getState("nothing")).toBeNull();
     b.close();
