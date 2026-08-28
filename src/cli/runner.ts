@@ -36,9 +36,10 @@ import {
   prepareBlast,
   waitForReceiptOrNull,
   warmEndpoints,
+  type WarmReport,
   type RpcEndpoint,
 } from "../lib/rpcBlast";
-import { nodeSender, pooledSockets } from "./nodeSender";
+import { fileDescriptorLimit, nodeSender, pooledSockets } from "./nodeSender";
 import { mapWithLimit, readTransport } from "../lib/rpcRead";
 import { waitUntil } from "../lib/snipeTimer";
 
@@ -159,6 +160,50 @@ export interface DropState {
  * queue in the order it will actually fire, rather than the order someone
  * happened to add things in.
  */
+/**
+ * What to say when the warm-up did not get what it asked for.
+ *
+ * Silence here is the expensive kind: a blast whose connections were never
+ * opened looks exactly like one whose were, right up until every unwarmed
+ * wallet pays for a TLS handshake in the microseconds the whole design exists
+ * to protect. Each of these names the cause and the fix, because the fix is
+ * never in this program — it is a ulimit or an environment variable.
+ */
+export function warmWarnings(
+  warm: WarmReport,
+  wallets: number,
+  endpointCount: number,
+  /** Injected by tests; read from the running process otherwise. */
+  descriptorLimit: number | null = fileDescriptorLimit(),
+): string[] {
+  const out: string[] = [];
+  if (warm.capped) {
+    out.push(
+      `only ${warm.wanted} connection(s) per endpoint were opened for ${wallets} wallet(s) — ` +
+        `the rest will negotiate TLS as they fire. Raise SNIPE_MAX_SOCKETS.`,
+    );
+  }
+  const needed = wallets * endpointCount;
+  const limit = descriptorLimit;
+  // Descriptors are spent on more than these sockets, so the warning fires
+  // before the limit is reached rather than once it already bites.
+  if (limit !== null && Number.isFinite(limit) && needed > limit * 0.8) {
+    out.push(
+      `${wallets} wallet(s) × ${endpointCount} endpoint(s) wants ${needed} sockets, ` +
+        `and this process may open ${limit} files. Raise it with "ulimit -n" ` +
+        `before starting the runner, or the connections will not open.`,
+    );
+  }
+  if (warm.short.length > 0) {
+    const worst = warm.short
+      .slice(0, 3)
+      .map((e) => `${e.label} (${e.opened}/${warm.wanted})`)
+      .join(", ");
+    out.push(`some endpoints answered fewer warm-ups than asked: ${worst}`);
+  }
+  return out;
+}
+
 export async function readDrop(
   client: PublicClient,
   info: ChainInfo,
@@ -399,8 +444,12 @@ export async function runSnipe(opts: RunOptions, hooks: RunHooks): Promise<RunRe
   // One socket per wallet, not one per endpoint: HTTP/1.1 cannot share a
   // connection between two requests in flight, so anything less leaves most of
   // the blast negotiating TLS at T-0.
-  await warmEndpoints(endpoints, prepared.length, nodeSender);
-  log(`warmed     ${pooledSockets()} connection(s) open for ${prepared.length} wallet(s)`);
+  const warm = await warmEndpoints(endpoints, prepared.length, nodeSender);
+  log(
+    `warmed     ${pooledSockets()} socket(s) open · ${warm.opened}/${warm.wanted * endpoints.length}` +
+      ` connection(s) for ${prepared.length} wallet(s)`,
+  );
+  for (const line of warmWarnings(warm, prepared.length, endpoints.length)) log(`WARNING    ${line}`);
 
   if (opts.timing === "wait" && startTime * 1000 > Date.now()) {
     log("waiting    holding until the stage opens…");

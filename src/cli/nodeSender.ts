@@ -21,13 +21,27 @@
  */
 import { Agent, request as httpsRequest } from "node:https";
 import { Agent as HttpAgent, request as httpRequest } from "node:http";
-import type { RpcEndpoint, RpcSender } from "../lib/rpcBlast";
+import { readFileSync } from "node:fs";
+import type { RpcEndpoint, RpcSender, WarmReport } from "../lib/rpcBlast";
 
 /**
- * Node closes idle pooled sockets above this many, so it has to be at least
- * as large as the pool we want held open.
+ * How many sockets may be held open to each endpoint.
+ *
+ * This is a per-host ceiling in Node, and it used to be 512 — which was fine
+ * until it wasn't: a thousand-wallet blast asked to warm a thousand
+ * connections, got silently clamped to 512, and left 488 wallets negotiating
+ * TLS at T-0. That is precisely the cost warming exists to remove, and nothing
+ * said it had happened.
+ *
+ * The real ceiling is the process's file-descriptor limit, not a number picked
+ * here, so this is set high enough to stay out of the way and the descriptor
+ * check below is what actually reports trouble. Override it for an unusual
+ * setup with SNIPE_MAX_SOCKETS.
  */
-const MAX_SOCKETS = 512;
+const MAX_SOCKETS = (() => {
+  const raw = Number(process.env.SNIPE_MAX_SOCKETS ?? "");
+  return Number.isFinite(raw) && raw >= 1 ? Math.floor(raw) : 4096;
+})();
 
 const poolOptions = {
   keepAlive: true,
@@ -80,16 +94,57 @@ export const nodeSender: RpcSender = {
    * Open `connections` sockets to each endpoint at once. They are only pooled
    * while they overlap — issuing them one after another would reuse a single
    * socket and warm nothing — so these all have to be in flight together.
+   *
+   * Reports what it managed rather than swallowing it. A warm that quietly
+   * opened half of what was asked for looks identical to one that worked, and
+   * the difference only shows up as handshakes at the moment they cost most.
    */
-  async warm(endpoints: readonly RpcEndpoint[], connections: number): Promise<void> {
+  async warm(endpoints: readonly RpcEndpoint[], connections: number): Promise<WarmReport> {
     const want = Math.min(Math.max(1, connections), MAX_SOCKETS);
+    const short: WarmReport["short"] = [];
+    let opened = 0;
+    let failed = 0;
     await Promise.all(
-      endpoints.flatMap((ep) =>
-        Array.from({ length: want }, () => post(ep.url, WARM_BODY, 8_000).catch(() => "")),
-      ),
+      endpoints.map(async (ep) => {
+        const results = await Promise.all(
+          Array.from({ length: want }, () =>
+            post(ep.url, WARM_BODY, 8_000).then(
+              () => true,
+              () => false,
+            ),
+          ),
+        );
+        const ok = results.filter(Boolean).length;
+        opened += ok;
+        failed += results.length - ok;
+        if (ok < want) short.push({ label: ep.label, opened: ok });
+      }),
     );
+    return { wanted: want, opened, failed, short, capped: connections > MAX_SOCKETS };
   },
 };
+
+/**
+ * The process's soft limit on open files, or null where it cannot be read.
+ *
+ * Every warmed connection is a descriptor, and the default on a fresh Ubuntu
+ * box is 1024 — which a few hundred wallets across three endpoints walks
+ * straight through. The failure mode is not an error anyone reads: sockets
+ * simply stop opening, and the blast pays for the handshakes later.
+ */
+export function fileDescriptorLimit(): number | null {
+  try {
+    const text = readFileSync("/proc/self/limits", "utf8");
+    const line = text.split("\n").find((l) => l.startsWith("Max open files"));
+    if (!line) return null;
+    const soft = line.slice("Max open files".length).trim().split(/\s+/)[0];
+    if (soft === "unlimited") return Number.POSITIVE_INFINITY;
+    const n = Number(soft);
+    return Number.isFinite(n) ? n : null;
+  } catch {
+    return null;
+  }
+}
 
 /** Sockets currently held open across both pools — for the fire-time log. */
 export function pooledSockets(): number {

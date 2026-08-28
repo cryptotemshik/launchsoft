@@ -83,6 +83,19 @@ export function prepareBlast(rawTx: Hex): PreparedBlast {
  * avoid. Node therefore supplies a sender backed by a keep-alive pool — see
  * src/cli/nodeSender.ts.
  */
+/** What a warm-up managed, so a short one can be said out loud. */
+export interface WarmReport {
+  /** Connections asked for, per endpoint. */
+  wanted: number;
+  /** Warm-up requests that came back, across every endpoint. */
+  opened: number;
+  failed: number;
+  /** Endpoints that gave back fewer than `wanted`. */
+  short: { label: string; opened: number }[];
+  /** True when the request was clamped by the socket ceiling itself. */
+  capped: boolean;
+}
+
 export interface RpcSender {
   /** POST a JSON-RPC body and return the response text. */
   post(url: string, body: string): Promise<string>;
@@ -91,7 +104,7 @@ export interface RpcSender {
    * @param connections how many simultaneous requests the blast will make to
    *   each endpoint — one open socket per wallet, not one per endpoint.
    */
-  warm(endpoints: readonly RpcEndpoint[], connections: number): Promise<void>;
+  warm(endpoints: readonly RpcEndpoint[], connections: number): Promise<WarmReport>;
 }
 
 const WARM_BODY = JSON.stringify({ jsonrpc: "2.0", method: "eth_chainId", params: [], id: 1 });
@@ -110,16 +123,27 @@ export const fetchSender: RpcSender = {
     // One per endpoint is enough here: a browser reuses one HTTP/2 connection
     // for every concurrent request to the same origin.
     void connections;
-    await Promise.all(
+    const results = await Promise.all(
       endpoints.map((ep) =>
         fetch(ep.url, {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: WARM_BODY,
           keepalive: true,
-        }).catch(() => undefined),
+        }).then(
+          () => true,
+          () => false,
+        ),
       ),
     );
+    const opened = results.filter(Boolean).length;
+    return {
+      wanted: 1,
+      opened,
+      failed: results.length - opened,
+      short: endpoints.filter((_, i) => !results[i]).map((ep) => ({ label: ep.label, opened: 0 })),
+      capped: false,
+    };
   },
 };
 
@@ -176,8 +200,8 @@ export async function warmEndpoints(
   endpoints: readonly RpcEndpoint[],
   connections = 1,
   sender: RpcSender = fetchSender,
-): Promise<void> {
-  await sender.warm(endpoints, connections);
+): Promise<WarmReport> {
+  return sender.warm(endpoints, connections);
 }
 
 /** True when a per-endpoint error means "already broadcast", not "rejected". */

@@ -93,12 +93,25 @@ describe("nodeSender", () => {
     second.close();
   });
 
-  it("survives an endpoint that refuses the warm-up", async () => {
+  it("survives an endpoint that refuses the warm-up, and names it", async () => {
     // Nothing listening on this port: warming must not throw, because one dead
-    // endpoint should never stop a run whose other endpoints are fine.
+    // endpoint should never stop a run whose other endpoints are fine. It must
+    // not stay quiet about it either — a warm that opened half of what it was
+    // asked for looks identical to one that worked, and the difference only
+    // shows up as handshakes at the moment they cost most.
     const endpoints = parseRpcEndpoints([url, "http://127.0.0.1:9"]);
-    await expect(warmEndpoints(endpoints, 3, nodeSender)).resolves.toBeUndefined();
+    const report = await warmEndpoints(endpoints, 3, nodeSender);
     expect(connections).toBe(3);
+    expect(report.opened).toBe(3);
+    expect(report.failed).toBe(3);
+    expect(report.short.map((e) => e.opened)).toEqual([0]);
+    expect(report.capped).toBe(false);
+  });
+
+  it("reports the whole warm-up when every endpoint answers", async () => {
+    const report = await warmEndpoints(parseRpcEndpoints([url]), 5, nodeSender);
+    expect(report).toMatchObject({ wanted: 5, opened: 5, failed: 0, capped: false });
+    expect(report.short).toEqual([]);
   });
 
   it("reports a rejection from the endpoint rather than throwing", async () => {
