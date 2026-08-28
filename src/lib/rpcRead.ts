@@ -33,6 +33,16 @@ import { http, type HttpTransport } from "viem";
  * modest endpoint; SNIPE_READ_CONCURRENCY raises it where the endpoint can
  * take it. The backoff below still catches an endpoint that says slow down.
  */
+/**
+ * The setting in force, so the runner can say it at startup.
+ *
+ * A number that only shows up as "the arming felt slow" is a number nobody can
+ * confirm they changed.
+ */
+export function readConcurrency(): number {
+  return DEFAULT_LIMIT;
+}
+
 const DEFAULT_LIMIT = (() => {
   // Shared with the browser bundle, where `process` does not exist.
   const raw = Number(

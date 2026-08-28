@@ -94,7 +94,7 @@ import { buildUpcoming, sortByDate } from "../lib/upcoming";
 import { enrichDrops, measureBlockRate, readMints, scanPublicDrops } from "./dropScanner";
 import { blocksForHours, classify, mergeScans, sortForScan, type ScannedDrop } from "../lib/dropScan";
 import { API_VERSION } from "../lib/apiVersion";
-import { mapWithLimit } from "../lib/rpcRead";
+import { mapWithLimit, readConcurrency } from "../lib/rpcRead";
 import { makeReadClient } from "../lib/readClient";
 import { currentTunnelUrl } from "./tunnelUrl";
 
@@ -2566,6 +2566,7 @@ server.listen(PORT, HOST, () => {
     );
     // Only worth a second line when the two are actually different: on one key
     // it would just be the same host twice and read like a misconfiguration.
+    log(`reads up to ${readConcurrency()} chain call(s) at once (SNIPE_READ_CONCURRENCY)`);
     if (MINT_ENV_RPCS.length > 0) {
       log(`arms and mints through ${uniq(mintRpcs(cfg).map(rpcHost)).join(", ")} — kept to itself`);
     }
