@@ -33,7 +33,9 @@ import {
   blastToAll,
   isAlreadyKnown,
   parseRpcEndpoints,
+  planWaves,
   prepareBlast,
+  settleOrTimeout,
   waitForReceiptOrNull,
   warmEndpoints,
   type WarmReport,
@@ -204,6 +206,21 @@ export function warmWarnings(
   return out;
 }
 
+/**
+ * How many wallets go in the first wave, and how long the rest will wait for
+ * it. 100 is the measured knee: below it the head clears in single-digit
+ * milliseconds, above it the head starts queueing behind itself. The gap is a
+ * ceiling, not a delay — the tail leaves as soon as the head has answered.
+ */
+export function waveSize(): number {
+  const raw = Number(process.env.SNIPE_WAVE_SIZE ?? "");
+  return Number.isFinite(raw) && raw >= 0 ? Math.floor(raw) : 100;
+}
+function waveGapMs(): number {
+  const raw = Number(process.env.SNIPE_WAVE_GAP_MS ?? "");
+  return Number.isFinite(raw) && raw >= 0 ? Math.floor(raw) : 40;
+}
+
 /** How often the public stage is re-read while a run holds for it to open. */
 const RECHECK_MS = 5_000;
 /** How long the fire moment will wait for a re-sign that is still in flight. */
@@ -342,6 +359,9 @@ export async function runSnipe(opts: RunOptions, hooks: RunHooks): Promise<RunRe
     ...info.chain.rpcUrls.default.http,
     ...opts.extraRpcs,
   ]);
+  // On a first-come-first-served chain the sequencer is the only endpoint that
+  // decides ordering, so the first wave is aimed at it alone.
+  const submitEndpoints = parseRpcEndpoints([...(info.submitRpcs ?? [])]);
 
   log(`chain      ${info.label} (${info.id})`);
   log(`wallets    ${accounts.length}`);
@@ -673,13 +693,63 @@ export async function runSnipe(opts: RunOptions, hooks: RunHooks): Promise<RunRe
   }
 
   // ── Fire ────────────────────────────────────────────────────────────────
+  const wave = planWaves(prepared.length, endpoints, submitEndpoints, {
+    headSize: waveSize(),
+    maxGapMs: waveGapMs(),
+  });
+  if (wave.head > 0 && (wave.head < prepared.length || wave.catchUpEndpoints.length > 0)) {
+    log(
+      `waves      first ${wave.head} wallet(s) → ${wave.headEndpoints.map((e) => e.label).join(", ")}` +
+        (wave.head < prepared.length ? `, then ${prepared.length - wave.head} more → all` : "") +
+        ` (SNIPE_WAVE_SIZE / SNIPE_WAVE_GAP_MS)`,
+    );
+  }
+
   const t0 = Date.now();
-  const fired = prepared.map(({ address, blast }) => ({
+  const head = prepared.slice(0, wave.head);
+  const tail = prepared.slice(wave.head);
+
+  // Wave one: the wallets that are actually racing, on the shortest path in,
+  // with nothing else queued ahead of them.
+  const headFired = head.map(({ address, blast }) => ({
+    address,
+    blast,
+    first: blastToAll(blast, wave.headEndpoints, nodeSender).results,
+  }));
+  const headMs = Date.now() - t0;
+
+  if (tail.length > 0 || wave.catchUpEndpoints.length > 0) {
+    await settleOrTimeout(
+      headFired.map((h) => h.first),
+      wave.maxGapMs,
+    );
+  }
+
+  const tailFired = tail.map(({ address, blast }) => ({
     address,
     txHash: blast.txHash,
-    results: blastToAll(blast, endpoints, nodeSender).results,
+    results: blastToAll(blast, wave.tailEndpoints, nodeSender).results,
   }));
-  log(`FIRED      ${fired.length} transaction(s) dispatched in ${Date.now() - t0}ms`);
+
+  // The head still has to reach the endpoints it skipped — insurance against a
+  // sequencer that refused it, at no cost to the race that is already over.
+  const fired = [
+    ...headFired.map(({ address, blast, first }) => ({
+      address,
+      txHash: blast.txHash,
+      results:
+        wave.catchUpEndpoints.length === 0
+          ? first
+          : Promise.all([first, blastToAll(blast, wave.catchUpEndpoints, nodeSender).results]).then(
+              ([a, b]) => [...a, ...b],
+            ),
+    })),
+    ...tailFired,
+  ];
+  log(
+    `FIRED      ${fired.length} transaction(s) dispatched in ${Date.now() - t0}ms` +
+      (head.length > 0 && tail.length > 0 ? ` (first ${head.length} away in ${headMs}ms)` : ""),
+  );
   for (const f of fired) log(`  ${f.address} → ${f.txHash}`);
 
   const outcomes: WalletOutcome[] = accounts

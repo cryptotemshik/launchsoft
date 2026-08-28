@@ -88,7 +88,7 @@ import {
   type KeyEntry,
   type SnipeConfig,
 } from "./config";
-import { readDrop, runSnipe, type RunOptions, type RunResult } from "./runner";
+import { readDrop, runSnipe, waveSize, type RunOptions, type RunResult } from "./runner";
 import { formatMintReport, sendTelegram, type MintedWallet } from "../lib/telegram";
 import { startTelegramBot } from "./telegramBot";
 import { addUpcoming, loadUpcoming, removeUpcoming } from "./upcomingStore";
@@ -2691,6 +2691,12 @@ server.listen(PORT, HOST, () => {
     // Only worth a second line when the two are actually different: on one key
     // it would just be the same host twice and read like a misconfiguration.
     log(`reads up to ${readConcurrency()} chain call(s) at once (SNIPE_READ_CONCURRENCY)`);
+    log(
+      waveSize() > 0
+        ? `fires the first ${waveSize()} wallet(s) at the sequencer alone, then the rest ` +
+            `(SNIPE_WAVE_SIZE / SNIPE_WAVE_GAP_MS)`
+        : `fires every wallet at every endpoint at once — wave dispatch off (SNIPE_WAVE_SIZE=0)`,
+    );
     if (ARB_ON) {
       // Opening it can fail — the driver is a native module that a plain
       // `git pull` does not install — and that must stay a line in the log

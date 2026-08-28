@@ -148,6 +148,86 @@ export const fetchSender: RpcSender = {
 };
 
 /**
+ * How a blast is split into waves.
+ *
+ * Two measurements drive this, both taken against a local server with the far
+ * end in its own process, three endpoints, medians of three runs:
+ *
+ *   wallets   all at once, 3 endpoints   sequencer only
+ *        22   first  5.3ms               first 2.8ms
+ *       100   first   13ms               first 7.1ms
+ *       300   first   42ms               first  13ms
+ *
+ * Two separate costs, and the plan addresses both.
+ *
+ * The first is that every wallet you load slows down wallet number one. Node
+ * has one thread: a single synchronous pass queues every request, and the
+ * write for the first wallet does not reach the kernel until the pass is over.
+ * So the wallets that will actually win the drop wait behind the ones that are
+ * only there for volume. Firing a head wave on its own and letting it clear
+ * first gives those wallets the latency they would have had if nothing else
+ * were loaded — measured at 300 wallets: first done 27ms in waves against
+ * 109ms all at once, with the tail arriving no later either.
+ *
+ * The second is that on a first-come-first-served chain only the sequencer
+ * decides ordering. The other endpoints are insurance — worth having, worthless
+ * for the race — and in the head wave they simply triple the work the thread
+ * has to get through. So the head goes to the sequencer alone and reaches the
+ * rest afterwards, which costs the head nothing and still leaves every wallet
+ * broadcast everywhere.
+ */
+export interface WavePlan {
+  /** Wallets in the first wave. */
+  head: number;
+  /** Where the first wave goes — the sequencer alone, where there is one. */
+  headEndpoints: RpcEndpoint[];
+  /** Where the first wave is repeated once the rest is away. */
+  catchUpEndpoints: RpcEndpoint[];
+  /** Everything the second wave goes to. */
+  tailEndpoints: RpcEndpoint[];
+  /** Longest the second wave will wait for the first to clear. */
+  maxGapMs: number;
+}
+
+export function planWaves(
+  total: number,
+  endpoints: readonly RpcEndpoint[],
+  submit: readonly RpcEndpoint[],
+  opts: { headSize: number; maxGapMs: number },
+): WavePlan {
+  const all = [...endpoints];
+  // headSize 0 turns the split off: one wave, every endpoint, as it was.
+  const head = opts.headSize <= 0 ? 0 : Math.min(opts.headSize, total);
+  const submitUrls = new Set(submit.map((e) => e.url));
+  const preferred = all.filter((e) => submitUrls.has(e.url));
+  // A chain with no send-only endpoint has nothing to prefer, so the head
+  // goes everywhere at once and there is nothing left to catch up on.
+  const headEndpoints = head > 0 && preferred.length > 0 ? preferred : all;
+  const catchUpEndpoints = head > 0 ? all.filter((e) => !headEndpoints.includes(e)) : [];
+  return { head, headEndpoints, catchUpEndpoints, tailEndpoints: all, maxGapMs: opts.maxGapMs };
+}
+
+/**
+ * Wait for the first wave to clear, but never longer than the gap.
+ *
+ * Waiting for the responses rather than sleeping a fixed number of
+ * milliseconds is what makes the split self-tuning: the gap only has to be
+ * long enough, and a head that answers in 4ms does not cost the tail 40. The
+ * cap is there so an endpoint that never answers cannot hold the rest of the
+ * blast — the transactions are already signed and the stage is already open.
+ */
+export function settleOrTimeout(work: readonly Promise<unknown>[], maxMs: number): Promise<void> {
+  if (work.length === 0 || maxMs <= 0) return Promise.resolve();
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, maxMs);
+    void Promise.allSettled(work).then(() => {
+      clearTimeout(timer);
+      resolve();
+    });
+  });
+}
+
+/**
  * Fire the prepared payload at every endpoint simultaneously. Returns
  * immediately with the locally-computed hash — the caller doesn't wait on
  * any network response before moving to the next wallet.
