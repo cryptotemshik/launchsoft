@@ -44,13 +44,20 @@ interface ArbView {
   why?: string;
   apiVersion?: number;
   mode?: string;
-  settings?: { minProfitEth: string; maxPaidEth: string; windowMinutes: number; pollMs: number };
+  settings?: {
+    minProfitEth: string;
+    maxPaidEth: string;
+    windowMinutes: number;
+    pollMs: number;
+    backfillHours?: number;
+  };
   lastPass?: { at: number; note: string } | null;
   lastBlock?: number;
   today?: Totals;
   week?: Totals;
   all?: Totals;
   daily?: { day: string; trades: number; profitEth: number }[];
+  hourly?: { hour: string; trades: number; profitEth: number }[];
   collections?: CollectionRow[];
   recent?: LogRow[];
   openSeaSlug?: string;
@@ -76,6 +83,7 @@ export default function ArbitrageTab() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [only, setOnly] = useState<string | null>(null);
+  const [grain, setGrain] = useState<"hour" | "day">("hour");
 
   const load = useCallback(
     async (collection?: string | null) => {
@@ -207,28 +215,64 @@ export default function ArbitrageTab() {
               </div>
             </div>
 
-            {view.daily && view.daily.length > 0 ? (
-              <div className="table-wrap" style={{ marginTop: 14 }}>
-                <table className="ledger-table">
-                  <thead>
-                    <tr>
-                      <th>day</th>
-                      <th className="num">chances</th>
-                      <th className="num">spread (ETH)</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {view.daily.map((d) => (
-                      <tr key={d.day}>
-                        <td>{d.day}</td>
-                        <td className="num">{d.trades}</td>
-                        <td className="num ok">{d.profitEth.toFixed(5)}</td>
+            {/* Hours by default: a session someone watches for an afternoon is
+                one row by day, which cannot show whether the spread is steady
+                or came from a single minute. */}
+            <div style={{ display: "flex", gap: 6, marginTop: 14, marginBottom: 8 }}>
+              {(["hour", "day"] as const).map((g) => (
+                <button
+                  key={g}
+                  className={grain === g ? "secondary active-chip" : "secondary"}
+                  style={{ padding: "3px 12px", fontSize: 11 }}
+                  onClick={() => setGrain(g)}
+                >
+                  by {g}
+                </button>
+              ))}
+            </div>
+            {(() => {
+              const rows =
+                grain === "hour"
+                  ? (view.hourly ?? []).map((h) => ({ key: h.hour, ...h }))
+                  : (view.daily ?? []).map((d) => ({ key: d.day, ...d }));
+              if (rows.length === 0) return null;
+              const peak = Math.max(...rows.map((r) => r.profitEth), 0) || 1;
+              return (
+                <div className="table-wrap">
+                  <table className="ledger-table">
+                    <thead>
+                      <tr>
+                        <th>{grain}</th>
+                        <th className="num">chances</th>
+                        <th className="num">spread (ETH)</th>
+                        <th />
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            ) : null}
+                    </thead>
+                    <tbody>
+                      {rows.map((r) => (
+                        <tr key={r.key}>
+                          <td className="mono-break">{r.key}</td>
+                          <td className="num">{r.trades}</td>
+                          <td className="num ok">{r.profitEth.toFixed(5)}</td>
+                          <td style={{ width: "40%" }}>
+                            {/* A bar rather than a number alone: the shape of
+                                six hours is the thing being looked for. */}
+                            <div
+                              style={{
+                                height: 8,
+                                width: `${Math.max(2, (r.profitEth / peak) * 100)}%`,
+                                background: "var(--green)",
+                                opacity: 0.55,
+                              }}
+                            />
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              );
+            })()}
           </div>
 
           <div className="panel">
@@ -356,9 +400,14 @@ export default function ArbitrageTab() {
               </div>
             )}
             <p className="dim hint" style={{ marginBottom: 0 }}>
-              A row means a listing was bought for the first figure while a
-              collection offer stood at the second — so the difference was
-              there. It does not mean this machine would have got the listing.
+              A row means a listing was bought for the first figure while a bid
+              stood at the second — so the difference was there. It does not
+              mean this machine would have got the listing. And read the
+              largest rows with suspicion: a <b>trait</b> offer fills
+              identically to a collection offer on chain, so an unusually rich
+              bid may only have been payable for a token with that trait, not
+              for the cheap one paired against it here. The median is the
+              honest number; the outliers need the OpenSea order to confirm.
             </p>
           </div>
         </>

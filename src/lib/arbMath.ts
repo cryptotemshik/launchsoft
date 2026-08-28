@@ -132,15 +132,25 @@ export interface SpreadOptions {
 }
 
 /**
- * Every purchase that could have been resold into a live offer for more.
+ * Every purchase that could have been resold into a bid that was standing.
  *
- * This is an upper bound, deliberately. It pairs a purchase with the best
- * offer accepted on the same collection shortly after, which proves a bid at
- * that price existed — not that we would have won the race for the listing.
- * Calling it anything stronger would be inventing a fill rate nobody measured.
+ * Each accepted offer backs **one** opportunity. That is the whole difference
+ * between a measurement and a fantasy: the first version of this paired the
+ * best offer in the window with every purchase that preceded it, so one bid of
+ * 0.329 ETH was credited against five separate listings and counted 0.28 ETH
+ * of profit five times. An accepted offer is one real trade that took one
+ * token; it cannot also have taken four others.
+ *
+ * So offers are consumed. Purchases are considered oldest first — the order
+ * they could actually have been acted on — and each takes the richest offer
+ * still unclaimed inside its window.
+ *
+ * It is still an upper bound. It proves a bid stood at that price while that
+ * listing was cheap, not that we would have won the race for the listing.
+ * Anything stronger would be inventing a fill rate nobody measured.
  *
  * Collection offers apply to any token in the collection, so pairing by
- * collection rather than by token id is correct here.
+ * collection rather than by token id is correct.
  */
 export function findOpportunities(
   fills: readonly Fill[],
@@ -148,34 +158,36 @@ export function findOpportunities(
 ): Opportunity[] {
   const priced = fills.map(priceFill).filter((p): p is Priced => p !== null);
 
-  const offersBy = new Map<string, { block: number; net: bigint }[]>();
+  const offersBy = new Map<string, { block: number; net: bigint; taken: boolean }[]>();
   for (const p of priced) {
     if (p.kind !== "offer" || p.netWei === undefined) continue;
     const list = offersBy.get(p.collection) ?? [];
-    list.push({ block: p.block, net: p.netWei });
+    list.push({ block: p.block, net: p.netWei, taken: false });
     offersBy.set(p.collection, list);
   }
   for (const list of offersBy.values()) list.sort((a, b) => a.block - b.block);
 
-  const out: Opportunity[] = [];
-  for (const p of priced) {
-    if (p.kind !== "listing" || p.paidWei === undefined) continue;
-    if (p.paidWei > opts.maxPaidWei) continue;
+  const buys = priced
+    .filter((p) => p.kind === "listing" && p.paidWei !== undefined && p.paidWei <= opts.maxPaidWei)
+    .sort((a, b) => a.block - b.block);
 
-    let best: { block: number; net: bigint } | null = null;
+  const out: Opportunity[] = [];
+  for (const p of buys) {
+    let best: { block: number; net: bigint; taken: boolean } | null = null;
     for (const o of offersBy.get(p.collection) ?? []) {
-      if (o.block < p.block) continue;
+      if (o.taken || o.block < p.block) continue;
       if (o.block > p.block + opts.windowBlocks) break;
       if (!best || o.net > best.net) best = o;
     }
     if (!best) continue;
 
-    const profit = best.net - p.paidWei - opts.gasWei;
+    const profit = best.net - p.paidWei! - opts.gasWei;
     if (profit < opts.minProfitWei) continue;
+    best.taken = true;
     out.push({
       collection: p.collection,
       tokenId: p.tokenId,
-      paidWei: p.paidWei,
+      paidWei: p.paidWei!,
       offerNetWei: best.net,
       gasWei: opts.gasWei,
       profitWei: profit,

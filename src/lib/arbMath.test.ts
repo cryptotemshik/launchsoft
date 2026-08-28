@@ -108,6 +108,35 @@ describe("finding a spread", () => {
     expect(opps).toEqual([]);
   });
 
+  it("lets one accepted offer back only one purchase", () => {
+    // The flaw this replaces: a single bid of 0.329 ETH was credited against
+    // five separate listings and its profit counted five times. An accepted
+    // offer is one real trade that took one token.
+    const opps = findOpportunities(
+      [bought(100, "0.01"), bought(110, "0.01"), bought(120, "0.01"), bid(200, "0.05")],
+      opts,
+    );
+    expect(opps).toHaveLength(1);
+    expect(opps[0].buyBlock).toBe(100);
+  });
+
+  it("gives each purchase its own offer when there are enough to go round", () => {
+    const opps = findOpportunities(
+      [bought(100, "0.01"), bought(110, "0.01"), bid(200, "0.05"), bid(210, "0.04")],
+      opts,
+    );
+    expect(opps).toHaveLength(2);
+    // The earlier purchase gets first pick, and takes the richer bid.
+    expect(opps[0].offerNetWei).toBe(parseEther("0.05"));
+    expect(opps[1].offerNetWei).toBe(parseEther("0.04"));
+  });
+
+  it("does not let a later purchase steal an offer already claimed", () => {
+    const opps = findOpportunities([bought(100, "0.01"), bought(150, "0.005"), bid(200, "0.05")], opts);
+    expect(opps).toHaveLength(1);
+    expect(opps[0].buyBlock).toBe(100);
+  });
+
   it("adds up the spread per collection, biggest first", () => {
     const other = "0x9302243bc2F3642cbA8c59c2cc7f876bf9d83915";
     const opps = findOpportunities(

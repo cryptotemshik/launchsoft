@@ -27,8 +27,22 @@ export const ORDER_FULFILLED = parseAbiItem(
 const CHUNK = 10_000n;
 /** How much chain one pass covers. Bigger batches pair better at the seams. */
 const BATCH = 60_000n;
-/** Never walk further back than this on a first run — a cold start is not a backfill. */
-const COLD_START = 120_000n;
+/**
+ * How far back a first run reaches.
+ *
+ * A cold start with no backfill shows an empty page until enough chain has
+ * gone by, which is the wrong first impression for a tool whose whole job is
+ * to say whether the money is there. One pass covers 60,000 blocks and the
+ * chain produces 35,600 an hour, so the catch-up is a handful of passes
+ * however far back this reaches.
+ */
+export const DEFAULT_BACKFILL_BLOCKS = 213_600n; // six hours of this chain
+
+export interface WatchOptions extends SpreadOptions {
+  /** How far back a first run reaches. Ignored once there is a saved position. */
+  backfillBlocks?: bigint;
+  onNote?: (s: string) => void;
+}
 
 export interface WatchResult {
   fromBlock: number;
@@ -48,13 +62,14 @@ export interface WatchResult {
 export async function watchOnce(
   client: PublicClient,
   store: ArbStore,
-  opts: SpreadOptions & { onNote?: (s: string) => void },
+  opts: WatchOptions,
 ): Promise<WatchResult | null> {
   const started = Date.now();
   const tip = await client.getBlockNumber();
 
   const saved = store.getState("lastBlock");
-  const last = saved ? BigInt(saved) : tip > COLD_START ? tip - COLD_START : 0n;
+  const back = opts.backfillBlocks ?? DEFAULT_BACKFILL_BLOCKS;
+  const last = saved ? BigInt(saved) : tip > back ? tip - back : 0n;
   if (last >= tip) return null;
 
   const to = last + BATCH > tip ? tip : last + BATCH;

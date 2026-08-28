@@ -608,6 +608,8 @@ const ARB_MIN_PROFIT = process.env.SNIPE_ARB_MIN_PROFIT ?? "0.001";
 const ARB_MAX_PAID = process.env.SNIPE_ARB_MAX_PAID ?? "0.3";
 /** Fifteen minutes of this chain — how long a bid is taken to still stand. */
 const ARB_WINDOW_MIN = Number(process.env.SNIPE_ARB_WINDOW_MIN ?? 15);
+/** How much history a first run reaches back for, so the page is not empty. */
+const ARB_BACKFILL_HOURS = Number(process.env.SNIPE_ARB_BACKFILL_HOURS ?? 6);
 
 let arbStore: ArbStore | null = null;
 let arbLast: { at: number; note: string } | null = null;
@@ -634,7 +636,10 @@ async function arbTick(): Promise<void> {
     if (!info || !arbStore) return;
     const client = makeReadClient(info.chain, scanRpcs(cfg));
     const perHour = blockRate?.perHour ?? 35_600;
-    const r = await watchOnce(client as never, arbStore, arbOptions(perHour));
+    const r = await watchOnce(client as never, arbStore, {
+      ...arbOptions(perHour),
+      backfillBlocks: BigInt(Math.round(perHour * ARB_BACKFILL_HOURS)),
+    });
     if (r) {
       arbLast = {
         at: Date.now(),
@@ -2638,6 +2643,7 @@ const server = createServer(async (req, res) => {
           maxPaidEth: ARB_MAX_PAID,
           windowMinutes: ARB_WINDOW_MIN,
           pollMs: ARB_POLL_MS,
+          backfillHours: ARB_BACKFILL_HOURS,
         },
         lastPass: arbLast,
         lastBlock: Number(arbStore.getState("lastBlock") ?? 0),
@@ -2645,6 +2651,7 @@ const server = createServer(async (req, res) => {
         week: arbStore.totals(now - 7 * day),
         all: arbStore.totals(0),
         daily: arbStore.daily(14),
+        hourly: arbStore.hourly(24),
         collections: arbStore.byCollection(now - 7 * day, 30),
         recent: arbStore.recent(limit, collection),
         explorerUrl: info?.explorerUrl,
@@ -2682,7 +2689,8 @@ server.listen(PORT, HOST, () => {
       arbStore = new ArbStore(arbDbPath(CONFIG_PATH));
       log(
         `arbitrage watch ON — observing only, no keys, no transactions · ` +
-          `min profit ${ARB_MIN_PROFIT} ETH · max buy ${ARB_MAX_PAID} ETH`,
+          `min profit ${ARB_MIN_PROFIT} ETH · max buy ${ARB_MAX_PAID} ETH · ` +
+          `reaching ${ARB_BACKFILL_HOURS}h back on first run`,
       );
       setTimeout(() => void arbTick(), 2_000);
     }

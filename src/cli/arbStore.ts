@@ -143,6 +143,25 @@ export class ArbStore {
       });
   }
 
+  /**
+   * Per-hour totals for the last N hours.
+   *
+   * Days are the wrong grain for a session someone watches for an afternoon:
+   * a six-hour observation is one row, which says nothing about whether the
+   * spread is steady or came from a single minute.
+   */
+  hourly(hours: number): { hour: string; trades: number; profitEth: number }[] {
+    return this.db
+      .prepare(`SELECT strftime('%Y-%m-%d %H:00', at, 'unixepoch') AS hour,
+                       COUNT(*) AS trades, COALESCE(SUM(profit_eth), 0) AS profit
+                FROM opportunity GROUP BY hour ORDER BY hour DESC LIMIT ?`)
+      .all(hours)
+      .map((r) => {
+        const x = r as { hour: string; trades: number; profit: number };
+        return { hour: x.hour, trades: x.trades, profitEth: x.profit };
+      });
+  }
+
   getState(key: string): string | null {
     const r = this.db.prepare(`SELECT value FROM state WHERE key = ?`).get(key) as
       | { value: string }
