@@ -6,12 +6,17 @@
  * 95,000 Seaport fills a day, and even the filtered opportunities accumulate
  * faster than a file that has to be read and rewritten whole.
  *
+ * Node's own `node:sqlite`, not better-sqlite3. The native module has to be
+ * compiled on install, and the box this runs on has no compiler — `npm i`
+ * ended in `gyp ERR! not found: make`, which is not a thing to discover on a
+ * server that was mid-restart. The built-in needs nothing but Node 22.
+ *
  * Amounts are kept twice on purpose. `*_wei` is TEXT and is the truth — wei
  * does not survive a float, and 64-bit integers do not survive wei. The `_eth`
  * REAL columns exist only so SUM() and ORDER BY happen in the database instead
  * of by pulling every row into JavaScript; nothing is ever paid out of them.
  */
-import type DatabaseType from "better-sqlite3";
+import { DatabaseSync } from "./nodeSqlite";
 import { dirname, join } from "node:path";
 import { formatEther } from "viem";
 
@@ -56,17 +61,16 @@ export function arbDbPath(configPath: string): string {
  * to stop a mint from being armed.
  */
 export async function openArbStore(path: string): Promise<ArbStore> {
-  const { default: Database } = await import("better-sqlite3");
-  return new ArbStore(new Database(path));
+  return new ArbStore(new DatabaseSync(path));
 }
 
 export class ArbStore {
-  private db: DatabaseType.Database;
+  private db: DatabaseSync;
 
-  constructor(db: DatabaseType.Database) {
+  constructor(db: DatabaseSync) {
     this.db = db;
     // Survives a kill mid-write, and does not block readers behind the writer.
-    this.db.pragma("journal_mode = WAL");
+    this.db.exec("PRAGMA journal_mode = WAL");
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS opportunity (
         buy_block   INTEGER NOT NULL,
@@ -101,19 +105,25 @@ export class ArbStore {
          paid_wei, offer_wei, gas_wei, profit_wei, profit_eth, paid_eth)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
-    const run = this.db.transaction((rows: readonly StoredOpportunity[]) => {
-      let added = 0;
-      for (const o of rows) {
+    // One transaction, so a batch of a few hundred is one fsync rather than a
+    // few hundred, and a crash halfway leaves none of it rather than some.
+    let added = 0;
+    this.db.exec("BEGIN");
+    try {
+      for (const o of list) {
         const r = stmt.run(
           o.buyBlock, o.sellBlock, o.at, o.collection, o.tokenId,
           o.paidWei.toString(), o.offerNetWei.toString(), o.gasWei.toString(),
           o.profitWei.toString(), Number(formatEther(o.profitWei)), Number(formatEther(o.paidWei)),
         );
-        added += r.changes;
+        added += Number(r.changes);
       }
-      return added;
-    });
-    return run(list);
+      this.db.exec("COMMIT");
+    } catch (e) {
+      this.db.exec("ROLLBACK");
+      throw e;
+    }
+    return added;
   }
 
   totals(since: number): ArbTotals {
