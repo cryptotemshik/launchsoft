@@ -204,6 +204,79 @@ export function warmWarnings(
   return out;
 }
 
+/** How often the public stage is re-read while a run holds for it to open. */
+const RECHECK_MS = 5_000;
+/** How long the fire moment will wait for a re-sign that is still in flight. */
+const RESIGN_GRACE_MS = 1_500;
+
+/** The part of a public stage that can move under a run that has already armed. */
+export interface StageTerms {
+  price: bigint;
+  perWallet: number;
+  startTime: number;
+  endTime: number;
+}
+
+/** Read just those terms — one call, cheap enough to repeat every few seconds. */
+export async function readPublicDrop(
+  client: PublicClient,
+  info: ChainInfo,
+  collection: `0x${string}`,
+): Promise<StageTerms> {
+  const d = await client.readContract({
+    address: info.seaDrop,
+    abi: seaDropAbi,
+    functionName: "getPublicDrop",
+    args: [collection],
+  });
+  return {
+    price: d.mintPrice,
+    perWallet: Number(d.maxTotalMintableByWallet),
+    startTime: Number(d.startTime),
+    endTime: Number(d.endTime),
+  };
+}
+
+/**
+ * What a re-read of the stage means for a run that already signed against it.
+ *
+ * `resign` is the expensive answer and the important one: a price the wallets
+ * no longer send, or a cap that changes how many NFTs the call asks for, makes
+ * every signature on hand invalid. `retime` only moves the alarm clock.
+ */
+export function stageMove(
+  armed: StageTerms,
+  fresh: StageTerms,
+  want: number | "max",
+  nowSec: number,
+): { retime: boolean; closed: boolean; resign: boolean; quantity: number } {
+  return {
+    retime: fresh.startTime !== armed.startTime,
+    // endTime 0 is SeaDrop's "no end", not a stage that closed in 1970.
+    closed: fresh.endTime !== 0 && nowSec > fresh.endTime,
+    resign: fresh.price !== armed.price || fresh.perWallet !== armed.perWallet,
+    quantity: want === "max" ? fresh.perWallet : Math.min(want, fresh.perWallet || want),
+  };
+}
+
+/**
+ * One signal that fires when either does — the caller's cancel, or our own
+ * "the stage moved, restart the wait". Node's AbortSignal.any would do this,
+ * but this keeps the file free of a runtime-version assumption.
+ */
+function eitherSignal(a: AbortSignal | undefined, b: AbortSignal): AbortSignal {
+  if (!a) return b;
+  const c = new AbortController();
+  if (a.aborted || b.aborted) {
+    c.abort();
+    return c.signal;
+  }
+  const stop = () => c.abort();
+  a.addEventListener("abort", stop, { once: true });
+  b.addEventListener("abort", stop, { once: true });
+  return c.signal;
+}
+
 export async function readDrop(
   client: PublicClient,
   info: ChainInfo,
@@ -402,41 +475,53 @@ export async function runSnipe(opts: RunOptions, hooks: RunHooks): Promise<RunRe
     (a) => client.getTransactionCount({ address: a.address, blockTag: "pending" }),
     { onRetry: (ms) => log(`endpoint is rate-limiting nonce reads — waiting ${ms}ms`) },
   );
-  const prepared = await Promise.all(
-    firing.map(async (a, i) => {
-      let data: Hex;
-      let value: bigint;
-      if (opts.stage === "allowlist") {
-        const el = elig.get(a.address.toLowerCase())!;
-        const qty = Math.min(quantity, Number(el.params!.maxTotalMintableByWallet) || quantity);
-        data = encodeFunctionData({
-          abi: seaDropAbi,
-          functionName: "mintAllowList",
-          args: [opts.collection, feeRecipient, zeroAddress, BigInt(qty), el.params!, el.proof!],
+  /**
+   * Sign every wallet's transaction against a given price and quantity.
+   *
+   * A function rather than a one-off because the stage can move while we hold.
+   * Signing a hundred wallets costs well under a tenth of a second, so doing
+   * it again during an idle wait is free; doing it at fire time would not be,
+   * which is why this is called before the hold and only repeated if the drop
+   * actually changed.
+   */
+  const signAll = async (atPrice: bigint, atQuantity: number) =>
+    Promise.all(
+      firing.map(async (a, i) => {
+        let data: Hex;
+        let value: bigint;
+        if (opts.stage === "allowlist") {
+          const el = elig.get(a.address.toLowerCase())!;
+          const qty = Math.min(atQuantity, Number(el.params!.maxTotalMintableByWallet) || atQuantity);
+          data = encodeFunctionData({
+            abi: seaDropAbi,
+            functionName: "mintAllowList",
+            args: [opts.collection, feeRecipient, zeroAddress, BigInt(qty), el.params!, el.proof!],
+          });
+          value = el.params!.mintPrice * BigInt(qty);
+        } else {
+          data = encodeFunctionData({
+            abi: seaDropAbi,
+            functionName: "mintPublic",
+            args: [opts.collection, feeRecipient, zeroAddress, BigInt(atQuantity)],
+          });
+          value = atPrice * BigInt(atQuantity);
+        }
+        const rawTx = await a.signTransaction({
+          chainId: info.id,
+          to: info.seaDrop,
+          data,
+          value,
+          nonce: nonces[i],
+          maxFeePerGas,
+          maxPriorityFeePerGas,
+          gas: gasLimit,
+          type: "eip1559",
         });
-        value = el.params!.mintPrice * BigInt(qty);
-      } else {
-        data = encodeFunctionData({
-          abi: seaDropAbi,
-          functionName: "mintPublic",
-          args: [opts.collection, feeRecipient, zeroAddress, BigInt(quantity)],
-        });
-        value = drop.price * BigInt(quantity);
-      }
-      const rawTx = await a.signTransaction({
-        chainId: info.id,
-        to: info.seaDrop,
-        data,
-        value,
-        nonce: nonces[i],
-        maxFeePerGas,
-        maxPriorityFeePerGas,
-        gas: gasLimit,
-        type: "eip1559",
-      });
-      return { address: a.address, blast: prepareBlast(rawTx) };
-    }),
-  );
+        return { address: a.address, blast: prepareBlast(rawTx) };
+      }),
+    );
+
+  let prepared = await signAll(price, quantity);
   log(`signed     ${prepared.length} transaction(s) — nothing left to compute at fire time`);
 
   // A cold HTTPS request spends most of its time on DNS+TCP+TLS; that cost has
@@ -451,16 +536,137 @@ export async function runSnipe(opts: RunOptions, hooks: RunHooks): Promise<RunRe
   );
   for (const line of warmWarnings(warm, prepared.length, endpoints.length)) log(`WARNING    ${line}`);
 
+  // ── Hold — and keep reading the stage while we hold ─────────────────────
+  // We arm minutes ahead, so the drop we signed against is not necessarily
+  // the drop that opens. A creator who edits the stage during the hold —
+  // raising a free mint to 0.0002 ETH is the case that actually cost us one —
+  // leaves every pre-signed transaction carrying a value the contract no
+  // longer accepts, and all of them revert on arrival having spent gas. So
+  // re-read the stage while we wait, and re-sign whenever it moves.
   if (opts.timing === "wait" && startTime * 1000 > Date.now()) {
     log("waiting    holding until the stage opens…");
-    const outcome = await waitUntil(startTime * 1000, {
-      signal: hooks.signal,
-      onApproach: () => {
-        void warmEndpoints(endpoints, prepared.length, nodeSender);
-        log("warming    re-opened connections (3s out)");
-      },
-    });
-    if (outcome === "aborted") {
+    let watching = true;
+    let stopReason: string | null = null;
+    // Rechecks are chained rather than run in parallel: two overlapping
+    // re-signs could land out of order and leave `prepared` on the older
+    // stage. Assignment itself is atomic, so a fire that races a recheck
+    // sends a whole consistent set either way — never a half-updated one.
+    let rechecks: Promise<void> = Promise.resolve();
+    let retimed = new AbortController();
+
+    const recheck = async (): Promise<void> => {
+      if (!watching) return;
+      let fresh: Awaited<ReturnType<typeof readPublicDrop>>;
+      try {
+        fresh = await readPublicDrop(client, info, opts.collection);
+      } catch (e) {
+        log(`recheck    couldn't re-read the stage (${e instanceof Error ? e.message.split("\n")[0] : String(e)}) — holding what we signed`);
+        return;
+      }
+      if (!watching) return;
+      const move = stageMove(
+        { price, perWallet, startTime, endTime },
+        fresh,
+        opts.quantity,
+        Math.floor(Date.now() / 1000),
+      );
+      if (move.retime) {
+        log(
+          `STAGE      start moved ${new Date(startTime * 1000).toISOString()} → ` +
+            `${new Date(fresh.startTime * 1000).toISOString()} — re-timing the hold`,
+        );
+        startTime = fresh.startTime;
+        plan.startTime = fresh.startTime;
+        retimed.abort();
+      }
+      endTime = fresh.endTime;
+      plan.endTime = fresh.endTime;
+      if (move.closed) {
+        stopReason = "the stage closed while we were holding";
+        retimed.abort();
+        return;
+      }
+      if (!move.resign) return;
+      log(
+        `STAGE      changed while holding — price ${formatEther(price)} → ${formatEther(fresh.price)} ETH, ` +
+          `per wallet ${perWallet} → ${fresh.perWallet}`,
+      );
+      if (move.quantity < 1) {
+        stopReason = "the stage now allows nothing per wallet";
+        retimed.abort();
+        return;
+      }
+      // The old signatures are worthless now, so an unaffordable new price is
+      // worth saying out loud rather than discovering as N reverts.
+      const costNow = gasLimit * maxFeePerGas + fresh.price * BigInt(move.quantity);
+      const covered = firing.filter((a) => (balances.get(a.address.toLowerCase()) ?? 0n) >= costNow).length;
+      if (covered === 0) {
+        stopReason = `no loaded wallet can cover ${formatEther(costNow)} ETH at the new price`;
+        retimed.abort();
+        return;
+      }
+      if (covered < firing.length) {
+        log(
+          `WARNING    only ${covered}/${firing.length} wallet(s) can cover ${formatEther(costNow)} ETH ` +
+            `at the new price — the rest will be rejected`,
+        );
+      }
+      price = fresh.price;
+      perWallet = fresh.perWallet;
+      quantity = move.quantity;
+      plan.priceWei = price.toString();
+      plan.perWallet = perWallet;
+      plan.quantity = quantity;
+      prepared = await signAll(price, quantity);
+      log(`re-signed  ${prepared.length} transaction(s) against the new stage`);
+    };
+
+    // An allow-list stage's terms come from the list document, not from the
+    // public drop, so there is nothing here to re-read for it.
+    const queueRecheck = () => {
+      if (opts.stage !== "public") return;
+      rechecks = rechecks.then(recheck).catch((e: unknown) => {
+        log(`recheck    failed (${e instanceof Error ? e.message.split("\n")[0] : String(e)}) — holding what we signed`);
+      });
+    };
+
+    let cancelled = false;
+    while (true) {
+      if (hooks.signal?.aborted) {
+        cancelled = true;
+        break;
+      }
+      if (stopReason) break;
+      const target = startTime * 1000;
+      if (target <= Date.now()) break;
+      retimed = new AbortController();
+      const ticker = setInterval(queueRecheck, RECHECK_MS);
+      const outcome = await waitUntil(target, {
+        signal: eitherSignal(hooks.signal, retimed.signal),
+        onApproach: () => {
+          void warmEndpoints(endpoints, prepared.length, nodeSender);
+          log("warming    re-opened connections (3s out)");
+          queueRecheck();
+        },
+      });
+      clearInterval(ticker);
+      if (outcome === "aborted" && !retimed.signal.aborted) {
+        cancelled = true;
+        break;
+      }
+      // Otherwise the stage was re-timed under us: loop against the new target.
+    }
+    watching = false;
+    // Never fire mid-resign, and never let a hung read hold the drop hostage:
+    // `prepared` is always a complete set, so the worst a timeout costs is
+    // firing the set we already had.
+    await Promise.race([rechecks, new Promise<void>((r) => setTimeout(r, RESIGN_GRACE_MS))]);
+
+    if (stopReason) {
+      log(`ABORTED    ${stopReason} — nothing was broadcast`);
+      return { plan, outcomes: [] };
+    }
+    if (cancelled) {
       log("ABORTED    cancelled before firing — nothing was broadcast");
       return { plan, outcomes: [] };
     }
