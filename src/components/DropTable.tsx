@@ -11,7 +11,7 @@
  * same contract, so the wrong one is unreachable rather than merely
  * unselected.
  */
-import { Fragment, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useState, type ReactNode } from "react";
 import { formatEther } from "viem";
 import { classify, isSoldOut, type DropState, type ScannedDrop } from "../lib/dropScan";
 import { twitterUrl, type CollectionInfo } from "../lib/collectionInfo";
@@ -35,6 +35,12 @@ export type SortKey =
   | "risk";
 
 /** A placeholder address is not something to link to or copy. */
+/**
+ * Rows rendered at a time. Large enough that the common windows (6h, 24h, 3d)
+ * are shown whole, small enough that a seven-day scan does not freeze the tab.
+ */
+const PAGE = 300;
+
 export function isReal(contract: string): boolean {
   return /^0x[0-9a-fA-F]{40}$/.test(contract) && !/^0x0+$/.test(contract);
 }
@@ -254,6 +260,24 @@ export default function DropTable({
   const [openRow, setOpenRow] = useState<string | null>(null);
   const relatedPop = useRelated();
 
+  /**
+   * How many rows are actually put in the DOM.
+   *
+   * A seven-day scan finds five and a half thousand collections, and asking
+   * the browser for all of them costs 15 seconds of frozen page — measured —
+   * before anything is readable. Worse, the countdown clock ticks every
+   * second, so that cost is paid again every second for as long as the tab is
+   * open: the page never becomes usable at all.
+   *
+   * Nobody reads five thousand rows. The filters and the search are how a row
+   * gets found, and they run over the whole set — only the rendering is
+   * capped, and the cap says so out loud with a way past it.
+   */
+  const [shown, setShown] = useState(PAGE);
+  // A new scan, or a filter change, starts from the top again.
+  useEffect(() => setShown(PAGE), [rows.length]);
+  const visible = rows.length > shown ? rows.slice(0, shown) : rows;
+
   function header(key: SortKey, label: string, className = "") {
     return (
       <th className={`sortable ${className}`.trim()} onClick={() => onSort(key)}>
@@ -299,7 +323,7 @@ export default function DropTable({
               </tr>
             </thead>
             <tbody>
-              {rows.map((d) => {
+              {visible.map((d) => {
                 const st = classify(d, now);
                 const sold = isSoldOut(d);
                 const away = d.startTime ? d.startTime - now : null;
@@ -599,6 +623,24 @@ export default function DropTable({
                 );
               })}
             </tbody>
+            {rows.length > visible.length ? (
+              <tfoot>
+                <tr>
+                  <td colSpan={11} className="dim" style={{ textAlign: "center", padding: "14px 8px" }}>
+                    showing {visible.length.toLocaleString("en-US")} of{" "}
+                    {rows.length.toLocaleString("en-US")} — the filters above run over all of
+                    them{" "}
+                    <button
+                      className="secondary"
+                      style={{ padding: "3px 12px", fontSize: 11, width: "auto", marginLeft: 8 }}
+                      onClick={() => setShown((n) => n + PAGE)}
+                    >
+                      show {Math.min(PAGE, rows.length - visible.length).toLocaleString("en-US")} more
+                    </button>
+                  </td>
+                </tr>
+              </tfoot>
+            ) : null}
           </table>
         </div>
       <RelatedPopover
