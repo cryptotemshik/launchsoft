@@ -15,6 +15,33 @@
  */
 import { http, type HttpTransport } from "viem";
 
+/**
+ * How many reads may be in flight at once, by default.
+ *
+ * This was 25, chosen when every read went through the chain's public RPC and
+ * caution was the only sensible setting. Measured against 300 balance reads:
+ *
+ *   public RPC,   25 in flight   55.7 s   (220 rate-limit backoffs)
+ *   public RPC,  200 in flight    1.8 s
+ *   Alchemy PAYG,  25 in flight    1.2 s
+ *   Alchemy PAYG, 200 in flight    0.3 s   (1045 reads/second)
+ *
+ * So 25 was not even the safe choice: it was the slow one on both endpoints.
+ * Arming a large wallet set is two reads per wallet — balance and nonce — and
+ * at 25 a thousand wallets spends minutes on it, two minutes before a stage
+ * opens. 100 is a floor high enough to matter and low enough not to bury a
+ * modest endpoint; SNIPE_READ_CONCURRENCY raises it where the endpoint can
+ * take it. The backoff below still catches an endpoint that says slow down.
+ */
+const DEFAULT_LIMIT = (() => {
+  // Shared with the browser bundle, where `process` does not exist.
+  const raw = Number(
+    (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env
+      ?.SNIPE_READ_CONCURRENCY,
+  );
+  return Number.isFinite(raw) && raw >= 1 ? Math.floor(raw) : 100;
+})();
+
 /** How many calls viem may coalesce into a single POST. */
 const BATCH_SIZE = 20;
 /** How long viem waits to collect calls before sending a batch. */
@@ -81,7 +108,10 @@ export function isRateLimit(err: unknown): boolean {
 }
 
 export interface MapOptions {
-  /** Calls in flight at once. With batching each one is a fraction of a POST. */
+  /**
+   * Calls in flight at once. With batching each one is a fraction of a POST.
+   * Defaults to SNIPE_READ_CONCURRENCY, or 100.
+   */
   limit?: number;
   /** How many times a rate-limited call is retried before giving up. */
   retries?: number;
@@ -104,7 +134,7 @@ export async function mapWithLimit<T, R>(
   fn: (item: T, index: number) => Promise<R>,
   opts: MapOptions = {},
 ): Promise<R[]> {
-  const limit = Math.max(1, opts.limit ?? 25);
+  const limit = Math.max(1, opts.limit ?? DEFAULT_LIMIT);
   const retries = opts.retries ?? 4;
   const backoffMs = opts.backoffMs ?? 600;
   const sleep = opts.sleep ?? wait;
