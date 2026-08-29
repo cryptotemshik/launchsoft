@@ -38,6 +38,7 @@ import {
   settleOrTimeout,
   waitForReceiptOrNull,
   warmEndpoints,
+  type BlastResult,
   type WarmReport,
   type RpcEndpoint,
 } from "../lib/rpcBlast";
@@ -45,6 +46,14 @@ import { fileDescriptorLimit, nodeSender, pooledSockets } from "./nodeSender";
 import { mapWithLimit, readTransport } from "../lib/rpcRead";
 import { waitUntil } from "../lib/snipeTimer";
 import { envNumber } from "../lib/envNumber";
+import {
+  DEFAULT_SHOTS,
+  DEFAULT_STEP_MS,
+  gasNeededWei,
+  planFor,
+  shotTimes,
+  type MintStyle,
+} from "../lib/spread";
 
 export interface RunOptions {
   chainId: number;
@@ -59,6 +68,18 @@ export interface RunOptions {
   extraRpcs: string[];
   gas: { maxFeeGwei: string; tipGwei: string; limit: number };
   timing: "now" | "wait";
+  /**
+   * How the run puts its transactions on the clock.
+   *
+   * "single" is one burst at the start time. "spread" signs several
+   * transactions per wallet on consecutive nonces and sends them a step apart
+   * around the start, so that one of them is already in the sequencer's queue
+   * when the stage turns valid — see `lib/spread` for why that wins and what
+   * it costs.
+   */
+  style?: MintStyle;
+  shots?: number;
+  stepMs?: number;
   /** Read and plan, but broadcast nothing. */
   dryRun: boolean;
 }
@@ -434,8 +455,23 @@ export async function runSnipe(opts: RunOptions, hooks: RunHooks): Promise<RunRe
   }
   log(`gas        max ${opts.gas.maxFeeGwei} / tip ${opts.gas.tipGwei} gwei · limit ${opts.gas.limit} · base now ${formatGwei(baseFee)}`);
 
+  // ── How the shots sit on the clock ──────────────────────────────────────
+  const shotPlan = planFor(
+    opts.style ?? "single",
+    opts.shots ?? DEFAULT_SHOTS,
+    opts.stepMs ?? DEFAULT_STEP_MS,
+  );
+  if (shotPlan.shots > 1) {
+    log(
+      `style      spread — ${shotPlan.shots} shot(s) per wallet at ` +
+        `${shotPlan.offsets.map((o) => `${o > 0 ? "+" : ""}${o}ms`).join(", ")} around the start`,
+    );
+  }
+
   // ── Balances ────────────────────────────────────────────────────────────
-  const needed = gasLimit * maxFeePerGas + price * BigInt(quantity);
+  // Gas for every shot, but the mint's own value only once: the shots run one
+  // at a time and a reverted one hands back everything but the gas it burned.
+  const needed = gasNeededWei(shotPlan.shots, gasLimit, maxFeePerGas) + price * BigInt(quantity);
   const balances = new Map<string, bigint>();
   const read = await mapWithLimit(accounts, (a) => client.getBalance({ address: a.address }), {
     onRetry: (ms) => log(`endpoint is rate-limiting reads — waiting ${ms}ms`),
@@ -495,13 +531,17 @@ export async function runSnipe(opts: RunOptions, hooks: RunHooks): Promise<RunRe
     { onRetry: (ms) => log(`endpoint is rate-limiting nonce reads — waiting ${ms}ms`) },
   );
   /**
-   * Sign every wallet's transaction against a given price and quantity.
+   * Sign every wallet's shots against a given price and quantity.
    *
    * A function rather than a one-off because the stage can move while we hold.
    * Signing a hundred wallets costs well under a tenth of a second, so doing
    * it again during an idle wait is free; doing it at fire time would not be,
    * which is why this is called before the hold and only repeated if the drop
    * actually changed.
+   *
+   * Shot k of a wallet takes nonce+k, so the chain runs them in the order they
+   * were sent. That ordering is the whole point: an early shot reverts and
+   * burns its nonce, and the next one is already queued behind it.
    */
   const signAll = async (atPrice: bigint, atQuantity: number) =>
     Promise.all(
@@ -525,18 +565,23 @@ export async function runSnipe(opts: RunOptions, hooks: RunHooks): Promise<RunRe
           });
           value = atPrice * BigInt(atQuantity);
         }
-        const rawTx = await a.signTransaction({
-          chainId: info.id,
-          to: info.seaDrop,
-          data,
-          value,
-          nonce: nonces[i],
-          maxFeePerGas,
-          maxPriorityFeePerGas,
-          gas: gasLimit,
-          type: "eip1559",
-        });
-        return { address: a.address, blast: prepareBlast(rawTx) };
+        const shots = await Promise.all(
+          shotPlan.offsets.map(async (_, shot) => {
+            const rawTx = await a.signTransaction({
+              chainId: info.id,
+              to: info.seaDrop,
+              data,
+              value,
+              nonce: nonces[i] + shot,
+              maxFeePerGas,
+              maxPriorityFeePerGas,
+              gas: gasLimit,
+              type: "eip1559",
+            });
+            return prepareBlast(rawTx);
+          }),
+        );
+        return { address: a.address, shots };
       }),
     );
 
@@ -562,7 +607,11 @@ export async function runSnipe(opts: RunOptions, hooks: RunHooks): Promise<RunRe
   // leaves every pre-signed transaction carrying a value the contract no
   // longer accepts, and all of them revert on arrival having spent gas. So
   // re-read the stage while we wait, and re-sign whenever it moves.
-  if (opts.timing === "wait" && startTime * 1000 > Date.now()) {
+  // The hold ends at the *first* shot, not at the stage — a spread run's early
+  // shots exist precisely to be in the queue before the start, and holding to
+  // the start would fire them all late and lose the point of them.
+  const firstShotAt = () => startTime * 1000 + shotPlan.offsets[0];
+  if (opts.timing === "wait" && firstShotAt() > Date.now()) {
     log("waiting    holding until the stage opens…");
     let watching = true;
     let stopReason: string | null = null;
@@ -656,7 +705,7 @@ export async function runSnipe(opts: RunOptions, hooks: RunHooks): Promise<RunRe
         break;
       }
       if (stopReason) break;
-      const target = startTime * 1000;
+      const target = firstShotAt();
       if (target <= Date.now()) break;
       retimed = new AbortController();
       const ticker = setInterval(queueRecheck, RECHECK_MS);
@@ -704,93 +753,151 @@ export async function runSnipe(opts: RunOptions, hooks: RunHooks): Promise<RunRe
     );
   }
 
-  const t0 = Date.now();
-  const head = prepared.slice(0, wave.head);
-  const tail = prepared.slice(wave.head);
-
-  // Wave one: the wallets that are actually racing, on the shortest path in,
-  // with nothing else queued ahead of them.
-  const headFired = head.map(({ address, blast }) => ({
-    address,
-    blast,
-    first: blastToAll(blast, wave.headEndpoints, nodeSender).results,
-  }));
-  const headMs = Date.now() - t0;
-
-  if (tail.length > 0 || wave.catchUpEndpoints.length > 0) {
-    await settleOrTimeout(
-      headFired.map((h) => h.first),
-      wave.maxGapMs,
-    );
+  /** Every transaction sent for one wallet, in the order it was sent. */
+  interface Sent {
+    address: `0x${string}`;
+    shot: number;
+    txHash: Hex;
+    results: Promise<BlastResult[]>;
   }
 
-  const tailFired = tail.map(({ address, blast }) => ({
-    address,
-    txHash: blast.txHash,
-    results: blastToAll(blast, wave.tailEndpoints, nodeSender).results,
-  }));
+  /**
+   * One shot: the whole wallet set, wave-dispatched exactly as a single burst
+   * would be. The waves protect the racing wallets from the volume ones; the
+   * shots protect the run from the sequencer's queue. They are independent and
+   * both apply.
+   */
+  const fireShot = async (shot: number): Promise<Sent[]> => {
+    const t0 = Date.now();
+    const head = prepared.slice(0, wave.head);
+    const tail = prepared.slice(wave.head);
 
-  // The head still has to reach the endpoints it skipped — insurance against a
-  // sequencer that refused it, at no cost to the race that is already over.
-  const fired = [
-    ...headFired.map(({ address, blast, first }) => ({
+    const headFired = head.map(({ address, shots }) => ({
       address,
-      txHash: blast.txHash,
-      results:
-        wave.catchUpEndpoints.length === 0
-          ? first
-          : Promise.all([first, blastToAll(blast, wave.catchUpEndpoints, nodeSender).results]).then(
-              ([a, b]) => [...a, ...b],
-            ),
-    })),
-    ...tailFired,
-  ];
-  log(
-    `FIRED      ${fired.length} transaction(s) dispatched in ${Date.now() - t0}ms` +
-      (head.length > 0 && tail.length > 0 ? ` (first ${head.length} away in ${headMs}ms)` : ""),
-  );
-  for (const f of fired) log(`  ${f.address} → ${f.txHash}`);
+      blast: shots[shot],
+      first: blastToAll(shots[shot], wave.headEndpoints, nodeSender).results,
+    }));
+    const headMs = Date.now() - t0;
+
+    if (tail.length > 0 || wave.catchUpEndpoints.length > 0) {
+      await settleOrTimeout(
+        headFired.map((h) => h.first),
+        wave.maxGapMs,
+      );
+    }
+
+    const tailFired = tail.map(({ address, shots }) => ({
+      address,
+      shot,
+      txHash: shots[shot].txHash,
+      results: blastToAll(shots[shot], wave.tailEndpoints, nodeSender).results,
+    }));
+
+    // The head still has to reach the endpoints it skipped — insurance against
+    // a sequencer that refused it, at no cost to the race that is already over.
+    const sent: Sent[] = [
+      ...headFired.map(({ address, blast, first }) => ({
+        address,
+        shot,
+        txHash: blast.txHash,
+        results:
+          wave.catchUpEndpoints.length === 0
+            ? first
+            : Promise.all([
+                first,
+                blastToAll(blast, wave.catchUpEndpoints, nodeSender).results,
+              ]).then(([a, b]) => [...a, ...b]),
+      })),
+      ...tailFired,
+    ];
+    log(
+      `FIRED      shot ${shot + 1}/${shotPlan.shots} — ${sent.length} transaction(s) in ${Date.now() - t0}ms` +
+        (head.length > 0 && tail.length > 0 ? ` (first ${head.length} away in ${headMs}ms)` : ""),
+    );
+    return sent;
+  };
+
+  const times = shotTimes(shotPlan, startTime * 1000);
+  const sent: Sent[] = [];
+  for (let shot = 0; shot < shotPlan.shots; shot++) {
+    // A shot whose moment has passed goes at once rather than being skipped —
+    // the transaction is signed either way, and the nonce behind it is waiting.
+    if (shotPlan.shots > 1 && times[shot] > Date.now()) {
+      await waitUntil(times[shot], { signal: hooks.signal });
+      if (hooks.signal?.aborted) break;
+    }
+    sent.push(...(await fireShot(shot)));
+  }
+  for (const f of sent) log(`  ${f.address} #${f.shot + 1} → ${f.txHash}`);
 
   const outcomes: WalletOutcome[] = accounts
     .filter((a) => !firing.some((f) => f.address === a.address))
     .map((a) => ({ address: a.address, status: "skipped" as const, detail: "not on allow-list" }));
 
+  /**
+   * One outcome per wallet, not per transaction.
+   *
+   * A spread run deliberately sends transactions that are meant to revert, so
+   * reporting each of them would bury the only thing worth knowing: whether
+   * this wallet got an NFT. A mined shot wins; failing that, the last one to
+   * reach the chain is the honest answer, since it is the one that had a real
+   * chance. Gas is summed across every shot, because every shot paid it.
+   */
+  const byWallet = new Map<`0x${string}`, Sent[]>();
+  for (const s of sent) {
+    const list = byWallet.get(s.address) ?? [];
+    list.push(s);
+    byWallet.set(s.address, list);
+  }
+
   await Promise.all(
-    fired.map(async ({ address, txHash, results }) => {
-      const settled = await results;
-      const accepted = settled.some((r) => r.txHash !== null || isAlreadyKnown(r.error));
-      if (!accepted) {
-        const reasons = [...new Set(settled.map((r) => r.error).filter(Boolean))].join("; ");
-        log(`REJECTED   ${address} — no endpoint took it: ${reasons}`);
-        outcomes.push({ address, txHash, status: "rejected", detail: reasons });
+    [...byWallet.entries()].map(async ([address, shots]) => {
+      const settled = await Promise.all(shots.map(async (s) => ({ ...s, results: await s.results })));
+      const live = settled.filter((s) =>
+        s.results.some((r) => r.txHash !== null || isAlreadyKnown(r.error)),
+      );
+      if (live.length === 0) {
+        const reasons = [
+          ...new Set(settled.flatMap((s) => s.results.map((r) => r.error)).filter(Boolean)),
+        ].join("; ");
+        log(`REJECTED   ${address} — no endpoint took any shot: ${reasons}`);
+        outcomes.push({ address, txHash: shots[0].txHash, status: "rejected", detail: reasons });
         return;
       }
-      const winner = settled.find((r) => r.txHash !== null);
-      log(`accepted   ${address}${winner ? ` (first: ${winner.label})` : ""}`);
-      const receipt = await waitForReceiptOrNull(client, txHash, 90_000);
-      if (!receipt) {
-        log(`TIMEOUT    ${address} — no receipt in 90s, check ${info.explorerUrl}/tx/${txHash}`);
-        outcomes.push({ address, txHash, status: "timeout" });
+      log(`accepted   ${address} — ${live.length}/${shots.length} shot(s) taken`);
+
+      const receipts = await Promise.all(
+        live.map(async (s) => ({ shot: s, receipt: await waitForReceiptOrNull(client, s.txHash, 90_000) })),
+      );
+      const landed = receipts.filter((r) => r.receipt !== null);
+      if (landed.length === 0) {
+        const last = live[live.length - 1];
+        log(`TIMEOUT    ${address} — no receipt in 90s, check ${info.explorerUrl}/tx/${last.txHash}`);
+        outcomes.push({ address, txHash: last.txHash, status: "timeout" });
         return;
       }
-      const ok = receipt.status === "success";
-      const ids = ok ? mintedIds(receipt.logs, opts.collection, address) : [];
-      // Gas is charged whether the mint succeeded or reverted, so it counts
-      // towards the cost either way — a run that reverted on twenty wallets
-      // still spent twenty wallets' worth of gas.
-      const gasWei = receipt.gasUsed * (receipt.effectiveGasPrice ?? maxFeePerGas);
+
+      const gasWei = landed.reduce(
+        (sum, r) => sum + r.receipt!.gasUsed * (r.receipt!.effectiveGasPrice ?? maxFeePerGas),
+        0n,
+      );
+      const won = landed.find((r) => r.receipt!.status === "success");
+      const chosen = won ?? landed[landed.length - 1];
+      const ok = chosen.receipt!.status === "success";
+      const ids = ok ? mintedIds(chosen.receipt!.logs, opts.collection, address) : [];
       log(
-        `${ok ? "MINED     " : "REVERTED  "} ${address} — block ${receipt.blockNumber}, gas ${receipt.gasUsed}` +
+        `${ok ? "MINED     " : "REVERTED  "} ${address} — shot ${chosen.shot.shot + 1}, ` +
+          `block ${chosen.receipt!.blockNumber}, gas ${gasWei} across ${landed.length} shot(s)` +
           (ids.length ? ` — tokens ${ids.join(", ")}` : ""),
       );
       outcomes.push({
         address,
-        txHash,
+        txHash: chosen.shot.txHash,
         status: ok ? "mined" : "reverted",
         tokenIds: ids,
         gasWei: gasWei.toString(),
         valueWei: ok ? (price * BigInt(quantity)).toString() : "0",
-        blockNumber: receipt.blockNumber.toString(),
+        blockNumber: chosen.receipt!.blockNumber.toString(),
       });
     }),
   );

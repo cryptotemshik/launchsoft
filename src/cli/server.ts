@@ -996,6 +996,12 @@ function buildRequest(body: Record<string, unknown>): Omit<RunOptions, "keys"> {
       limit: gasIn.limit ?? cfg.gas.limit,
     },
     timing,
+    // How the shots sit on the clock. Per job, because the right answer
+    // differs per drop: a contested free mint wants the spread, a quiet one
+    // does not need the extra transactions.
+    style: body.style === "spread" ? "spread" : "single",
+    shots: typeof body.shots === "number" && body.shots >= 1 ? Math.floor(body.shots) : undefined,
+    stepMs: typeof body.stepMs === "number" && body.stepMs >= 0 ? Math.floor(body.stepMs) : undefined,
     dryRun: body.dryRun !== false,
   };
 }

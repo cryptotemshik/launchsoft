@@ -8,6 +8,12 @@ import {
 } from "../chains";
 import { useActiveChain } from "../signer";
 import { formatEthShort } from "../lib/profit";
+import {
+  DEFAULT_SHOTS,
+  DEFAULT_STEP_MS,
+  spreadLabel,
+  type MintStyle,
+} from "../lib/spread";
 import { useRunnerApi } from "../lib/runnerClient";
 import StaleServer from "./StaleServer";
 import Addr from "./Addr";
@@ -158,6 +164,16 @@ export default function RemoteRunner(props: RemoteRunnerProps) {
   const [rpcError, setRpcError] = useState<string | null>(null);
   const [updateNote, setUpdateNote] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  /**
+   * How this job puts its transactions on the clock.
+   *
+   * Per job rather than a server setting, because the right answer differs per
+   * drop: a contested free mint wants the spread, a quiet one does not need
+   * the extra transactions.
+   */
+  const [style, setStyle] = useState<MintStyle>("single");
+  const [shots, setShots] = useState(DEFAULT_SHOTS);
+  const [stepMs, setStepMs] = useState(DEFAULT_STEP_MS);
   const [status, setStatus] = useState<StatusView | null>(null);
   const [openJob, setOpenJob] = useState<string | null>(null);
   /** Which queued job's funding drawer is open, by id. */
@@ -332,6 +348,8 @@ export default function RemoteRunner(props: RemoteRunnerProps) {
           gas: props.gas,
           extraRpcs: props.extraRpcs,
           timing: props.timing,
+          style,
+          ...(style === "spread" ? { shots, stepMs } : {}),
           dryRun,
         }),
       });
@@ -525,6 +543,57 @@ export default function RemoteRunner(props: RemoteRunnerProps) {
               </>
             }
           />
+
+          <div className="scan-bar" style={{ marginTop: 14 }}>
+            <span className="bar-label">STYLE</span>
+            <div className="chip-group">
+              <button
+                className={style === "single" ? "secondary active-chip" : "secondary"}
+                onClick={() => setStyle("single")}
+                title="One burst, exactly at the start time."
+              >
+                single burst
+              </button>
+              <button
+                className={style === "spread" ? "secondary active-chip" : "secondary"}
+                onClick={() => setStyle("spread")}
+                title="Several transactions per wallet, sent a step apart around the start."
+              >
+                spread
+              </button>
+            </div>
+            {style === "spread" ? (
+              <>
+                <div className="field field-inline">
+                  <label>shots</label>
+                  <input
+                    inputMode="numeric"
+                    value={shots}
+                    onChange={(e) => setShots(Math.max(1, Number(e.target.value) || 1))}
+                  />
+                </div>
+                <div className="field field-inline">
+                  <label>step ms</label>
+                  <input
+                    inputMode="numeric"
+                    value={stepMs}
+                    onChange={(e) => setStepMs(Math.max(0, Number(e.target.value) || 0))}
+                  />
+                </div>
+                <span className="pill">{spreadLabel(shots, stepMs)}</span>
+              </>
+            ) : null}
+          </div>
+          {style === "spread" ? (
+            <p className="hint dim" style={{ marginTop: 6 }}>
+              Each wallet signs {shots} transactions on consecutive nonces. The early
+              ones revert with <code>NotActive</code> and are meant to — what they buy is
+              a place in the sequencer&apos;s queue on both sides of the boundary. A burned
+              shot costs about 0.0000024 ETH, so {shots - 1} of them across 100 wallets is
+              roughly {(0.0000024 * (shots - 1) * 100).toFixed(5)} ETH. Wallets need gas for
+              every shot; the mint&apos;s own price is only ever charged once.
+            </p>
+          ) : null}
 
           <div style={{ display: "flex", gap: 10, marginTop: 14, flexWrap: "wrap" }}>
             <button className="secondary" disabled={busy} onClick={() => void enqueue(true)}>

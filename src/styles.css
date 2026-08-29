@@ -2329,6 +2329,14 @@ button.secondary.link-btn {
 }
 
 /* ── Adding one by hand ──────────────────────────────────────────────────── */
+/* A labelled box small enough to sit in a chip bar rather than a form grid. */
+.field-inline {
+  min-width: 74px;
+}
+.field-inline input {
+  width: 74px;
+}
+
 .add-event {
   margin: 12px 0;
   padding: 12px;
