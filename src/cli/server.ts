@@ -91,8 +91,9 @@ import {
 import { readDrop, runSnipe, waveSize, type RunOptions, type RunResult } from "./runner";
 import { formatMintReport, sendTelegram, type MintedWallet } from "../lib/telegram";
 import { startTelegramBot } from "./telegramBot";
-import { addUpcoming, loadUpcoming, removeUpcoming } from "./upcomingStore";
+import { addUpcoming, loadUpcoming, recolorUpcoming, removeUpcoming } from "./upcomingStore";
 import { buildUpcoming, sortByDate } from "../lib/upcoming";
+import { isPickable, PICKABLE } from "../lib/calendarColor";
 import { enrichDrops, measureBlockRate, readMints, scanPublicDrops } from "./dropScanner";
 import { blocksForHours, classify, mergeScans, sortForScan, type ScannedDrop } from "../lib/dropScan";
 import { API_VERSION } from "../lib/apiVersion";
@@ -251,7 +252,7 @@ function cors(req: IncomingMessage, res: ServerResponse) {
   const allow = ORIGINS.includes("*") ? origin ?? "*" : ORIGINS.find((o) => o === origin);
   if (allow) res.setHeader("access-control-allow-origin", allow);
   res.setHeader("access-control-allow-headers", "authorization, content-type");
-  res.setHeader("access-control-allow-methods", "GET, POST, DELETE, OPTIONS");
+  res.setHeader("access-control-allow-methods", "GET, POST, PATCH, DELETE, OPTIONS");
   res.setHeader("vary", "origin");
 }
 
@@ -2168,6 +2169,24 @@ const server = createServer(async (req, res) => {
       }
       log(`upcoming: added ${built.mint.name} from the panel`);
       json(res, 200, { added: built.mint, upcoming: sortByDate(list) });
+      return;
+    }
+
+    /** Paint one entry. The calendar is the only caller. */
+    if (url.pathname === "/api/upcoming" && req.method === "PATCH") {
+      const id = url.searchParams.get("id") ?? "";
+      const body = await readBody(req);
+      const wanted = body.color;
+      if (wanted !== undefined && !isPickable(wanted)) {
+        json(res, 400, { error: `color must be one of ${PICKABLE.join(", ")}` });
+        return;
+      }
+      const { updated, list } = recolorUpcoming(CONFIG_PATH, id, wanted as string | undefined);
+      json(res, updated ? 200 : 404, {
+        updated,
+        upcoming: sortByDate(list),
+        ...(updated ? {} : { error: `no upcoming mint with id ${id}` }),
+      });
       return;
     }
 

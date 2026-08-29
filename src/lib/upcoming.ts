@@ -33,6 +33,14 @@ export interface UpcomingMint {
   at?: number;
   /** A date given without a time, so the UI can say "1 Sep" rather than "1 Sep 00:00". */
   dayOnly?: boolean;
+  /**
+   * A palette key from `calendarColor`, when someone has picked one.
+   *
+   * Never a CSS colour: this list is a hand-editable JSON file and the value
+   * ends up in a class name, so only a key from a fixed set is accepted and
+   * anything else falls back to the price-derived default.
+   */
+  color?: string;
   addedAt: number;
 }
 

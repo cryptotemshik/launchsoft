@@ -2,7 +2,13 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { addUpcoming, loadUpcoming, removeUpcoming, saveUpcoming } from "./upcomingStore";
+import {
+  addUpcoming,
+  loadUpcoming,
+  recolorUpcoming,
+  removeUpcoming,
+  saveUpcoming,
+} from "./upcomingStore";
 import type { UpcomingMint } from "../lib/upcoming";
 
 const configIn = () => join(mkdtempSync(join(tmpdir(), "upcoming-")), "snipe.config.json");
@@ -127,5 +133,56 @@ describe("upcoming store", () => {
     const text = readFileSync(`${cfg}.upcoming.json`, "utf8");
     expect(text).toContain('"name": "Test Drop"');
     expect(text.endsWith("\n")).toBe(true);
+  });
+});
+
+describe("painting an entry", () => {
+  it("stores the colour someone picked", () => {
+    const cfg = configIn();
+    addUpcoming(cfg, mint());
+    recolorUpcoming(cfg, "aaaa1111", "cyan");
+    expect(loadUpcoming(cfg)[0].color).toBe("cyan");
+  });
+
+  it("treats auto as no choice, so the field goes away", () => {
+    // An entry set back to automatic has to be indistinguishable from one
+    // never coloured, or the price-derived default would never come back.
+    const cfg = configIn();
+    addUpcoming(cfg, mint({ color: "red" }));
+    recolorUpcoming(cfg, "aaaa1111", "auto");
+    expect(loadUpcoming(cfg)[0]).not.toHaveProperty("color");
+  });
+
+  it("leaves everything else on the entry alone", () => {
+    const cfg = configIn();
+    addUpcoming(cfg, mint({ at: 4242, supply: 500, dayOnly: true }));
+    recolorUpcoming(cfg, "aaaa1111", "violet");
+    const [m] = loadUpcoming(cfg);
+    expect({ at: m.at, supply: m.supply, dayOnly: m.dayOnly, name: m.name }).toEqual({
+      at: 4242,
+      supply: 500,
+      dayOnly: true,
+      name: "Test Drop",
+    });
+  });
+
+  it("touches nothing when the id is unknown", () => {
+    const cfg = configIn();
+    addUpcoming(cfg, mint({ color: "grey" }));
+    const { updated, list } = recolorUpcoming(cfg, "nope", "red");
+    expect(updated).toBeUndefined();
+    expect(list[0].color).toBe("grey");
+  });
+
+  it("does not disturb the other entries", () => {
+    const cfg = configIn();
+    addUpcoming(cfg, mint());
+    addUpcoming(cfg, mint({ id: "bbbb2222", name: "Second", twitter: "https://x.com/second" }));
+    recolorUpcoming(cfg, "bbbb2222", "amber");
+    const list = loadUpcoming(cfg);
+    expect(list.map((m) => [m.name, m.color])).toEqual([
+      ["Test Drop", undefined],
+      ["Second", "amber"],
+    ]);
   });
 });

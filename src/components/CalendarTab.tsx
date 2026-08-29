@@ -1,21 +1,26 @@
 /**
- * What is coming, on a calendar.
+ * Your watchlist, on a calendar.
  *
- * Everything here already existed somewhere: the scanner knows about stages
- * configured on-chain, the watchlist knows about what a person typed in, and
- * neither knew about the other. This is the two of them on one timeline, so a
- * drop entered from a phone three days ago and the same drop found on-chain
- * this morning are one row rather than two.
+ * This used to show every stage the scanner could find on-chain, which is a
+ * firehose: hundreds of drops a week, of which you care about ten. So the
+ * calendar is now the watchlist and nothing else — what you added is what is
+ * on it — and discovery stays where it belongs, in the scanner.
  *
- * No third store. The merge happens in the browser from the two endpoints that
- * already exist, which is the only reason this is one file and not a schema
- * migration.
+ * That change pays for itself twice. Populating the calendar used to mean
+ * asking the server to read three days of logs, close to six million blocks on
+ * this chain and the heaviest thing it does; now it asks for the public stage
+ * of the handful of contracts you actually watch, which is one multicall. The
+ * calendar opens at once, and it no longer depends on whether a stage happened
+ * to fall inside the window someone picked.
+ *
+ * The watchlist is still the only store. A row's date and name come from what
+ * you typed, the chain fills in price, supply and the real start, and what you
+ * typed wins where the two disagree.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { formatEther, parseEther } from "viem";
+import { formatEther } from "viem";
 import { useRunnerApi } from "../lib/runnerClient";
 import {
-  applyCalendarFilter,
   dayFraction,
   groupByDay,
   layoutDay,
@@ -26,10 +31,10 @@ import {
   type CalendarEvent,
   type EventStatus,
 } from "../lib/calendar";
-import { classify, type ScannedDrop } from "../lib/dropScan";
+import type { ScannedDrop } from "../lib/dropScan";
 import type { CollectionInfo } from "../lib/collectionInfo";
-import WatchButton from "./WatchButton";
 import { seedWatched } from "../lib/watchedStore";
+import { colorClass, COLOR_LABEL, PICKABLE, type Pickable } from "../lib/calendarColor";
 import { twitterUrl } from "../lib/collectionInfo";
 import type { UpcomingMint } from "../lib/upcoming";
 import { openSeaCollectionUrlBySlug } from "../chains";
@@ -39,24 +44,6 @@ import StaleServer from "./StaleServer";
 
 type View = "list" | "week";
 
-/**
- * How much chain history to read for configured stages.
- *
- * This used to be a hardcoded week, requested the moment the tab mounted. A
- * week of this chain is close to six million blocks, which no free endpoint
- * will answer in one piece — so simply opening the calendar started the
- * heaviest read the server can make, whether or not anything a week old was
- * wanted. It is a choice now, and three days is the default: far enough back
- * to catch a stage configured well before it opens, cheap enough to open the
- * tab without thinking about it.
- */
-const SCAN_WINDOWS = [
-  { hours: 24, label: "24h" },
-  { hours: 72, label: "3d" },
-  { hours: 168, label: "7d" },
-] as const;
-const DEFAULT_SCAN_HOURS = 72;
-
 const STATUS_CLASS: Record<EventStatus, string> = {
   live: "ok",
   soon: "warn",
@@ -64,22 +51,6 @@ const STATUS_CLASS: Record<EventStatus, string> = {
   undated: "dim",
   ended: "dim",
 };
-
-/** A price box that stays empty rather than filtering on a typo. */
-function safeEther(text: string): bigint | undefined {
-  try {
-    return parseEther(text as `${number}`);
-  } catch {
-    return undefined;
-  }
-}
-
-function numberOrUndefined(v: string): number | undefined {
-  const t = v.trim();
-  if (!t) return undefined;
-  const n = Number(t);
-  return Number.isFinite(n) && n >= 0 ? n : undefined;
-}
 
 /** A countdown a person reads at a glance. Fixed width, so it cannot jitter. */
 function countdown(secs: number): string {
@@ -119,80 +90,87 @@ export default function CalendarTab() {
   );
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
   const [openSeaSlug, setOpenSeaSlug] = useState<string | undefined>();
-  const [freeOnly, setFreeOnly] = useState(false);
-  const [withTwitter, setWithTwitter] = useState(false);
   const [showEnded, setShowEnded] = useState(false);
-  const [watchedOnly, setWatchedOnly] = useState(false);
-  const [maxPrice, setMaxPrice] = useState("");
-  const [minSupply, setMinSupply] = useState("");
-  const [maxSupply, setMaxSupply] = useState("");
-  const [minFollowers, setMinFollowers] = useState("");
   /** Handles and floors, the same lookup the scanner uses. */
   const [info, setInfo] = useState<Record<string, CollectionInfo>>({});
-  const [watching, setWatching] = useState<Set<string>>(new Set());
+  /** Watchlist id per event id, so a row can be recoloured or struck off. */
+  const [ids, setIds] = useState<Record<string, string>>({});
   const [hidden, setHidden] = useState<Set<string>>(new Set());
   const [selected, setSelected] = useState<string | null>(null);
   const [weekFrom, setWeekFrom] = useState(() => Math.floor(Date.now() / 1000));
-  /** How far back the scan reads. Shared with the scanner's cache per window. */
-  const [hours, setHours] = useState(DEFAULT_SCAN_HOURS);
+  const [adding, setAdding] = useState(false);
   const prior = useRef<CalendarEvent[]>([]);
 
   const tz = useMemo(tzChip, []);
 
-  const load = useCallback(async (h: number = DEFAULT_SCAN_HOURS) => {
+  const load = useCallback(async () => {
     setBusy(true);
     setError(null);
     try {
       save();
-      // Both sources at once: neither depends on the other, and this is the
-      // difference between one wait and two.
-      const [scan, watch] = await Promise.all([
-        call(`/api/scan?hours=${h}`) as Promise<Record<string, unknown>>,
-        call("/api/upcoming") as Promise<Record<string, unknown>>,
-      ]);
+      const watch = (await call("/api/upcoming")) as Record<string, unknown>;
+      const list = (watch.upcoming as UpcomingMint[]) ?? [];
+      seedWatched(list);
+      setOpenSeaSlug(watch.openSeaSlug as string | undefined);
 
-      const drops = ((scan.drops as ScannedDrop[]) ?? []).filter(
-        (d) => classify(d, Math.floor(Date.now() / 1000)) !== "ended",
-      );
-      const scanner: CalendarEvent[] = drops.map((d) => ({
-        id: "",
-        source: "scanner",
-        name: d.name ?? `${d.contract.slice(0, 10)}…`,
-        contract: d.contract,
-        startsAt: d.startTime,
-        endsAt: d.endTime || undefined,
-        priceWei: d.priceWei,
-        supply: d.maxSupply,
-        minted: d.minted,
-        perWallet: d.maxPerWallet,
-      }));
-
-      const manual: CalendarEvent[] = ((watch.upcoming as UpcomingMint[]) ?? []).map((m) => ({
+      const manual: CalendarEvent[] = list.map((m) => ({
         id: "",
         source: "manual",
         name: m.name,
         contract: m.contract,
         startsAt: m.at ?? 0,
         supply: m.supply,
+        color: m.color,
         twitter: m.twitter ? m.twitter.replace(/^https?:\/\/(www\.)?x\.com\//i, "") : null,
       }));
 
-      seedWatched((watch.upcoming as UpcomingMint[]) ?? []);
+      // Only the watched contracts, and only the public stage: one multicall
+      // instead of the three-day log read this tab used to start on mount.
+      const contracts = list
+        .map((m) => m.contract)
+        .filter((c): c is string => Boolean(c))
+        .slice(0, 120);
+      let scanner: CalendarEvent[] = [];
+      if (contracts.length > 0) {
+        const r = (await call(`/api/drops?contracts=${contracts.join(",")}`)) as Record<string, unknown>;
+        scanner = ((r.drops as ScannedDrop[]) ?? [])
+          // A watched address with no stage configured comes back as all
+          // zeroes. Merging that would paint an unannounced drop as a free
+          // mint starting in 1970, so it waits until the chain says otherwise.
+          .filter((d) => d.startTime > 0)
+          .map((d) => ({
+            id: "",
+            source: "scanner",
+            name: d.name ?? `${d.contract.slice(0, 10)}…`,
+            contract: d.contract,
+            startsAt: d.startTime,
+            endsAt: d.endTime || undefined,
+            priceWei: d.priceWei,
+            supply: d.maxSupply,
+            minted: d.minted,
+            perWallet: d.maxPerWallet,
+          }));
+      }
 
       const t = Math.floor(Date.now() / 1000);
       const merged = mergeCalendar(manual, scanner, tz.offsetMin, t, prior.current);
       prior.current = merged;
       setEvents(merged);
-      // What is already on the watchlist, so a row can say so rather than
-      // letting you add it twice.
-      setWatching(
-        new Set(
-          ((watch.upcoming as UpcomingMint[]) ?? [])
-            .map((m) => m.contract?.toLowerCase())
-            .filter((c): c is string => Boolean(c)),
-        ),
-      );
-      setOpenSeaSlug(scan.openSeaSlug as string | undefined);
+      // Which watchlist row each event came from — recolour and remove both
+      // need the id, and the merge does not carry it.
+      const byKey: Record<string, string> = {};
+      for (const e of merged) {
+        // A contract is the real identity. Falling back to the name for an
+        // event that has one could bind the row to a different drop that
+        // happens to share it — half the collections here are called "Genesis".
+        const hit = e.contract
+          ? list.find((m) => m.contract?.toLowerCase() === e.contract!.toLowerCase())
+          : list.find(
+              (m) => !m.contract && m.name.trim().toLowerCase() === e.name.trim().toLowerCase(),
+            );
+        if (hit) byKey[e.id] = hit.id;
+      }
+      setIds(byKey);
       setNow(t);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -205,7 +183,7 @@ export default function CalendarTab() {
   }, [call, save, tz.offsetMin]);
 
   useEffect(() => {
-    if (base && token) void load(hours);
+    if (base && token) void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -215,29 +193,13 @@ export default function CalendarTab() {
     return () => clearInterval(t);
   }, []);
 
-  const visible = useMemo(() => {
-    const price = maxPrice.trim();
-    let out = applyCalendarFilter(events, {
-      freeOnly,
-      withTwitter,
-      hidden,
-      maxPriceWei: price ? safeEther(price) : undefined,
-      minSupply: numberOrUndefined(minSupply),
-      maxSupply: numberOrUndefined(maxSupply),
-    }).filter((e) => showEnded || statusOf(e, now) !== "ended");
-
-    // Two conditions that depend on what the browser worked out rather than
-    // on the event itself, so they cannot live in the pure filter.
-    const followers = numberOrUndefined(minFollowers);
-    if (followers !== undefined) {
-      out = out.filter((e) => (info[e.contract?.toLowerCase() ?? ""]?.followers ?? -1) >= followers);
-    }
-    if (watchedOnly) out = out.filter((e) => e.contract && watching.has(e.contract.toLowerCase()));
-    return out;
-  }, [
-    events, freeOnly, withTwitter, hidden, showEnded, now,
-    maxPrice, minSupply, maxSupply, minFollowers, watchedOnly, info, watching,
-  ]);
+  const visible = useMemo(
+    () =>
+      events
+        .filter((e) => !hidden.has(e.id))
+        .filter((e) => showEnded || statusOf(e, now) !== "ended"),
+    [events, hidden, showEnded, now],
+  );
 
   /** Handles for the rows on screen — the followers filter needs them. */
   useEffect(() => {
@@ -272,39 +234,63 @@ export default function CalendarTab() {
     return { live: of("live"), soon: of("soon"), total: visible.length };
   }, [visible, now]);
 
-  const bounded =
-    maxPrice.trim() !== "" ||
-    minSupply.trim() !== "" ||
-    maxSupply.trim() !== "" ||
-    minFollowers.trim() !== "" ||
-    freeOnly ||
-    withTwitter ||
-    watchedOnly;
-
-  function clearFilters() {
-    setMaxPrice("");
-    setMinSupply("");
-    setMaxSupply("");
-    setMinFollowers("");
-    setFreeOnly(false);
-    setWithTwitter(false);
-    setWatchedOnly(false);
-  }
-
+  /** Out of sight, still on the watchlist. Lives in this browser only. */
   function hide(id: string) {
     setHidden(new Set([...hidden, id]));
     setSelected(null);
   }
 
+  /**
+   * Paint a row, on the server, so the choice follows you to the phone.
+   *
+   * The event moves colour immediately and the request follows: waiting for a
+   * round trip to see a swatch change would make the picker feel broken. A
+   * failed write shows up on the next load, when the row goes back.
+   */
+  async function recolor(eventId: string, color: Pickable) {
+    const listId = ids[eventId];
+    if (!listId) return;
+    setEvents((prev) =>
+      prev.map((e) => (e.id === eventId ? { ...e, color: color === "auto" ? undefined : color } : e)),
+    );
+    try {
+      await call(`/api/upcoming?id=${encodeURIComponent(listId)}`, {
+        method: "PATCH",
+        body: JSON.stringify({ color }),
+      });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      void load();
+    }
+  }
+
+  /** Off the watchlist entirely — this is the one action that loses data. */
+  async function forget(eventId: string) {
+    const listId = ids[eventId];
+    if (!listId) return;
+    const e = events.find((x) => x.id === eventId);
+    if (!window.confirm(`Remove ${e?.name ?? "this drop"} from the watchlist? It disappears from Telegram too.`)) {
+      return;
+    }
+    try {
+      await call(`/api/upcoming?id=${encodeURIComponent(listId)}`, { method: "DELETE" });
+      setSelected(null);
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
   return (
     <div>
       <div className="panel">
-        <h2>Calendar — what is coming</h2>
+        <h2>Calendar — what you are watching</h2>
         <p className="dim" style={{ marginTop: 0 }}>
-          The scanner&apos;s on-chain stages and the watchlist&apos;s typed
-          entries on one timeline. A drop entered from a phone and the same drop
-          found on-chain later are one row, not two — what you typed wins where
-          the two disagree, and the chain fills in the rest.
+          Only what is on your watchlist, so nothing here is noise. The chain
+          fills in price, supply and the real start for anything with a
+          contract; what you typed wins where the two disagree. Free mints and
+          paid ones are told apart by colour, and you can override that per row.
+          Discovery lives in the scanner.
         </p>
 
         <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
@@ -346,27 +332,30 @@ export default function CalendarTab() {
             <button
               className="secondary"
               disabled={busy || !base || !token}
-              onClick={() => void load(hours)}
+              onClick={() => void load()}
             >
               {busy ? <span className="spin">READING</span> : "refresh"}
             </button>
           </div>
-          <span className="bar-label">HISTORY</span>
           <div className="chip-group">
-            {SCAN_WINDOWS.map((w) => (
-              <button
-                key={w.hours}
-                className={hours === w.hours ? "secondary active-chip" : "secondary"}
-                disabled={busy || !base || !token}
-                onClick={() => {
-                  setHours(w.hours);
-                  void load(w.hours);
-                }}
-                title={`Read ${w.label} of configured stages`}
-              >
-                {w.label}
+            <button
+              className={adding ? "secondary active-chip" : "secondary"}
+              onClick={() => setAdding(!adding)}
+              title="Put something on the calendar by hand"
+            >
+              + add
+            </button>
+            <button
+              className={showEnded ? "secondary active-chip" : "secondary"}
+              onClick={() => setShowEnded(!showEnded)}
+            >
+              show ended
+            </button>
+            {hidden.size > 0 ? (
+              <button className="secondary" onClick={() => setHidden(new Set())}>
+                unhide {hidden.size}
               </button>
-            ))}
+            ) : null}
           </div>
           <div className="bar-tail">
             <span className="pill">{tz.label}</span>
@@ -377,90 +366,16 @@ export default function CalendarTab() {
           </div>
         </div>
 
-        {/* The same shape the scanner's filters have: chips for the yes/no
-            ones, boxes for the numbers, and everything stacks. */}
-        <div className="scan-filters">
-          <div className="scan-bar">
-            <span className="bar-label">SHOW</span>
-            <div className="chip-group">
-              <button
-                className={freeOnly ? "secondary active-chip" : "secondary"}
-                onClick={() => setFreeOnly(!freeOnly)}
-              >
-                free only
-              </button>
-              <button
-                className={withTwitter ? "secondary active-chip" : "secondary"}
-                onClick={() => setWithTwitter(!withTwitter)}
-              >
-                has twitter
-              </button>
-              <button
-                className={watchedOnly ? "secondary active-chip" : "secondary"}
-                onClick={() => setWatchedOnly(!watchedOnly)}
-                title="Only what is already on your watchlist"
-              >
-                watching
-              </button>
-              <button
-                className={showEnded ? "secondary active-chip" : "secondary"}
-                onClick={() => setShowEnded(!showEnded)}
-              >
-                show ended
-              </button>
-            </div>
-            <div className="bar-tail">
-              {hidden.size > 0 ? (
-                <button className="secondary" onClick={() => setHidden(new Set())}>
-                  unhide {hidden.size}
-                </button>
-              ) : null}
-              {bounded ? (
-                <button className="secondary link-btn" onClick={clearFilters}>
-                  clear filters
-                </button>
-              ) : null}
-            </div>
-          </div>
-          <div className="filter-grid">
-            <div className="field">
-              <label>max price</label>
-              <input
-                inputMode="decimal"
-                value={maxPrice}
-                onChange={(e) => setMaxPrice(e.target.value)}
-                placeholder="any"
-              />
-            </div>
-            <div className="field">
-              <label>supply from</label>
-              <input
-                inputMode="numeric"
-                value={minSupply}
-                onChange={(e) => setMinSupply(e.target.value)}
-                placeholder="any"
-              />
-            </div>
-            <div className="field">
-              <label>supply to</label>
-              <input
-                inputMode="numeric"
-                value={maxSupply}
-                onChange={(e) => setMaxSupply(e.target.value)}
-                placeholder="any"
-              />
-            </div>
-            <div className="field">
-              <label>followers ≥</label>
-              <input
-                inputMode="numeric"
-                value={minFollowers}
-                onChange={(e) => setMinFollowers(e.target.value)}
-                placeholder="any"
-              />
-            </div>
-          </div>
-        </div>
+        {adding ? (
+          <AddEvent
+            busy={busy}
+            onAdd={async (draft) => {
+              await call("/api/upcoming", { method: "POST", body: JSON.stringify(draft) });
+              setAdding(false);
+              await load();
+            }}
+          />
+        ) : null}
 
         {error ? <p className="error">{error}</p> : null}
         <StaleServer version={serverVersion} />
@@ -503,9 +418,7 @@ export default function CalendarTab() {
                   return (
                     <div
                       key={e.id}
-                      className={`cal-row${
-                        e.contract && watching.has(e.contract.toLowerCase()) ? " is-watched" : ""
-                      }`}
+                      className={`cal-row ${colorClass(e)}`}
                       role="button"
                       tabIndex={0}
                       onClick={() => setSelected(e.id)}
@@ -550,27 +463,11 @@ export default function CalendarTab() {
                       <span className="cal-tw dim">
                         {e.twitter ? `@${e.twitter}` : "—"}
                       </span>
-                      <span className="cal-act">
-                        {e.contract ? (
-                          watching.has(e.contract.toLowerCase()) ? (
-                            <span className="pill-watching" title="already on your watchlist">
-                              WATCHING
-                            </span>
-                          ) : (
-                            <WatchButton
-                              draft={{
-                                name: e.name,
-                                contract: e.contract,
-                                twitter: e.twitter,
-                                supply: e.supply,
-                                startTime: e.startsAt || undefined,
-                              }}
-                              onAdded={() =>
-                                setWatching(new Set([...watching, e.contract!.toLowerCase()]))
-                              }
-                            />
-                          )
-                        ) : null}
+                      <span className="cal-act" onClick={(ev) => ev.stopPropagation()}>
+                        <ColorPicker
+                          value={(e.color as Pickable | undefined) ?? "auto"}
+                          onPick={(c) => void recolor(e.id, c)}
+                        />
                       </span>
                     </div>
                   );
@@ -584,22 +481,23 @@ export default function CalendarTab() {
           <div className="empty-state">
             {events.length > 0 ? (
               <>
-                NOTHING MATCHES —{" "}
-                <span className="es-action">LOOSEN THE FILTERS ABOVE</span>
+                EVERYTHING HERE HAS ENDED —{" "}
+                <span className="es-action">TURN ON &quot;SHOW ENDED&quot;</span>
               </>
             ) : (
               <>
-                NOTHING SCHEDULED —{" "}
-                <span className="es-action">SCAN FINDS STAGES; THE WATCHLIST HOLDS THE REST</span>
+                WATCHLIST IS EMPTY —{" "}
+                <span className="es-action">ADD ONE ABOVE, OR WATCH A DROP FROM THE SCANNER</span>
               </>
             )}
           </div>
         ) : null}
 
         <p className="dim hint" style={{ marginBottom: 0 }}>
-          Read {hours}h of configured stages plus everything on the
-          watchlist. Times are yours ({tz.label}); a drop at 23:30 UTC lands on
-          the day it happens where you are, not where the server is.
+          Your watchlist, with the public stage read straight off the chain for
+          anything that has a contract. Times are yours ({tz.label}); a drop at
+          23:30 UTC lands on the day it happens where you are, not where the
+          server is.
         </p>
       </div>
 
@@ -610,6 +508,8 @@ export default function CalendarTab() {
           openSeaSlug={openSeaSlug}
           onClose={() => setSelected(null)}
           onHide={() => hide(chosen.id)}
+          onRecolor={(c) => void recolor(chosen.id, c)}
+          onForget={ids[chosen.id] ? () => void forget(chosen.id) : undefined}
         />
       ) : null}
     </div>
@@ -623,6 +523,130 @@ export default function CalendarTab() {
  * same minute is the normal case on a busy day, and one hiding the other is
  * the one thing a calendar must not do.
  */
+/**
+ * Six colours and "auto".
+ *
+ * Deliberately a fixed palette rather than a colour input: the value is shared
+ * through the watchlist and rendered as a class, so it has to survive a theme
+ * change and must never be arbitrary text. Six is enough to group a week and
+ * few enough to tell apart at a glance.
+ */
+function ColorPicker({ value, onPick }: { value: Pickable; onPick: (c: Pickable) => void }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <span className="swatch-wrap">
+      <button
+        className={`swatch swatch-${value}`}
+        title={`colour: ${COLOR_LABEL[value]}`}
+        aria-label={`colour: ${COLOR_LABEL[value]}`}
+        onClick={() => setOpen(!open)}
+      />
+      {open ? (
+        <span className="swatch-menu">
+          {PICKABLE.map((c) => (
+            <button
+              key={c}
+              className={`swatch swatch-${c}${c === value ? " swatch-on" : ""}`}
+              title={COLOR_LABEL[c]}
+              aria-label={COLOR_LABEL[c]}
+              onClick={() => {
+                onPick(c);
+                setOpen(false);
+              }}
+            />
+          ))}
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
+/**
+ * Put something on the calendar by hand.
+ *
+ * The same three fields the Telegram bot asks for, because they go to the same
+ * place: a drop is worth watching once you know what it is called, where to
+ * find it, and roughly when. A contract is optional — half of what belongs on
+ * this calendar is a Twitter account and a date, and the contract fills itself
+ * in when the chain finally has one.
+ */
+function AddEvent({
+  busy,
+  onAdd,
+}: {
+  busy: boolean;
+  onAdd: (draft: { name: string; twitter: string; contract?: string; when?: string }) => Promise<void>;
+}) {
+  const [name, setName] = useState("");
+  const [where, setWhere] = useState("");
+  const [when, setWhen] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const isContract = /^0x[0-9a-fA-F]{40}$/.test(where.trim());
+
+  async function submit() {
+    setError(null);
+    if (!name.trim()) {
+      setError("give it a name");
+      return;
+    }
+    setSaving(true);
+    try {
+      await onAdd({
+        name: name.trim(),
+        twitter: isContract ? "" : where.trim(),
+        contract: isContract ? where.trim() : undefined,
+        when: when.trim() || undefined,
+      });
+      setName("");
+      setWhere("");
+      setWhen("");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="add-event">
+      <div className="filter-grid">
+        <div className="field">
+          <label>name</label>
+          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Pipe Dogs" />
+        </div>
+        <div className="field">
+          <label>contract or twitter</label>
+          <input
+            value={where}
+            onChange={(e) => setWhere(e.target.value)}
+            placeholder="0x… or @handle"
+          />
+        </div>
+        <div className="field">
+          <label>when</label>
+          <input
+            value={when}
+            onChange={(e) => setWhen(e.target.value)}
+            placeholder="1.9 18:00, tomorrow, or blank"
+          />
+        </div>
+      </div>
+      <div className="row" style={{ gap: 14, alignItems: "center", flexWrap: "wrap" }}>
+        <button className="primary" disabled={busy || saving} onClick={() => void submit()}>
+          {saving ? "ADDING…" : "ADD TO THE CALENDAR"}
+        </button>
+        <span className="dim hint" style={{ margin: 0 }}>
+          {isContract
+            ? "A contract — price, supply and the real start will be read off the chain."
+            : "No contract yet? A handle and a date are enough; the rest fills itself in later."}
+        </span>
+      </div>
+      {error ? <p className="error">{error}</p> : null}
+    </div>
+  );
+}
+
 function WeekGrid({
   days,
   events,
@@ -666,7 +690,7 @@ function WeekGrid({
                 return (
                   <button
                     key={e.id}
-                    className={`week-ev ${STATUS_CLASS[st]}`}
+                    className={`week-ev ${STATUS_CLASS[st]} ${colorClass(e)}`}
                     style={{
                       top: `${dayFraction(e.startsAt, day) * 100}%`,
                       left: `${(lane / lanes) * 100}%`,
@@ -698,12 +722,17 @@ function EventDrawer({
   openSeaSlug,
   onClose,
   onHide,
+  onRecolor,
+  onForget,
 }: {
   event: CalendarEvent;
   now: number;
   openSeaSlug?: string;
   onClose: () => void;
   onHide: () => void;
+  onRecolor: (c: Pickable) => void;
+  /** Absent for a row the watchlist does not own — nothing to strike off. */
+  onForget?: () => void;
 }) {
   const st = statusOf(e, now);
   // Local to the drawer, so reopening a different event starts unpressed.
@@ -825,9 +854,21 @@ function EventDrawer({
               on-chain. It will fill itself in when the scanner finds it.
             </p>
           )}
-          <button className="secondary" onClick={onHide}>
+          <div className="drawer-colour">
+            <span className="bar-label">COLOUR</span>
+            <ColorPicker value={(e.color as Pickable | undefined) ?? "auto"} onPick={onRecolor} />
+            <span className="dim hint" style={{ margin: 0 }}>
+              auto tells free mints from paid ones
+            </span>
+          </div>
+          <button className="secondary" onClick={onHide} title="Just this browser. Nothing is deleted.">
             HIDE FROM THE CALENDAR
           </button>
+          {onForget ? (
+            <button className="secondary danger-btn" onClick={onForget}>
+              REMOVE FROM THE WATCHLIST
+            </button>
+          ) : null}
         </div>
       </aside>
     </>

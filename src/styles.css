@@ -2251,6 +2251,102 @@ button.secondary.link-btn {
 /* ── Calendar ────────────────────────────────────────────────────────────
    Two views of one list. The week grid is a clock face turned on its side;
    the list is the workhorse and the only one that exists on a phone. */
+/* ── Calendar colours ──────────────────────────────────────────────────────
+   Six hues plus the two derived from price. Muted on purpose: this is a
+   phosphor-green terminal, and a saturated rainbow in it reads as an error
+   state rather than as organisation. Every one clears 4.5:1 on the panel. */
+:root {
+  --cal-free: var(--green);
+  --cal-paid: #ffb020;
+  --cal-unknown: #6a8074;
+  --cal-green: var(--green);
+  --cal-amber: #ffb020;
+  --cal-cyan: #35d6d0;
+  --cal-violet: #b08cff;
+  --cal-red: #ff5252;
+  --cal-grey: #7f948a;
+}
+.cal-c-free { --cal-ink: var(--cal-free); }
+.cal-c-paid { --cal-ink: var(--cal-paid); }
+.cal-c-unknown { --cal-ink: var(--cal-unknown); }
+.cal-c-green { --cal-ink: var(--cal-green); }
+.cal-c-amber { --cal-ink: var(--cal-amber); }
+.cal-c-cyan { --cal-ink: var(--cal-cyan); }
+.cal-c-violet { --cal-ink: var(--cal-violet); }
+.cal-c-red { --cal-ink: var(--cal-red); }
+.cal-c-grey { --cal-ink: var(--cal-grey); }
+
+/* A stripe rather than a wash: the row still has to be readable, and the
+   colour only has to answer "which of my drops is this" at a glance. */
+.cal-row[class*="cal-c-"] {
+  border-left: 3px solid var(--cal-ink, transparent);
+  padding-left: 8px;
+}
+.week-ev[class*="cal-c-"] {
+  border-left: 3px solid var(--cal-ink, transparent);
+}
+
+/* ── The swatch and its menu ─────────────────────────────────────────────── */
+.swatch-wrap {
+  position: relative;
+  display: inline-block;
+}
+.swatch {
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--cal-ink, transparent);
+  cursor: pointer;
+  vertical-align: middle;
+}
+.swatch-auto {
+  /* Half free, half paid — what "auto" actually does. */
+  background: linear-gradient(135deg, var(--cal-free) 0 50%, var(--cal-paid) 50% 100%);
+}
+.swatch-green { background: var(--cal-green); }
+.swatch-amber { background: var(--cal-amber); }
+.swatch-cyan { background: var(--cal-cyan); }
+.swatch-violet { background: var(--cal-violet); }
+.swatch-red { background: var(--cal-red); }
+.swatch-grey { background: var(--cal-grey); }
+.swatch-on {
+  outline: 1px solid var(--text-bright);
+  outline-offset: 1px;
+}
+.swatch-menu {
+  position: absolute;
+  right: 0;
+  top: 20px;
+  z-index: 20;
+  display: flex;
+  gap: 5px;
+  padding: 6px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+/* ── Adding one by hand ──────────────────────────────────────────────────── */
+.add-event {
+  margin: 12px 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+}
+.drawer-colour {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.danger-btn {
+  color: var(--err);
+  border-color: var(--err);
+}
+
 .cal-list {
   margin-top: 14px;
 }

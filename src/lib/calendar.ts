@@ -37,6 +37,13 @@ export interface CalendarEvent {
   risk?: number | null;
   /** A start that moved since it was last seen, and when it moved. */
   rescheduledAt?: number;
+  /**
+   * A palette key someone picked for this row, from `calendarColor`.
+   *
+   * Only ever set on the typed side — the chain has no opinion about what
+   * matters to you this week.
+   */
+  color?: string;
 }
 
 export type EventStatus = "undated" | "upcoming" | "soon" | "live" | "ended";
@@ -113,6 +120,8 @@ function combine(a: CalendarEvent, b: CalendarEvent): CalendarEvent {
     perWallet: pick(typed.perWallet, read.perWallet),
     twitter: pick(typed.twitter, read.twitter) ?? null,
     risk: pick(read.risk, typed.risk) ?? null,
+    // Colour is a person's choice, so it can only come from the typed side.
+    color: typed.color,
   };
 }
 
@@ -179,30 +188,6 @@ export interface CalendarFilter {
   /** Contracts and ids the user has hidden. */
   hidden?: ReadonlySet<string>;
   sources?: ReadonlySet<EventSource>;
-}
-
-/**
- * Filtering happens here, at display time, never at ingest.
- *
- * Loosening a filter has to reveal what it was hiding without re-reading the
- * chain — which it only can if nothing was thrown away on the way in.
- */
-export function applyCalendarFilter(
-  events: readonly CalendarEvent[],
-  f: CalendarFilter,
-): CalendarEvent[] {
-  return events.filter((e) => {
-    if (f.hidden?.has(e.id)) return false;
-    if (f.sources && !f.sources.has(e.source)) return false;
-    if (f.freeOnly && e.priceWei !== undefined && BigInt(e.priceWei) !== 0n) return false;
-    if (f.maxPriceWei !== undefined && e.priceWei !== undefined && BigInt(e.priceWei) > f.maxPriceWei)
-      return false;
-    if (f.minSupply !== undefined && (e.supply ?? 0) < f.minSupply) return false;
-    if (f.maxSupply !== undefined && (e.supply ?? Infinity) > f.maxSupply) return false;
-    if (f.withTwitter && !e.twitter) return false;
-    if (f.minRisk !== undefined && (e.risk ?? -1) < f.minRisk) return false;
-    return true;
-  });
 }
 
 export interface DayGroup {

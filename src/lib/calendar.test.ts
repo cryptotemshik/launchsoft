@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  applyCalendarFilter,
   dayFraction,
   eventKey,
   groupByDay,
@@ -142,36 +141,6 @@ describe("mergeCalendar", () => {
     const before = mergeCalendar([], [ev({ contract: CONTRACT })], MSK, NOW);
     const after = mergeCalendar([], [ev({ contract: CONTRACT })], MSK, NOW + 60, before);
     expect(after[0].rescheduledAt).toBeUndefined();
-  });
-});
-
-describe("applyCalendarFilter", () => {
-  const rows = [
-    ev({ id: "free", priceWei: "0", supply: 1000, twitter: "someone", risk: 80 }),
-    ev({ id: "paid", priceWei: "5000000000000000", supply: 200, twitter: null, risk: 30 }),
-    ev({ id: "big", priceWei: "1000", supply: 100_000, twitter: "other", risk: 60 }),
-  ];
-
-  it("filters by price, supply, account and score, and stacks them", () => {
-    expect(applyCalendarFilter(rows, { freeOnly: true }).map((e) => e.id)).toEqual(["free"]);
-    expect(applyCalendarFilter(rows, { maxSupply: 5000 }).map((e) => e.id)).toEqual(["free", "paid"]);
-    expect(applyCalendarFilter(rows, { withTwitter: true }).map((e) => e.id)).toEqual(["free", "big"]);
-    expect(applyCalendarFilter(rows, { minRisk: 70 }).map((e) => e.id)).toEqual(["free"]);
-    expect(applyCalendarFilter(rows, { withTwitter: true, minRisk: 70 }).map((e) => e.id)).toEqual([
-      "free",
-    ]);
-  });
-
-  it("hides what the user hid, and reveals it again when the filter goes", () => {
-    // The point of filtering at display time: loosening a filter must not
-    // need a re-read of the chain.
-    const hidden = applyCalendarFilter(rows, { hidden: new Set(["paid"]) });
-    expect(hidden.map((e) => e.id)).toEqual(["free", "big"]);
-    expect(applyCalendarFilter(rows, {}).map((e) => e.id)).toEqual(["free", "paid", "big"]);
-  });
-
-  it("does not judge a drop on a price nobody has read yet", () => {
-    expect(applyCalendarFilter([ev({ id: "unknown" })], { freeOnly: true })).toHaveLength(1);
   });
 });
 

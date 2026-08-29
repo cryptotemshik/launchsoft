@@ -83,6 +83,31 @@ export function addUpcoming(
 }
 
 /** Remove one by id. Returns what it removed, so the caller can name it. */
+/**
+ * Change the colour of one entry, leaving everything else alone.
+ *
+ * A colour is the one field that changes often and means nothing to the drop
+ * itself, so it gets its own narrow door rather than a general "save this
+ * record" that could quietly overwrite a date typed on a phone.
+ */
+export function recolorUpcoming(
+  configPath: string,
+  id: string,
+  color: string | undefined,
+): { updated?: UpcomingMint; list: UpcomingMint[] } {
+  const list = loadUpcoming(configPath);
+  const found = list.find((m) => m.id === id);
+  if (!found) return { list };
+  // "auto" is the absence of a choice, so it is stored as one — an entry that
+  // has been set back to automatic looks exactly like one never coloured.
+  const updated: UpcomingMint = { ...found };
+  if (color === undefined || color === "auto") delete updated.color;
+  else updated.color = color;
+  const next = list.map((m) => (m.id === id ? updated : m));
+  saveUpcoming(configPath, next);
+  return { updated, list: next };
+}
+
 export function removeUpcoming(
   configPath: string,
   id: string,
