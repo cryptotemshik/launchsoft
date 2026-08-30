@@ -85,6 +85,14 @@ export interface RunOptions {
   stepMs?: number;
   /** Read and plan, but broadcast nothing. */
   dryRun: boolean;
+  /**
+   * The most ETH one mint transaction may carry, as wei in a string (this
+   * object is JSON-persisted with the queue). The policy's answer to a fake
+   * "drop" priced to drain wallets through a perfectly legitimate mint call —
+   * see signPolicy.ts. Absent means no cap, which is what a single-user box
+   * that never takes untrusted jobs gets by default.
+   */
+  maxMintValueWei?: string;
 }
 
 export interface WalletPlan {
@@ -547,6 +555,7 @@ export async function runSnipe(opts: RunOptions, hooks: RunHooks): Promise<RunRe
    * were sent. That ordering is the whole point: an early shot reverts and
    * burns its nonce, and the next one is already queued behind it.
    */
+  const mintCap = opts.maxMintValueWei !== undefined ? BigInt(opts.maxMintValueWei) : null;
   const signAll = async (atPrice: bigint, atQuantity: number) =>
     Promise.all(
       firing.map(async (a, i) => {
@@ -561,6 +570,12 @@ export async function runSnipe(opts: RunOptions, hooks: RunHooks): Promise<RunRe
             args: [opts.collection, feeRecipient, zeroAddress, BigInt(qty), el.params!, el.proof!],
           });
           value = el.params!.mintPrice * BigInt(qty);
+          if (mintCap !== null && value > mintCap) {
+            throw new Error(
+              `this stage wants ${value} wei per wallet, over the ${mintCap} wei policy cap — ` +
+                `raise SNIPE_POLICY_MAX_MINT_ETH if the price is genuine`,
+            );
+          }
         } else {
           data = encodeFunctionData({
             abi: seaDropAbi,
@@ -568,6 +583,15 @@ export async function runSnipe(opts: RunOptions, hooks: RunHooks): Promise<RunRe
             args: [opts.collection, feeRecipient, zeroAddress, BigInt(atQuantity)],
           });
           value = atPrice * BigInt(atQuantity);
+          // Checked where the price is first known: the stage can be updated
+          // right up to the boundary — Chill Guys was repriced three seconds
+          // before open — so a check at queue time would check a stale number.
+          if (mintCap !== null && value > mintCap) {
+            throw new Error(
+              `this stage wants ${value} wei per wallet, over the ${mintCap} wei policy cap — ` +
+                `raise SNIPE_POLICY_MAX_MINT_ETH if the price is genuine`,
+            );
+          }
         }
         const shots = await Promise.all(
           shotPlan.offsets.map(async (_, shot) => {

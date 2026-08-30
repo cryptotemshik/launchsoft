@@ -44,7 +44,13 @@ export type AuditEvent =
   /** A mint job finished, however it finished. */
   | "run.finished"
   /** The state of the key file at startup. */
-  | "keys.state";
+  | "keys.state"
+  /** The policy refused to let a transaction be signed. */
+  | "policy.refused"
+  /** A withdrawal address entered its one-hour wait. */
+  | "withdraw.registered"
+  /** A withdrawal address was struck off. */
+  | "withdraw.removed";
 
 export interface AuditLine {
   /** ISO 8601, in UTC. Local time in an audit trail is an argument waiting. */

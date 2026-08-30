@@ -92,6 +92,14 @@ import { startTelegramBot } from "./telegramBot";
 import { addUpcoming, annotateUpcoming, loadUpcoming, removeUpcoming } from "./upcomingStore";
 import { loadJobs, restoreStatus, saveJobs, type StoredJob, type StoredStatus } from "./jobStore";
 import { audit as auditLine, type AuditEvent } from "./audit";
+import { judgeTransaction, type PolicyContext } from "./signPolicy";
+import {
+  MATURE_MS,
+  maturedAddresses,
+  registerAddress,
+  registryView,
+  removeAddress,
+} from "./withdrawRegistry";
 import { indexDbPath, openDropIndex, type DropIndex } from "./dropIndex";
 import {
   keystorePassphrase,
@@ -1113,6 +1121,11 @@ function buildRequest(body: Record<string, unknown>): Omit<RunOptions, "keys"> {
     after: typeof body.after === "number" && body.after >= 0 ? Math.floor(body.after) : undefined,
     stepMs: typeof body.stepMs === "number" && body.stepMs >= 0 ? Math.floor(body.stepMs) : undefined,
     dryRun: body.dryRun !== false,
+    // The mint-value cap rides in the job so the runner enforces it where the
+    // price is actually known — the stage can be repriced right up to the
+    // boundary, so checking here would check a stale number. From the
+    // environment, never the request body: a cap the caller sets is not one.
+    maxMintValueWei: parseEther(process.env.SNIPE_POLICY_MAX_MINT_ETH?.trim() || "0.05").toString(),
   };
 }
 
@@ -1576,6 +1589,74 @@ function audit(event: AuditEvent, detail: Record<string, unknown> = {}): void {
   auditLine(CONFIG_PATH, event, detail, log);
 }
 
+/**
+ * The policy's picture of the world, built fresh per decision.
+ *
+ * Fresh because all three inputs move: wallets are added and removed, the
+ * registry matures by the minute, and caching a security decision's inputs is
+ * how a removed address stays spendable. Building it is two file reads.
+ *
+ * The instant tier — `consolidateTo` and SNIPE_WITHDRAW_TO — can only be
+ * changed by whoever controls the box's config and environment, never over
+ * the API. That is the entire distinction between it and the registry.
+ */
+function policyContext(): PolicyContext {
+  const cfg = loadConfig(CONFIG_PATH);
+  const info = getChainInfo(cfg.chainId);
+  const withdrawTo = maturedAddresses(CONFIG_PATH, Date.now());
+  if (cfg.consolidateTo) withdrawTo.add(cfg.consolidateTo.toLowerCase());
+  for (const a of (process.env.SNIPE_WITHDRAW_TO ?? "").split(",")) {
+    const t = a.trim().toLowerCase();
+    if (/^0x[0-9a-f]{40}$/.test(t)) withdrawTo.add(t);
+  }
+  return {
+    ownWallets: new Set(
+      loadKeyEntries(CONFIG_PATH, cfg.keysFile).map((e) =>
+        privateKeyToAccount(e.key).address.toLowerCase(),
+      ),
+    ),
+    withdrawTo,
+    mintContract: (info?.seaDrop ?? "").toLowerCase(),
+    maxMintWei: parseEther(process.env.SNIPE_POLICY_MAX_MINT_ETH?.trim() || "0.05"),
+  };
+}
+
+/**
+ * Refuse a destination the policy does not allow, loudly.
+ *
+ * The refusal goes to the audit log as well as the response: the trail of
+ * refused attempts is exactly what tells a break-in from a typo later.
+ */
+function enforcePolicy(tx: { to?: string; value: bigint; data?: string }, what: string): void {
+  const verdict = judgeTransaction(tx, policyContext());
+  if (!verdict.ok) {
+    audit("policy.refused", { what, to: tx.to, reason: verdict.reason });
+    throw new Error(
+      `${verdict.reason}. Withdrawals go to the configured address or one registered ` +
+        `an hour ago — see the funding tab.`,
+    );
+  }
+}
+
+/**
+ * Tell the owner a withdrawal address just entered its wait.
+ *
+ * Fire-and-forget: the registration itself must not hinge on Telegram being
+ * up. The audit line is the durable record; this is the alarm bell.
+ */
+function notifyRegistration(address: string, label: string | undefined): void {
+  const cfg = loadConfig(CONFIG_PATH);
+  if (!cfg.telegram) return;
+  void sendTelegram(
+    cfg.telegram,
+    `A withdrawal address was just registered${label ? ` ("${label}")` : ""}:
+${address}
+
+` +
+      `Money can follow it in one hour. If this wasn't you, remove it now in the funding tab.`,
+  ).catch(() => {});
+}
+
 function writeKeys(entries: KeyEntry[]) {
   const cfg = loadConfig(CONFIG_PATH);
   const abs = keysPath(CONFIG_PATH, cfg.keysFile);
@@ -2032,6 +2113,43 @@ const server = createServer(async (req, res) => {
       const saved = saveExtraRpcs(wanted);
       log(`read/blast endpoints set to: ${saved.map(rpcHost).join(", ") || "(none)"}`);
       json(res, 200, { rpcHosts: saved.map(rpcHost) });
+      return;
+    }
+
+    // ── Withdrawal addresses: the only doors money may leave through ──────
+    if (url.pathname === "/api/withdraw-addresses" && req.method === "GET") {
+      json(res, 200, { addresses: registryView(CONFIG_PATH, Date.now()), matureMs: MATURE_MS });
+      return;
+    }
+
+    if (url.pathname === "/api/withdraw-addresses" && req.method === "POST") {
+      const body = await readBody(req);
+      const address = typeof body.address === "string" ? body.address : "";
+      const label = typeof body.label === "string" ? body.label : undefined;
+      const r = registerAddress(CONFIG_PATH, address, label, Date.now());
+      if (r.added) {
+        // The audit line and the Telegram ping are the point of the delay: an
+        // attacker registering their address is visible for a full hour
+        // before any money can follow it.
+        audit("withdraw.registered", { address: address.toLowerCase(), label });
+        notifyRegistration(address, label);
+      }
+      json(res, 200, {
+        added: r.added,
+        addresses: registryView(CONFIG_PATH, Date.now()),
+        matureMs: MATURE_MS,
+      });
+      return;
+    }
+
+    if (url.pathname === "/api/withdraw-addresses" && req.method === "DELETE") {
+      const address = url.searchParams.get("address") ?? "";
+      const r = removeAddress(CONFIG_PATH, address);
+      if (r.removed) audit("withdraw.removed", { address: address.toLowerCase() });
+      json(res, r.removed ? 200 : 404, {
+        removed: r.removed,
+        addresses: registryView(CONFIG_PATH, Date.now()),
+      });
       return;
     }
 
@@ -2523,6 +2641,17 @@ const server = createServer(async (req, res) => {
         typeof body.collection === "string" && /^0x[0-9a-fA-F]{40}$/.test(body.collection)
           ? (body.collection as `0x${string}`)
           : undefined;
+      // The recipient is what the policy judges for an NFT move; the contract
+      // varies per token and proves nothing. Judged with a representative
+      // transferFrom so the same rule fires here as will fire in the signer.
+      enforcePolicy(
+        {
+          to: `0x${"00".repeat(20)}`,
+          value: 0n,
+          data: `0x23b872dd${"00".repeat(12)}${"11".repeat(20)}${"00".repeat(12)}${to.slice(2)}${"00".repeat(32)}`,
+        },
+        "sweep-nfts",
+      );
 
       const cfg = loadConfig(CONFIG_PATH);
       const info = getChainInfo(cfg.chainId);
@@ -2723,6 +2852,10 @@ const server = createServer(async (req, res) => {
       if (entries.length === 0) {
         throw new Error("nothing to sweep — the only wallet chosen is the destination");
       }
+      // Judged before anything is signed, dry run included: a dry run that
+      // succeeds where the real thing would be refused is a lie about what
+      // the button will do.
+      enforcePolicy({ to, value: 1n }, "collect");
 
       const result = await collect(
         {
