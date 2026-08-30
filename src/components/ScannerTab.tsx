@@ -62,13 +62,31 @@ interface ScanView {
   now: number;
   tookMs: number;
   cachedAt?: number;
+  /**
+   * Whether the server answered from its index or read the chain for this.
+   * Absent on servers that predate the index.
+   */
+  source?: "index" | "live";
+  /** How far back the index actually reaches, in hours. */
+  indexHours?: number;
 }
 
+/**
+ * How far back a scan may look.
+ *
+ * The last two only work against a server that keeps a drop index: reading
+ * fourteen or thirty days of logs on demand takes longer than a tunnel allows
+ * a request. With the index the reading has already happened, so they cost the
+ * same as any other window — and against an older server they simply come back
+ * clamped to a week, which is what that server can do.
+ */
 const WINDOWS = [
   { hours: 6, label: "6h" },
   { hours: 24, label: "24h" },
   { hours: 72, label: "3d" },
   { hours: 168, label: "7d" },
+  { hours: 336, label: "14d" },
+  { hours: 720, label: "30d" },
 ] as const;
 
 /**
@@ -594,9 +612,17 @@ export default function ScannerTab() {
               </span>
             ) : null}
             {view ? (
-              <span className="pill ok">
+              <span
+                className="pill ok"
+                title={
+                  view.source === "index"
+                    ? `Answered from the server's index, which reaches ${Math.round((view.indexHours ?? 0) / 24)} day(s) back. No chain reading happened for this.`
+                    : "Read from the chain for this request."
+                }
+              >
                 {num(view.collections)} found · {num(view.enriched)} read ·{" "}
                 {((view.tookMs ?? 0) / 1000).toFixed(1)}s
+                {view.source === "index" ? " · indexed" : ""}
                 {view.cachedAt
                   ? ` · ${Math.max(0, Math.round((Date.now() - view.cachedAt) / 1000))}s ago`
                   : ""}

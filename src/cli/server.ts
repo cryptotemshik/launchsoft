@@ -91,6 +91,8 @@ import { formatMintReport, sendTelegram, type MintedWallet } from "../lib/telegr
 import { startTelegramBot } from "./telegramBot";
 import { addUpcoming, loadUpcoming, recolorUpcoming, removeUpcoming } from "./upcomingStore";
 import { loadJobs, restoreStatus, saveJobs, type StoredJob, type StoredStatus } from "./jobStore";
+import { indexDbPath, openDropIndex, type DropIndex } from "./dropIndex";
+import { coverageHours, indexOnce } from "./dropIndexer";
 import { buildUpcoming, sortByDate } from "../lib/upcoming";
 import { isPickable, PICKABLE } from "../lib/calendarColor";
 import { DEFAULT_AFTER, DEFAULT_BEFORE, DEFAULT_STEP_MS, planFor } from "../lib/spread";
@@ -571,7 +573,23 @@ const SCAN_TTL_MS = envNumber(process.env.SNIPE_SCAN_TTL_MS, 60_000);
 let blockRate: { at: number; perHour: number } | null = null;
 const BLOCK_RATE_TTL_MS = 10 * 60_000;
 /** A week of this chain is ~6M blocks; beyond that the wait stops being useful. */
+/**
+ * How far back a scan may ask.
+ *
+ * Without the index this is a week: thirty days of logs takes around ninety
+ * seconds and a Cloudflare tunnel gives up on a request before that. With the
+ * index the reading has already happened, so the ceiling is the window the
+ * index keeps rather than what fits in one request.
+ */
 const MAX_SCAN_HOURS = 168;
+const INDEX_ON = process.env.SNIPE_INDEX !== "0";
+const INDEX_DAYS = envNumber(process.env.SNIPE_INDEX_DAYS, 30, 1);
+const INDEX_POLL_MS = envNumber(process.env.SNIPE_INDEX_POLL_MS, 60_000, 1_000);
+/** Blocks one catch-up step reads — about two hours of this chain. */
+const INDEX_STEP_BLOCKS = BigInt(envNumber(process.env.SNIPE_INDEX_STEP_BLOCKS, 72_000, 1_000));
+let dropIndex: DropIndex | null = null;
+let indexNote: string | null = null;
+let indexLast: { at: number; note: string } | null = null;
 
 /**
  * How far behind the tip a cached scan may be and still be worth topping up
@@ -783,6 +801,49 @@ async function mintPulse(
   return run;
 }
 
+/**
+ * Keep the drop index current, forever.
+ *
+ * Errors are logged and the loop continues: an endpoint having a bad minute
+ * must not end the indexing, and the tab falls back to a live scan for as long
+ * as the index cannot answer.
+ */
+async function indexTick(): Promise<void> {
+  try {
+    const cfg = loadConfig(CONFIG_PATH);
+    const info = getChainInfo(cfg.chainId);
+    if (!info || !dropIndex) return;
+    const client = makeReadClient(info.chain, scanRpcs(cfg));
+    if (!blockRate || Date.now() - blockRate.at > BLOCK_RATE_TTL_MS) {
+      const tip = await client.getBlockNumber();
+      blockRate = { at: Date.now(), perHour: await measureBlockRate(client as never, tip) };
+    }
+    const r = await indexOnce(client as never, dropIndex, {
+      keepDays: INDEX_DAYS,
+      blocksPerHour: blockRate.perHour,
+      stepBlocks: INDEX_STEP_BLOCKS,
+      onNote: (n) => log(`index: ${n}`),
+    });
+    indexLast = {
+      at: Date.now(),
+      note: `${r.stored} collections${r.catchingUp ? " · still reaching back" : ""}`,
+    };
+    if (r.found > 0 || r.pruned > 0) {
+      log(
+        `index: blocks ${r.fromBlock}-${r.toBlock} · ${r.found} touched · ` +
+          `${r.stored} held${r.pruned ? ` · ${r.pruned} aged out` : ""}` +
+          `${r.catchingUp ? " · still reaching back" : ""}`,
+      );
+    }
+  } catch (e) {
+    const why = e instanceof Error ? e.message.split("\n")[0] : String(e);
+    indexLast = { at: Date.now(), note: why };
+    log(`index: pass failed (${why})`);
+  } finally {
+    setTimeout(() => void indexTick(), INDEX_POLL_MS);
+  }
+}
+
 async function startScan(hours: number): Promise<Record<string, unknown>> {
   const run = (async () => {
     const started = Date.now();
@@ -813,6 +874,57 @@ async function startScan(hours: number): Promise<Record<string, unknown>> {
       priorTo > 0n &&
       priorTo < tip &&
       behind < blocksForHours(INCREMENTAL_LIMIT_HOURS, blocksPerHour);
+
+    // The index has already read these blocks, so answering from it costs one
+    // query against a local file instead of millions of blocks of logs. Only
+    // when it reaches back far enough — a caller asking for thirty days while
+    // the walk has reached six gets the real read rather than a short answer
+    // dressed up as a long one.
+    const covered = dropIndex ? coverageHours(dropIndex, tip, blocksPerHour) : null;
+    if (dropIndex && covered !== null && covered >= hours) {
+      const drops = dropIndex.sinceBlock(Number(windowFrom));
+      for (const d of drops) {
+        creators.remember({ contract: d.contract, name: d.name, startTime: d.startTime, owner: d.owner });
+      }
+      const [pulse, nativeUsdRate] = await Promise.all([
+        mintPulse(client as never, tip, blocksPerHour, PULSE_HOURS * 60),
+        nativeUsd(info.blockscoutApi),
+      ]);
+      const at = Math.floor(Date.now() / 1000);
+      const body = {
+        drops: sortForScan(drops, at),
+        hours,
+        events: drops.length,
+        collections: drops.length,
+        enriched: 0,
+        incremental: false,
+        newDrops: 0,
+        fromBlock: Number(windowFrom),
+        toBlock: Number(tip),
+        blocksPerHour: Math.round(blocksPerHour),
+        chain: info.label,
+        explorerUrl: info.explorerUrl,
+        openSeaSlug: info.openSeaSlug,
+        readRpc: rpcHost(scanRpc(cfg, info)),
+        publicRpc: scanRpcs(cfg).length === 0,
+        readRpcNote: scanRpcNote,
+        pulse,
+        pulseHours: PULSE_HOURS,
+        pulseError,
+        nativeSymbol: info.chain.nativeCurrency.symbol,
+        nativeUsd: nativeUsdRate,
+        related: creators.relatedFor(drops.map((d) => d.contract.toLowerCase())),
+        knownCollections: creators.size,
+        /** Where these rows came from, so the panel can say "instant" honestly. */
+        source: "index" as const,
+        indexHours: Math.round(covered),
+        now: at,
+        tookMs: Date.now() - started,
+      };
+      scanCache.set(hours, { at: Date.now(), body });
+      log(`scan: ${hours}h from the index · ${drops.length} collections · ${body.tookMs}ms`);
+      return body as Record<string, unknown>;
+    }
 
     const scan = await scanPublicDrops(client as never, {
       fromBlock: incremental ? priorTo + 1n : windowFrom,
@@ -896,6 +1008,7 @@ async function startScan(hours: number): Promise<Record<string, unknown>> {
       /** Owner and handle groupings for the collections in this response. */
       related: creators.relatedFor([...byContract.keys()]),
       knownCollections: creators.size,
+      source: "live" as const,
       now,
       tookMs: Date.now() - started,
     };
@@ -1807,6 +1920,9 @@ const server = createServer(async (req, res) => {
         // Hosts only — the full URLs carry provider API keys.
         tunnelUrl,
         rpcHosts: readRpcs(cfg).map(rpcHost),
+        index: dropIndex
+          ? { days: INDEX_DAYS, held: dropIndex.count(), last: indexLast }
+          : { days: 0, held: 0, last: null, why: indexNote ?? "off" },
         readRpc: info ? rpcHost(readRpc(cfg, info)) : null,
         jobs: jobs.map(jobView),
       });
@@ -1947,8 +2063,11 @@ const server = createServer(async (req, res) => {
     // entered on a phone, where the bot is, and this is the window onto them.
     // ── Scanner: drops configured on-chain but not yet announced ──────────
     if (url.pathname === "/api/scan" && req.method === "GET") {
+      // The index has already done the reading, so it can answer further back
+      // than one request could ever read.
+      const ceiling = dropIndex ? Math.max(MAX_SCAN_HOURS, INDEX_DAYS * 24) : MAX_SCAN_HOURS;
       const hours = Math.min(
-        MAX_SCAN_HOURS,
+        ceiling,
         Math.max(1, Number(url.searchParams.get("hours") ?? 24) || 24),
       );
       const fresh = url.searchParams.get("fresh") === "1";
@@ -2699,6 +2818,25 @@ server.listen(PORT, HOST, () => {
             `(SNIPE_WAVE_SIZE / SNIPE_WAVE_GAP_MS)`
         : `fires every wallet at every endpoint at once — wave dispatch off (SNIPE_WAVE_SIZE=0)`,
     );
+    if (INDEX_ON) {
+      // Opening it can fail — a read-only disk, a database from a newer
+      // build — and that has to stay a line in the log rather than a dead
+      // server. Everything else works without it; scans simply read the chain
+      // the slow way, as they did before.
+      try {
+        dropIndex = openDropIndex(indexDbPath(CONFIG_PATH));
+        log(
+          `index      keeping ${INDEX_DAYS} days of drops on disk, topped up every ` +
+            `${Math.round(INDEX_POLL_MS / 1000)}s (SNIPE_INDEX_DAYS / SNIPE_INDEX_POLL_MS)`,
+        );
+        setTimeout(() => void indexTick(), 3_000);
+      } catch (e) {
+        indexNote = e instanceof Error ? e.message.split("\n")[0] : String(e);
+        log(`index      OFF — could not open its database: ${indexNote}`);
+      }
+    } else {
+      log(`index      OFF (SNIPE_INDEX=0) — scans read the chain on every request`);
+    }
     if (MINT_ENV_RPCS.length > 0) {
       log(`arms and mints through ${uniq(mintRpcs(cfg).map(rpcHost)).join(", ")} — kept to itself`);
     }
