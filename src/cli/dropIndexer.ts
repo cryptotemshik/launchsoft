@@ -33,10 +33,30 @@ export interface IndexerOptions {
   onNote?: (s: string) => void;
 }
 
-export interface PassResult {
+/** A range that was read, and what it turned up. */
+export interface PassRange {
   fromBlock: bigint;
   toBlock: bigint;
+  /** Collections stored from this range. */
   found: number;
+}
+
+export interface PassResult {
+  /** The head this pass measured itself against. */
+  head: bigint;
+  /** Blocks read to catch the head. Null when there was nothing new. */
+  keptUp: PassRange | null;
+  /**
+   * Blocks read walking backwards. Kept apart from `keptUp` because the two
+   * are nothing alike in size — a keep-up step is a few hundred blocks, a
+   * catch-up step is tens of thousands — and reporting one number for both
+   * makes the log claim a hundred collections in six hundred blocks.
+   */
+  reachedBack: PassRange | null;
+  /** Oldest block the index covers, once the walk has begun. */
+  oldestBlock: bigint | null;
+  /** How far back the index reaches, in days. */
+  coverageDays: number;
   stored: number;
   pruned: number;
   /** True while history is still being walked backwards. */
@@ -89,18 +109,17 @@ export async function indexOnce(
   const last = lastRaw ? BigInt(lastRaw) : null;
 
   // ── Keep up: everything since the last pass ────────────────────────────
-  let found = 0;
-  let from = head;
+  let keptUp: PassRange | null = null;
   if (last !== null && last < head) {
-    from = last + 1n;
-    found += await ingest(client, index, from, head, opts.onNote);
+    const from = last + 1n;
+    keptUp = { fromBlock: from, toBlock: head, found: await ingest(client, index, from, head, opts.onNote) };
     index.set(LAST_BLOCK, head.toString());
   }
   let seeded = false;
   if (last === null) {
     // First ever pass: take the most recent step and start the walk back.
-    from = head > opts.stepBlocks ? head - opts.stepBlocks : floor;
-    found += await ingest(client, index, from, head, opts.onNote);
+    const from = head > opts.stepBlocks ? head - opts.stepBlocks : floor;
+    keptUp = { fromBlock: from, toBlock: head, found: await ingest(client, index, from, head, opts.onNote) };
     index.set(LAST_BLOCK, head.toString());
     index.set(OLDEST_BLOCK, from.toString());
     seeded = true;
@@ -112,11 +131,16 @@ export async function indexOnce(
   // minute after it for no reason.
   const oldestRaw = index.get(OLDEST_BLOCK);
   let catchingUp = Boolean(oldestRaw) && BigInt(oldestRaw ?? "0") > floor;
+  let reachedBack: PassRange | null = null;
   if (oldestRaw && !seeded) {
     const oldest = BigInt(oldestRaw);
     if (oldest > floor) {
       const stepFrom = oldest - opts.stepBlocks > floor ? oldest - opts.stepBlocks : floor;
-      found += await ingest(client, index, stepFrom, oldest - 1n, opts.onNote);
+      reachedBack = {
+        fromBlock: stepFrom,
+        toBlock: oldest - 1n,
+        found: await ingest(client, index, stepFrom, oldest - 1n, opts.onNote),
+      };
       index.set(OLDEST_BLOCK, stepFrom.toString());
       catchingUp = stepFrom > floor;
       if (!catchingUp) opts.onNote?.("index reaches the full window now");
@@ -126,7 +150,17 @@ export async function indexOnce(
   const cutoff = Math.floor(Date.now() / 1000) - opts.keepDays * 86_400;
   const pruned = index.prune(cutoff);
 
-  return { fromBlock: from, toBlock: head, found, stored: index.count(), pruned, catchingUp };
+  const nowOldest = index.get(OLDEST_BLOCK);
+  return {
+    head,
+    keptUp,
+    reachedBack,
+    oldestBlock: nowOldest ? BigInt(nowOldest) : null,
+    coverageDays: (coverageHours(index, head, opts.blocksPerHour) ?? 0) / 24,
+    stored: index.count(),
+    pruned,
+    catchingUp,
+  };
 }
 
 /**

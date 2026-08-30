@@ -1937,17 +1937,39 @@ button.secondary.link-btn {
 .scan-table {
   table-layout: fixed;
 }
-/* The fixed columns add up to 1054px and the name column takes what is left.
+/* The fixed columns add up to 1010px and the name column takes what is left.
    Without a floor, a window narrower than that gives the name nothing: the
    column collapses to zero width, every row loses the one thing that
    identifies it, and the dates wrap to four lines each. A minimum lets
    .table-wrap scroll sideways instead, which is what the wrapper is for.
+
+   1186, not 1260. #root caps the page at 1280 and its padding leaves the
+   table 1200px, so a floor of 1260 overflowed by 60 on a maximised 1522px
+   window — the wrapper scrolled, and the last column, the one holding SNIPE
+   and WATCH, was cut down the middle. Both numbers here are measured against
+   that 1200: 1186 leaves the name 176px at the narrowest window that still
+   fits, and 190 at a full one.
+
    Scoped above the card breakpoint: under 640px the table becomes stacked
    cards, and a minimum width there would put the whole page on a scrollbar. */
 @media (min-width: 641px) {
   .scan-table {
-    min-width: 1260px;
+    min-width: 1186px;
   }
+}
+/* Two buttons, one line. They used to wrap inside a 132px column because a
+   default button is 84px wide, which stacked them and made every row 103px
+   tall — a third of the table's height spent on two words. Compact and
+   side by side they fit, and the row is 65px. */
+.scan-table .row-actions {
+  flex-wrap: nowrap;
+  gap: 5px;
+}
+.scan-table .row-actions button {
+  width: auto;
+  min-width: 0;
+  padding: 3px 9px;
+  font-size: 11px;
 }
 .scan-table .cell-clip {
   overflow: hidden;

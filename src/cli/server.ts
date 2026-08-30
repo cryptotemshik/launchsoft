@@ -824,16 +824,26 @@ async function indexTick(): Promise<void> {
       stepBlocks: INDEX_STEP_BLOCKS,
       onNote: (n) => log(`index: ${n}`),
     });
+    const reach = `${r.coverageDays.toFixed(1)}d of ${INDEX_DAYS}d`;
     indexLast = {
       at: Date.now(),
-      note: `${r.stored} collections${r.catchingUp ? " · still reaching back" : ""}`,
+      note: `${r.stored} collections${r.catchingUp ? ` · reaches back ${reach}` : ""}`,
     };
-    if (r.found > 0 || r.pruned > 0) {
-      log(
-        `index: blocks ${r.fromBlock}-${r.toBlock} · ${r.found} touched · ` +
-          `${r.stored} held${r.pruned ? ` · ${r.pruned} aged out` : ""}` +
-          `${r.catchingUp ? " · still reaching back" : ""}`,
-      );
+    const found = (r.keptUp?.found ?? 0) + (r.reachedBack?.found ?? 0);
+    if (found > 0 || r.pruned > 0) {
+      // The two ranges are reported apart on purpose. A keep-up step is a few
+      // hundred blocks and a catch-up step is tens of thousands, so one
+      // combined count against one range read as a hundred collections in six
+      // hundred blocks — which was never true and hid how far the walk had got.
+      const parts = [
+        r.keptUp ? `+${r.keptUp.toBlock - r.keptUp.fromBlock + 1n} blocks · ${r.keptUp.found} new` : null,
+        r.reachedBack
+          ? `back to ${r.reachedBack.fromBlock} · ${r.reachedBack.found} older · ${reach}`
+          : null,
+        `${r.stored} held`,
+        r.pruned ? `${r.pruned} aged out` : null,
+      ].filter(Boolean);
+      log(`index: ${parts.join(" | ")}`);
     }
   } catch (e) {
     const why = e instanceof Error ? e.message.split("\n")[0] : String(e);

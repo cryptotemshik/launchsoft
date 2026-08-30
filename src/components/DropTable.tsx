@@ -295,15 +295,22 @@ export default function DropTable({
                 from "1h 00m" to "59m 59s" cannot re-measure the whole table
                 under the reader. */}
             <colgroup>
-              <col style={{ width: 124 }} />
+              {/* Measured against the panel, not guessed: #root caps the page
+                  at 1280 and its padding leaves the table 1200px to work in.
+                  These add up to 1010, so the name gets 190 and nothing
+                  overflows. The previous set wanted 1260 and spent the extra
+                  60px cutting the buttons in half.
+                  "opens" is 134 because "Aug 30, 06:49 PM" wraps below that,
+                  and a wrapped third line made every row 103px tall. */}
+              <col style={{ width: 134 }} />
               <col />
-              <col style={{ width: 130 }} />
+              <col style={{ width: 110 }} />
               <col style={{ width: 138 }} />
               <col style={{ width: 82 }} />
-              <col style={{ width: 90 }} />
+              <col style={{ width: 76 }} />
               <col style={{ width: 100 }} />
-              <col style={{ width: 80 }} />
-              <col style={{ width: 96 }} />
+              <col style={{ width: 74 }} />
+              <col style={{ width: 82 }} />
               <col style={{ width: 82 }} />
               <col style={{ width: 132 }} />
             </colgroup>

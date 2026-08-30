@@ -41,7 +41,9 @@ describe("filling the index", () => {
   it("reads a first step and records where it started", async () => {
     db = open();
     const r = await indexOnce(client(10_000n), db, opts);
-    expect(r.toBlock).toBe(10_000n);
+    expect(r.head).toBe(10_000n);
+    expect(r.keptUp).toEqual({ fromBlock: 9_000n, toBlock: 10_000n, found: 1 });
+    expect(r.reachedBack).toBeNull();
     expect(db.get("lastBlock")).toBe("10000");
     expect(db.get("oldestBlock")).toBe("9000");
     expect(r.catchingUp).toBe(true);

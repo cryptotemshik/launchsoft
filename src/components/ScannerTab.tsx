@@ -10,7 +10,7 @@
  * The reading happens on the server, through the same endpoints everything else
  * uses. Nothing here talks to a chain directly.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { parseEther } from "viem";
 import { useRunnerApi } from "../lib/runnerClient";
 import { useCustomRpcs } from "../lib/customRpc";
@@ -23,53 +23,23 @@ import {
 } from "../lib/dropScan";
 import type { CollectionInfo } from "../lib/collectionInfo";
 import { larpReport, type LarpReport } from "../lib/larp";
-import type { MintPulse } from "../lib/mintPulse";
 import type { IndexedCollection } from "../lib/creatorIndex";
 import DropTable, { type SortKey } from "./DropTable";
 import SnipeButton from "./SnipeButton";
 import { sndFeedTick } from "../lib/sound";
 import StaleServer from "./StaleServer";
 import WatchButton from "./WatchButton";
-
-interface ScanView {
-  drops: ScannedDrop[];
-  /** True when the server topped the last scan up instead of re-reading it. */
-  incremental?: boolean;
-  newDrops?: number;
-  hours: number;
-  events: number;
-  collections: number;
-  enriched: number;
-  fromBlock: number;
-  toBlock: number;
-  blocksPerHour: number;
-  /** Host of the endpoint the server actually read through. */
-  readRpc?: string;
-  /** True when that was the chain's public RPC, with nothing better set. */
-  publicRpc?: boolean;
-  /** Set when that endpoint cannot serve a scan at all — see below. */
-  readRpcNote?: string | null;
-  /** Minting over the last hour, keyed by lower-case contract. */
-  pulse?: Record<string, MintPulse>;
-  pulseHours?: number;
-  nativeSymbol?: string;
-  nativeUsd?: number | null;
-  /** Owner and handle groupings, accumulated by the server across scans. */
-  related?: { owners?: Record<string, IndexedCollection[]>; twitters?: Record<string, IndexedCollection[]> };
-  chain: string;
-  explorerUrl: string;
-  openSeaSlug?: string;
-  now: number;
-  tookMs: number;
-  cachedAt?: number;
-  /**
-   * Whether the server answered from its index or read the chain for this.
-   * Absent on servers that predate the index.
-   */
-  source?: "index" | "live";
-  /** How far back the index actually reaches, in hours. */
-  indexHours?: number;
-}
+import {
+  getScanState,
+  mergeCollectionInfo,
+  runScan,
+  scanIsStale,
+  setScanArrivalHandler,
+  setScanEvery,
+  setScanFetcher,
+  subscribeScan,
+  type ScanView,
+} from "../lib/scanStore";
 
 /**
  * How far back a scan may look.
@@ -140,10 +110,11 @@ export default function ScannerTab() {
   const { url, setUrl, token, setToken, base, call, save, serverVersion } = useRunnerApi();
   const { urls: customRpcs } = useCustomRpcs();
   const [rpcNote, setRpcNote] = useState<string | null>(null);
-  const [view, setView] = useState<ScanView | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [hours, setHours] = useState(24);
+  // Everything a request paid for is held in the module, not here: this
+  // component is unmounted whenever another tab is open, and the scan must
+  // not be. See src/lib/scanStore.ts.
+  const scan = useSyncExternalStore(subscribeScan, getScanState);
+  const { view, error, busy, hours, every, nextIn, info, justIn, twitterRelated } = scan;
   const [state, setState] = useState<DropState | "all">("soon");
   const [hideSoldOut, setHideSoldOut] = useState(true);
   const [freeOnly, setFreeOnly] = useState(false);
@@ -160,56 +131,50 @@ export default function ScannerTab() {
   const [desc, setDesc] = useState(false);
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
   const [orderAt, setOrderAt] = useState(() => Math.floor(Date.now() / 1000));
-  const [every, setEvery] = useState(0);
-  const [nextIn, setNextIn] = useState(0);
-  const [info, setInfo] = useState<Record<string, CollectionInfo>>({});
-  // Contracts that appeared in the most recent refresh, so a new arrival is
-  // visible without hunting for it.
-  const [justIn, setJustIn] = useState<Set<string>>(new Set());
-  /** Handle groupings arrive with the marketplace lookup, not with the scan. */
-  const [twitterRelated, setTwitterRelated] = useState<Record<string, IndexedCollection[]>>({});
-  const seen = useRef<Set<string> | null>(null);
 
+  /**
+   * Ask the store to scan, and mark the clocks fresh when it lands.
+   *
+   * The request itself belongs to the store — it has to be able to run one
+   * with nobody watching — so all this does is drive it and re-zero the two
+   * clocks the table sorts and counts down by.
+   */
   const load = useCallback(
     async (h: number, fresh = false) => {
-      setBusy(true);
-      setError(null);
-      try {
-        save();
-        const r = (await call(
-          `/api/scan?hours=${h}${fresh ? "&fresh=1" : ""}`,
-        )) as unknown as ScanView;
-        // What is new since the last look. On the first scan everything is
-        // new, which is not news — so the baseline is set silently.
-        // A response missing its drops is a server that answered something
-        // else; showing an empty scan beats throwing a `.map of undefined`.
-        const found = r.drops ?? [];
-        const ids = new Set(found.map((d) => d.contract.toLowerCase()));
-        if (seen.current) {
-          const arrived = [...ids].filter((c) => !seen.current!.has(c));
-          if (arrived.length > 0) {
-            setJustIn(new Set(arrived));
-            sndFeedTick();
-          }
-        }
-        seen.current = ids;
-        setView({ ...r, drops: found });
-        const t = Math.floor(Date.now() / 1000);
-        setNow(t);
-        setOrderAt(t);
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        setError(
-          /404/.test(msg)
-            ? "This server is too old to scan — update it from the Snipe tab."
-            : msg,
-        );
-      } finally {
-        setBusy(false);
-      }
+      save();
+      await runScan(h, fresh);
+      const t = Math.floor(Date.now() / 1000);
+      setNow(t);
+      setOrderAt(t);
     },
-    [call, save],
+    [save],
   );
+
+  /**
+   * Keep the store pointed at this browser's server.
+   *
+   * The URL and the token live in a hook, and the loop that uses them does
+   * not — so the fetcher is re-installed whenever they change, and taken away
+   * when there is nothing to talk to. Installed in a layout-time effect so
+   * the mount scan below already has one.
+   */
+  useEffect(() => {
+    if (!base || !token) {
+      setScanFetcher(null);
+      return;
+    }
+    setScanFetcher(
+      (h, fresh) =>
+        call(`/api/scan?hours=${h}${fresh ? "&fresh=1" : ""}`) as unknown as Promise<ScanView>,
+    );
+  }, [call, base, token]);
+
+  // A new collection arriving in a refresh is worth hearing about, and the
+  // store deliberately knows nothing about sound.
+  useEffect(() => {
+    setScanArrivalHandler(sndFeedTick);
+    return () => setScanArrivalHandler(null);
+  }, []);
 
   /**
    * Hand the server the endpoint this browser is set up with.
@@ -236,12 +201,22 @@ export default function ScannerTab() {
     }
   }, [call, customRpcs]);
 
+  /**
+   * What opening the tab does.
+   *
+   * Not "scan": the store may already hold one, and re-reading it would mean
+   * four seconds of empty table to arrive at rows that were already there.
+   * So whatever is held is drawn at once, and a fresh read happens only if it
+   * has gone stale — underneath the rows, not instead of them.
+   */
   useEffect(() => {
     if (!base || !token) return;
-    // Install the endpoint first, so the very first scan already goes through
-    // it rather than discovering the public RPC's limit the hard way.
-    void pushRpcs().then(() => load(hours));
-    // Only on mount: every other load is a click.
+    // The endpoint goes down either way — it is one small POST, and it is how
+    // a changed RPC reaches the server at all.
+    void pushRpcs().then(() => {
+      if (scanIsStale()) void load(hours);
+    });
+    // Only on mount: every other load is a click or the store's own loop.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -255,29 +230,6 @@ export default function ScannerTab() {
       clearInterval(o);
     };
   }, []);
-
-  /**
-   * The refresh loop.
-   *
-   * Paused while the tab is hidden: a scanner left open in a background tab
-   * for a week would otherwise spend its budget on drops nobody is looking at,
-   * and the first refresh on return catches up anyway.
-   */
-  useEffect(() => {
-    if (!every || !base || !token) {
-      setNextIn(0);
-      return;
-    }
-    setNextIn(every);
-    const t = setInterval(() => {
-      setNextIn((n) => {
-        if (n > 1) return n - 1;
-        if (document.visibilityState === "visible") void load(hours);
-        return every;
-      });
-    }, 1000);
-    return () => clearInterval(t);
-  }, [every, hours, base, token, load]);
 
   const filter = useMemo(
     () => ({
@@ -469,10 +421,7 @@ export default function ScannerTab() {
           twitters?: Record<string, IndexedCollection[]>;
         };
         if (!alive) return;
-        if (r.known && Object.keys(r.known).length > 0) {
-          setInfo((prev) => ({ ...prev, ...r.known }));
-        }
-        if (r.twitters) setTwitterRelated((prev) => ({ ...prev, ...r.twitters }));
+        mergeCollectionInfo(r.known, r.twitters);
         // Background reads finish in a second or two; a handful of rounds is
         // plenty, and stopping is better than asking forever about a page
         // OpenSea will not serve.
@@ -568,7 +517,6 @@ export default function ScannerTab() {
                 className={hours === w.hours ? "secondary active-chip" : "secondary"}
                 disabled={busy || !base || !token}
                 onClick={() => {
-                  setHours(w.hours);
                   void load(w.hours);
                 }}
               >
@@ -592,7 +540,7 @@ export default function ScannerTab() {
                 key={i.secs}
                 className={every === i.secs ? "secondary active-chip" : "secondary"}
                 disabled={!base || !token}
-                onClick={() => setEvery(i.secs)}
+                onClick={() => setScanEvery(i.secs)}
                 title={
                   i.secs
                     ? "Reads only the blocks since the last look — one small query"
