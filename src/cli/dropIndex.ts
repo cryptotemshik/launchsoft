@@ -17,7 +17,7 @@
  * than `keepDays` ago is dropped on the next pass. At the measured rate of
  * ~1,700 new collections a day, thirty days is about 52,000 rows.
  */
-import { DatabaseSync } from "./nodeSqlite";
+import { loadSqlite, type SqliteDatabase } from "./nodeSqlite";
 import type { ScannedDrop } from "../lib/dropScan";
 
 export interface IndexedDrop extends ScannedDrop {
@@ -70,7 +70,7 @@ export function indexDbPath(configPath: string): string {
 }
 
 export function openDropIndex(path: string): DropIndex {
-  const db = new DatabaseSync(path);
+  const db: SqliteDatabase = new (loadSqlite().DatabaseSync)(path);
   // Write-ahead logging: the worker writes every minute while requests read.
   // Without it a read blocks behind a write and the tab stalls for no reason.
   db.exec("PRAGMA journal_mode = WAL");
