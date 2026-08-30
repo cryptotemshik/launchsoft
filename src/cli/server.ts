@@ -91,6 +91,7 @@ import { formatMintReport, sendTelegram, type MintedWallet } from "../lib/telegr
 import { startTelegramBot } from "./telegramBot";
 import { addUpcoming, annotateUpcoming, loadUpcoming, removeUpcoming } from "./upcomingStore";
 import { loadJobs, restoreStatus, saveJobs, type StoredJob, type StoredStatus } from "./jobStore";
+import { audit as auditLine, type AuditEvent } from "./audit";
 import { indexDbPath, openDropIndex, type DropIndex } from "./dropIndex";
 import {
   keystorePassphrase,
@@ -1564,6 +1565,17 @@ function saveExtraRpcs(urls: string[]): string[] {
  * come back. Even with the token, this API cannot be used to read out a key
  * that is already on the box.
  */
+/**
+ * Record something that touched wallets or moved money.
+ *
+ * Wrapped here so the config path and the log are not repeated at every call
+ * site, and so a failure to write the record reaches the ordinary log instead
+ * of the request that was trying to mint. See audit.ts.
+ */
+function audit(event: AuditEvent, detail: Record<string, unknown> = {}): void {
+  auditLine(CONFIG_PATH, event, detail, log);
+}
+
 function writeKeys(entries: KeyEntry[]) {
   const cfg = loadConfig(CONFIG_PATH);
   const abs = keysPath(CONFIG_PATH, cfg.keysFile);
@@ -1684,6 +1696,14 @@ async function execute(job: Job) {
     }
   }
   log(`job ${job.id} (${job.label}) arming — ${job.request.dryRun ? "dry run" : "LIVE"}`);
+  audit("run.armed", {
+    job: job.id,
+    label: job.label,
+    collection: job.request.collection,
+    wallets: keys.length,
+    quantity: job.request.quantity,
+    dryRun: job.request.dryRun === true,
+  });
 
   try {
     const result = await runSnipe(
@@ -1735,6 +1755,19 @@ async function execute(job: Job) {
     activeJobId = null;
     // Finished, one way or another — it leaves the file either way.
     persistJobs();
+    // Recorded however it ended. A run that failed is exactly the one somebody
+    // will ask about later, so "done" is not the only outcome worth a line.
+    audit("run.finished", {
+      job: job.id,
+      label: job.label,
+      collection: job.request.collection,
+      status: job.status,
+      mined: (job.result?.outcomes ?? []).filter((o) => o.status === "mined").length,
+      reverted: (job.result?.outcomes ?? []).filter((o) => o.status === "reverted").length,
+      attempted: (job.result?.outcomes ?? []).length,
+      dryRun: job.request.dryRun === true,
+      ...(job.error ? { failure: job.error } : {}),
+    });
   }
   await consolidate(job);
   await notify(job);
@@ -2036,7 +2069,10 @@ const server = createServer(async (req, res) => {
         existing.push({ key, label });
         added += 1;
       }
-      if (added > 0) writeKeys(existing);
+      if (added > 0) {
+        writeKeys(existing);
+        audit("wallets.added", { count: added, total: existing.length, label });
+      }
       log(`wallets: added ${added}${rejected.length ? `, rejected ${rejected.length}` : ""}`);
       json(res, 200, { added, rejected: rejected.length, ...(await walletsView()) });
       return;
@@ -2073,6 +2109,9 @@ const server = createServer(async (req, res) => {
         return;
       }
       writeKeys(kept);
+      // The addresses go in, not the count alone: removing a wallet destroys
+      // its key, and "three were removed" answers nothing later.
+      audit("wallets.removed", { count: removed, addresses: [...wanted], left: kept.length });
       log(`wallets: removed ${removed} of ${wanted.size} requested`);
       json(res, 200, { removed, ...(await walletsView()) });
       return;
@@ -2546,6 +2585,14 @@ const server = createServer(async (req, res) => {
         },
         (line) => log(`nft-sweep: ${line}`),
       );
+      if (body.dryRun === false) {
+        audit("nfts.swept", {
+          to,
+          tokens: perWallet.reduce((n, w) => n + w.items.length, 0),
+          wallets: perWallet.filter((w) => w.items.length > 0).length,
+          collection: only,
+        });
+      }
       json(res, 200, result);
       return;
     }
@@ -2643,6 +2690,14 @@ const server = createServer(async (req, res) => {
           log(`disperse: ${line}`);
         },
       );
+      if (body.dryRun === false) {
+        // The payer's address rather than the payer's key, obviously — and the
+        // audit module would drop the key anyway.
+        audit("funds.dispersed", {
+          from: privateKeyToAccount(fromKey).address,
+          targets: targets.length,
+        });
+      }
       json(res, 200, { ...result, logs: lines });
       return;
     }
@@ -2680,6 +2735,11 @@ const server = createServer(async (req, res) => {
         },
         (line) => log(`collect: ${line}`),
       );
+      // Only a real sweep is recorded. A dry run moved nothing, and a trail
+      // full of things that did not happen is a trail nobody trusts.
+      if (body.dryRun === false) {
+        audit("funds.collected", { to, wallets: entries.length });
+      }
       json(res, 200, result);
       return;
     }
@@ -2870,13 +2930,16 @@ server.listen(PORT, HOST, () => {
       const r = migrateToEncrypted(abs, pass);
       if (r.state === "migrated") {
         log(`keys       encrypted the wallet file just now (${PASSPHRASE_ENV} is set)`);
+        audit("keys.state", { sealed: true, migratedNow: true });
       } else if (r.state === "already-encrypted") {
         log(`keys       wallet file is encrypted on disk`);
+        audit("keys.state", { sealed: true });
       } else if (r.state === "left-plain") {
         log(
           `keys       PLAIN TEXT on disk — anything that can read the file has every wallet. ` +
             `Set ${PASSPHRASE_ENV} and restart to seal it.`,
         );
+        audit("keys.state", { sealed: false });
       }
     } catch (e) {
       log(`keys       could not seal the wallet file: ${e instanceof Error ? e.message : e}`);

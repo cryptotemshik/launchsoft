@@ -6,10 +6,14 @@ dist/
 # Headless snipe runner — never commit real keys or a live config.
 snipe.keys
 snipe.config.json
-# State the server keeps beside the config: the watchlist, the arbitrage
-# database and the pending queue. The last two carry endpoint URLs, and on a
+# State the server keeps beside the config: the watchlist, the drop index, the
+# pending queue and the audit log. The queue carries endpoint URLs, and on a
 # paid plan a URL is the API key.
 snipe.config.json.*
 snipe.env
 *.keys
 !*.keys.example
+# A key file named something else is still a key file. The runner takes the
+# name from `keysFile`, so nothing stops someone calling it keys.txt.
+keys.txt
+*.privatekeys
