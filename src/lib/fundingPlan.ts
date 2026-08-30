@@ -7,6 +7,8 @@
  * rather than inline in a modal.
  */
 
+import { gasNeededWei } from "./spread";
+
 export interface FundingRow {
   address: string;
   /** What it holds now, in wei. Null when the balance could not be read. */
@@ -38,6 +40,16 @@ export interface JobCost {
   maxFeeGwei: string;
   /** The job's gas limit, in units. */
   gasLimit: number;
+  /**
+   * Transactions this job sends per wallet.
+   *
+   * A spread run signs several on consecutive nonces, and each one has to be
+   * affordable when its turn comes. Leaving this out is how a wallet ends up
+   * funded for exactly one shot — which is precisely what happened on Chill
+   * Guys: the first shot reverted, the balance fell below the reservation, and
+   * every later shot was refused before it reached a block.
+   */
+  shots?: number;
 }
 
 /** gwei is 10^9 wei, and the string comes from a text box, so parse it safely. */
@@ -62,7 +74,11 @@ export function perWalletCost(cost: JobCost): { mintWei: bigint; gasWei: bigint;
   const quantity = Number.isFinite(cost.quantity) && cost.quantity > 0 ? Math.floor(cost.quantity) : 1;
   const mintWei = cost.priceWei * BigInt(quantity);
   const limit = Number.isFinite(cost.gasLimit) && cost.gasLimit > 0 ? Math.floor(cost.gasLimit) : 0;
-  const gasWei = gweiToWei(cost.maxFeeGwei) * BigInt(limit);
+  const shots = Number.isFinite(cost.shots) && (cost.shots ?? 0) > 0 ? Math.floor(cost.shots!) : 1;
+  // One full reservation plus what each earlier shot actually burns — see
+  // `gasNeededWei`. Not one reservation per shot, which would demand many
+  // times what a run needs and refuse wallets that could mint perfectly well.
+  const gasWei = gasNeededWei(shots, BigInt(limit), gweiToWei(cost.maxFeeGwei));
   return { mintWei, gasWei, totalWei: mintWei + gasWei };
 }
 

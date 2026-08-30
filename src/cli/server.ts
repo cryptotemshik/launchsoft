@@ -95,6 +95,7 @@ import { addUpcoming, loadUpcoming, recolorUpcoming, removeUpcoming } from "./up
 import { loadJobs, restoreStatus, saveJobs, type StoredJob, type StoredStatus } from "./jobStore";
 import { buildUpcoming, sortByDate } from "../lib/upcoming";
 import { isPickable, PICKABLE } from "../lib/calendarColor";
+import { DEFAULT_AFTER, DEFAULT_BEFORE, DEFAULT_STEP_MS, planFor } from "../lib/spread";
 import { enrichDrops, measureBlockRate, readMints, scanPublicDrops } from "./dropScanner";
 import { blocksForHours, classify, mergeScans, sortForScan, type ScannedDrop } from "../lib/dropScan";
 import { API_VERSION } from "../lib/apiVersion";
@@ -364,6 +365,14 @@ function jobView(j: Job) {
     // Funding it means covering what it will actually spend, and the two drift
     // apart the moment someone edits the gas box for the next drop.
     gas: j.request.gas,
+    // How many transactions per wallet this job will send, so the funding
+    // panel asks for enough gas rather than for exactly one shot's worth.
+    shots: planFor(
+      j.request.style ?? "single",
+      j.request.before ?? DEFAULT_BEFORE,
+      j.request.after ?? DEFAULT_AFTER,
+      j.request.stepMs ?? DEFAULT_STEP_MS,
+    ).shots,
     wallets: j.wallets,
     logs: j.logs.slice(-60),
     plan: j.result?.plan,

@@ -95,6 +95,8 @@ interface Job {
   drop?: JobDrop;
   /** The gas this job was queued with. Absent on older servers. */
   gas?: { maxFeeGwei: string; tipGwei: string; limit: number };
+  /** Transactions per wallet — 1 for a single burst, more for a spread. */
+  shots?: number;
   error?: string;
 }
 
@@ -804,6 +806,8 @@ export default function RemoteRunner(props: RemoteRunnerProps) {
                 : fundingJob.quantity,
             maxFeeGwei: fundingJob.gas.maxFeeGwei,
             gasLimit: fundingJob.gas.limit,
+            // A spread job needs gas for every shot, not just the one that mints.
+            shots: fundingJob.shots ?? 1,
           }}
           wallets={fundingWallets}
           onClose={() => setFunding(null)}

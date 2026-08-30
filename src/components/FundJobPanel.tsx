@@ -130,6 +130,7 @@ export default function FundJobPanel({
             <span className="dim">
               {" "}
               = {eth(plan.mintWei)} mint + {eth(plan.gasWei)} gas
+              {(cost.shots ?? 1) > 1 ? ` (${cost.shots} shots per wallet)` : ""}
             </span>
           </dd>
           <dt>still to send</dt>

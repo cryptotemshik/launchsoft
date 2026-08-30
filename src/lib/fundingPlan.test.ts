@@ -108,3 +108,43 @@ describe("writing wei back out as ETH", () => {
     expect(weiToEthString(parseEther("0.0000001"))).toBe("0.0000001");
   });
 });
+
+describe("funding a spread run", () => {
+  const base = { priceWei: 4_000_000_000_000_000n, quantity: 1, maxFeeGwei: "0.3", gasLimit: 300_000 };
+
+  it("asks for one reservation when the job sends one shot", () => {
+    const one = perWalletCost({ ...base, shots: 1 });
+    expect(one.gasWei).toBe(90_000_000_000_000n); // 300000 × 0.3 gwei
+    expect(one.totalWei).toBe(base.priceWei + 90_000_000_000_000n);
+  });
+
+  it("treats a missing shot count as one, so old jobs are unchanged", () => {
+    expect(perWalletCost(base)).toEqual(perWalletCost({ ...base, shots: 1 }));
+  });
+
+  it("asks for more gas once the job spreads its shots", () => {
+    // The failure this exists to prevent: on Chill Guys every wallet held
+    // exactly one reservation, the first shot reverted, and every later shot
+    // was refused before it reached a block.
+    const many = perWalletCost({ ...base, shots: 17 });
+    expect(many.gasWei).toBeGreaterThan(perWalletCost({ ...base, shots: 1 }).gasWei);
+    expect(many.mintWei).toBe(base.priceWei);
+  });
+
+  it("charges the mint price once however many shots there are", () => {
+    // Only one shot can mint; the rest revert and hand the value back.
+    expect(perWalletCost({ ...base, shots: 17 }).mintWei).toBe(
+      perWalletCost({ ...base, shots: 1 }).mintWei,
+    );
+  });
+
+  it("counts a wallet funded for one shot as short for a spread", () => {
+    const plan = planFunding([{ address: "0xa", balanceWei: 90_000_000_000_000n }], {
+      ...base,
+      priceWei: 0n,
+      shots: 17,
+    });
+    expect(plan.needy).toBe(1);
+    expect(plan.rows[0].shortfallWei).toBeGreaterThan(0n);
+  });
+});
