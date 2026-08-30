@@ -17,9 +17,10 @@
  * you typed, the chain fills in price, supply and the real start, and what you
  * typed wins where the two disagree.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { formatEther } from "viem";
 import { useRunnerApi } from "../lib/runnerClient";
+import { createTabStore } from "../lib/tabStore";
 import {
   dayFraction,
   groupByDay,
@@ -80,38 +81,66 @@ function tzChip(): { label: string; offsetMin: number } {
   };
 }
 
+/**
+ * What this tab has read, kept where leaving the tab cannot throw it away.
+ *
+ * At module scope on purpose: the app renders one tab at a time, so the
+ * component is unmounted the moment you look at anything else. See
+ * src/lib/tabStore.ts for why that mattered.
+ *
+ * `hidden` rides along with the rest. Hiding a row is a decision about the
+ * list, and losing it on the way to another tab and back made the button
+ * pointless.
+ */
+interface CalendarData {
+  events: CalendarEvent[];
+  /** Which watchlist row each event came from — recolour and remove need it. */
+  ids: Record<string, string>;
+  hidden: Set<string>;
+  info: Record<string, CollectionInfo>;
+  openSeaSlug?: string;
+}
+
+const store = createTabStore<CalendarData>(
+  { events: [], ids: {}, hidden: new Set(), info: {} },
+  {
+    describeError: (m) =>
+      /404/.test(m) ? "This server is too old for the calendar — update it first." : m,
+  },
+);
+
 export default function CalendarTab() {
   const { url, setUrl, token, setToken, base, call, save, serverVersion } = useRunnerApi();
-  const [events, setEvents] = useState<CalendarEvent[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+  const held = useSyncExternalStore(store.subscribe, store.getState);
+  const { events, ids, hidden, info, openSeaSlug } = held.data;
+  const { error, busy } = held;
   const [view, setView] = useState<View>(() =>
     typeof window !== "undefined" && window.innerWidth < 900 ? "list" : "week",
   );
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
-  const [openSeaSlug, setOpenSeaSlug] = useState<string | undefined>();
   const [showEnded, setShowEnded] = useState(false);
   /** Handles and floors, the same lookup the scanner uses. */
-  const [info, setInfo] = useState<Record<string, CollectionInfo>>({});
   /** Watchlist id per event id, so a row can be recoloured or struck off. */
-  const [ids, setIds] = useState<Record<string, string>>({});
-  const [hidden, setHidden] = useState<Set<string>>(new Set());
   const [selected, setSelected] = useState<string | null>(null);
   const [weekFrom, setWeekFrom] = useState(() => Math.floor(Date.now() / 1000));
   const [adding, setAdding] = useState(false);
-  const prior = useRef<CalendarEvent[]>([]);
 
   const tz = useMemo(tzChip, []);
 
+  /**
+   * One read: the watchlist, then the public stage of everything on it.
+   *
+   * It throws rather than catching — the store turns a throw into the line of
+   * red text and keeps the events already on screen, so a refresh that fails
+   * costs nothing that was already being read.
+   */
   const load = useCallback(async () => {
-    setBusy(true);
-    setError(null);
-    try {
+    {
       save();
       const watch = (await call("/api/upcoming")) as Record<string, unknown>;
       const list = (watch.upcoming as UpcomingMint[]) ?? [];
       seedWatched(list);
-      setOpenSeaSlug(watch.openSeaSlug as string | undefined);
+      store.set({ openSeaSlug: watch.openSeaSlug as string | undefined });
 
       const manual: CalendarEvent[] = list.map((m) => ({
         id: "",
@@ -153,9 +182,9 @@ export default function CalendarTab() {
       }
 
       const t = Math.floor(Date.now() / 1000);
-      const merged = mergeCalendar(manual, scanner, tz.offsetMin, t, prior.current);
-      prior.current = merged;
-      setEvents(merged);
+      // The previous merge is the baseline that keeps event ids stable, and
+      // the store is where it lives now.
+      const merged = mergeCalendar(manual, scanner, tz.offsetMin, t, store.getState().data.events);
       // Which watchlist row each event came from — recolour and remove both
       // need the id, and the merge does not carry it.
       const byKey: Record<string, string> = {};
@@ -170,20 +199,23 @@ export default function CalendarTab() {
             );
         if (hit) byKey[e.id] = hit.id;
       }
-      setIds(byKey);
+      store.set({ events: merged, ids: byKey });
       setNow(t);
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setError(
-        /404/.test(msg) ? "This server is too old for the calendar — update it first." : msg,
-      );
-    } finally {
-      setBusy(false);
     }
   }, [call, save, tz.offsetMin]);
 
+  // The store keeps the fetcher, so the URL and the token have to be pushed
+  // down whenever they change.
   useEffect(() => {
-    if (base && token) void load();
+    store.setFetcher(base && token ? load : null);
+  }, [load, base, token]);
+
+  /**
+   * Opening the tab draws what is already held and reads again only if it has
+   * gone stale, underneath the rows rather than instead of them.
+   */
+  useEffect(() => {
+    if (base && token && store.isStale()) void store.run();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -214,7 +246,7 @@ export default function CalendarTab() {
         const r = (await call(`/api/collection-info?contracts=${wanted.join(",")}`)) as unknown as {
           known?: Record<string, CollectionInfo>;
         };
-        if (alive && r.known) setInfo((prev) => ({ ...prev, ...r.known }));
+        if (alive && r.known) store.set({ info: { ...store.getState().data.info, ...r.known } });
       } catch {
         // An older server has no such route; the column simply stays unknown.
       }
@@ -236,7 +268,7 @@ export default function CalendarTab() {
 
   /** Out of sight, still on the watchlist. Lives in this browser only. */
   function hide(id: string) {
-    setHidden(new Set([...hidden, id]));
+    store.set({ hidden: new Set([...hidden, id]) });
     setSelected(null);
   }
 
@@ -250,17 +282,21 @@ export default function CalendarTab() {
   async function recolor(eventId: string, color: Pickable) {
     const listId = ids[eventId];
     if (!listId) return;
-    setEvents((prev) =>
-      prev.map((e) => (e.id === eventId ? { ...e, color: color === "auto" ? undefined : color } : e)),
-    );
+    store.set({
+      events: store
+        .getState()
+        .data.events.map((e) =>
+          e.id === eventId ? { ...e, color: color === "auto" ? undefined : color } : e,
+        ),
+    });
     try {
       await call(`/api/upcoming?id=${encodeURIComponent(listId)}`, {
         method: "PATCH",
         body: JSON.stringify({ color }),
       });
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-      void load();
+      store.setError(e instanceof Error ? e.message : String(e));
+      void store.run();
     }
   }
 
@@ -275,9 +311,14 @@ export default function CalendarTab() {
     try {
       await call(`/api/upcoming?id=${encodeURIComponent(listId)}`, { method: "DELETE" });
       setSelected(null);
-      await load();
+      // Struck off here as well as on the server. A refresh already in flight
+      // was started before the delete and would put the row back, and waiting
+      // for a round trip to watch a row you just removed disappear reads as a
+      // button that did nothing.
+      store.set({ events: store.getState().data.events.filter((x) => x.id !== eventId) });
+      await store.run();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      store.setError(err instanceof Error ? err.message : String(err));
     }
   }
 
@@ -332,7 +373,7 @@ export default function CalendarTab() {
             <button
               className="secondary"
               disabled={busy || !base || !token}
-              onClick={() => void load()}
+              onClick={() => void store.run()}
             >
               {busy ? <span className="spin">READING</span> : "refresh"}
             </button>
@@ -352,7 +393,7 @@ export default function CalendarTab() {
               show ended
             </button>
             {hidden.size > 0 ? (
-              <button className="secondary" onClick={() => setHidden(new Set())}>
+              <button className="secondary" onClick={() => store.set({ hidden: new Set() })}>
                 unhide {hidden.size}
               </button>
             ) : null}
@@ -372,7 +413,7 @@ export default function CalendarTab() {
             onAdd={async (draft) => {
               await call("/api/upcoming", { method: "POST", body: JSON.stringify(draft) });
               setAdding(false);
-              await load();
+              await store.run();
             }}
           />
         ) : null}

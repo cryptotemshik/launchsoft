@@ -42,18 +42,21 @@ import {
 } from "../lib/scanStore";
 
 /**
- * How far back a scan may look.
+ * How far back a scan looks for the moment a drop was configured.
  *
- * The last two only work against a server that keeps a drop index: reading
- * two or three weeks of logs on demand takes longer than a tunnel allows a
- * request. With the index the reading has already happened, so they cost the
- * same as any other window — and against an older server they simply come back
- * clamped to a week, which is what that server can do.
+ * Not "drops in the next N days" — the other row of chips decides that. This
+ * one says how far back to look for the transaction where a creator set the
+ * stage up, which is the only trace a drop leaves before anyone announces it.
+ * A drop configured five days ago for next Tuesday is invisible at 24h and
+ * present at 7d; the drop did not change, the evidence came into range.
  *
- * 21d rather than 30d. The index holds thirty days, but a thirty-day answer is
- * around 52,000 collections in one response and the cap that keeps it from
- * being a ten-megabyte download would throw a third of them away regardless.
- * Three weeks is the longest window that arrives whole.
+ * 14d is the longest. It only works against a server that keeps a drop index:
+ * reading two weeks of logs on demand takes longer than a tunnel allows a
+ * request, and against an older server the window simply comes back clamped to
+ * a week, which is what that server can do. Longer than a fortnight stopped
+ * being useful — thirty days is around 52,000 collections in one response,
+ * and the cap that keeps that from being a ten-megabyte download would throw a
+ * third of them away regardless.
  */
 const WINDOWS = [
   { hours: 6, label: "6h" },
@@ -61,7 +64,6 @@ const WINDOWS = [
   { hours: 72, label: "3d" },
   { hours: 168, label: "7d" },
   { hours: 336, label: "14d" },
-  { hours: 504, label: "21d" },
 ] as const;
 
 /**

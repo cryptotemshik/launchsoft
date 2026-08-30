@@ -9,8 +9,9 @@
  * are. Both routes end in the same `buildUpcoming`, so a name the bot accepts
  * cannot be one this form rejects.
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { useRunnerApi } from "../lib/runnerClient";
+import { createTabStore } from "../lib/tabStore";
 import type { UpcomingMint } from "../lib/upcoming";
 import type { ScannedDrop } from "../lib/dropScan";
 import { larpReport, type LarpReport } from "../lib/larp";
@@ -45,30 +46,55 @@ function placeholderFor(id: string): `0x${string}` {
   return `0xwl:${id}` as `0x${string}`;
 }
 
+/**
+ * The watchlist, kept where leaving the tab cannot throw it away.
+ *
+ * At module scope on purpose: the app renders one tab at a time, so the
+ * component is unmounted the moment you look at anything else, and this list
+ * costs three requests to rebuild. See src/lib/tabStore.ts.
+ */
+interface UpcomingData {
+  /** Null until the first read, so "empty" and "not read yet" stay apart. */
+  list: UpcomingMint[] | null;
+  drops: Record<string, ScannedDrop>;
+  info: Record<string, CollectionInfo>;
+  related: { owners?: Record<string, IndexedCollection[]> };
+  twitterRelated: Record<string, IndexedCollection[]>;
+  slug?: string;
+}
+
+const store = createTabStore<UpcomingData>(
+  { list: null, drops: {}, info: {}, related: {}, twitterRelated: {} },
+  {
+    describeError: (m) =>
+      /404/.test(m)
+        ? "This server is too old to keep upcoming mints — update it from the Snipe tab."
+        : m,
+  },
+);
+
 export default function UpcomingTab() {
   const { url, setUrl, token, setToken, base, call, save, serverVersion } = useRunnerApi();
-  const [list, setList] = useState<UpcomingMint[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+  const held = useSyncExternalStore(store.subscribe, store.getState);
+  const { list, drops, info, related, twitterRelated, slug } = held.data;
+  const { error, busy } = held;
   const [sort, setSort] = useState<SortKey>("start");
-  const [drops, setDrops] = useState<Record<string, ScannedDrop>>({});
-  const [info, setInfo] = useState<Record<string, CollectionInfo>>({});
-  const [related, setRelated] = useState<{ owners?: Record<string, IndexedCollection[]> }>({});
-  const [twitterRelated, setTwitterRelated] = useState<Record<string, IndexedCollection[]>>({});
   const [desc, setDesc] = useState(false);
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
   const [adding, setAdding] = useState(false);
   const [draft, setDraft] = useState({ name: "", twitter: "", contract: "", supply: "", when: "" });
   const [addError, setAddError] = useState<string | null>(null);
   const [addBusy, setAddBusy] = useState(false);
-  const [slug, setSlug] = useState<string | undefined>();
   const [looking, setLooking] = useState(false);
   const [found, setFound] = useState<string | null>(null);
 
+  /**
+   * The list, then the public stage and the marketplace lookup for everything
+   * on it. Throws rather than catching: the store turns that into the line of
+   * red text and keeps the rows already on screen.
+   */
   const load = useCallback(async () => {
-    setBusy(true);
-    setError(null);
-    try {
+    {
       save();
       const r = (await call("/api/upcoming")) as unknown as {
         upcoming?: UpcomingMint[];
@@ -78,8 +104,7 @@ export default function UpcomingTab() {
       // already listed without asking again.
       seedWatched(r.upcoming ?? []);
       const entries = Array.isArray(r.upcoming) ? r.upcoming : [];
-      setList(entries);
-      setSlug(r.openSeaSlug);
+      store.set({ list: entries, slug: r.openSeaSlug });
 
       /**
        * The public stage of everything that has a contract.
@@ -96,27 +121,22 @@ export default function UpcomingTab() {
           call(`/api/drops?contracts=${list}`) as Promise<Record<string, unknown>>,
           call(`/api/collection-info?contracts=${list}`) as Promise<Record<string, unknown>>,
         ]);
-        setDrops(
-          Object.fromEntries(
+        store.set({
+          drops: Object.fromEntries(
             ((d.drops as ScannedDrop[]) ?? []).map((x) => [x.contract.toLowerCase(), x]),
           ),
-        );
-        setRelated((d.related as { owners?: Record<string, IndexedCollection[]> }) ?? {});
-        setInfo((meta.known as Record<string, CollectionInfo>) ?? {});
-        setTwitterRelated((meta.twitters as Record<string, IndexedCollection[]>) ?? {});
+          related: (d.related as { owners?: Record<string, IndexedCollection[]> }) ?? {},
+          info: (meta.known as Record<string, CollectionInfo>) ?? {},
+          twitterRelated: (meta.twitters as Record<string, IndexedCollection[]>) ?? {},
+        });
       }
       setNow(Math.floor(Date.now() / 1000));
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setError(
-        /404/.test(msg)
-          ? "This server is too old to keep upcoming mints — update it from the Snipe tab."
-          : msg,
-      );
-    } finally {
-      setBusy(false);
     }
   }, [call, save]);
+
+  useEffect(() => {
+    store.setFetcher(base && token ? load : null);
+  }, [load, base, token]);
 
   /**
    * Fill the form in from the chain once a contract is typed.
@@ -181,9 +201,12 @@ export default function UpcomingTab() {
         method: "POST",
         body: JSON.stringify(draft),
       })) as unknown as { upcoming?: UpcomingMint[] };
-      setList(Array.isArray(r.upcoming) ? r.upcoming : []);
+      store.set({ list: Array.isArray(r.upcoming) ? r.upcoming : [] });
       setDraft({ name: "", twitter: "", contract: "", supply: "", when: "" });
       setAdding(false);
+      // The row is on the list but has no stage or handle behind it yet, and
+      // the tab no longer re-reads itself on every visit. So it is read now.
+      void store.run();
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setAddError(
@@ -194,8 +217,12 @@ export default function UpcomingTab() {
     }
   }, [call, draft]);
 
+  /**
+   * Opening the tab draws what is held and reads again only if it has aged,
+   * underneath the rows rather than instead of them.
+   */
   useEffect(() => {
-    if (base && token) void load();
+    if (base && token && store.isStale()) void store.run();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -284,16 +311,13 @@ export default function UpcomingTab() {
 
   async function remove(m: UpcomingMint) {
     if (!confirm(`Remove ${m.name} from the list?`)) return;
-    setBusy(true);
     try {
       const r = (await call(`/api/upcoming?id=${encodeURIComponent(m.id)}`, {
         method: "DELETE",
       })) as unknown as { upcoming?: UpcomingMint[] };
-      if (Array.isArray(r.upcoming)) setList(r.upcoming);
+      if (Array.isArray(r.upcoming)) store.set({ list: r.upcoming });
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(false);
+      store.setError(e instanceof Error ? e.message : String(e));
     }
   }
 
@@ -431,7 +455,7 @@ export default function UpcomingTab() {
           ) : null}
           <button
             className="secondary"
-            onClick={() => void load()}
+            onClick={() => void store.run()}
             disabled={busy || !base || !token}
           >
             {busy ? <span className="spin">BUSY</span> : list ? "refresh" : "load"}

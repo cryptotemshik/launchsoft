@@ -13,8 +13,9 @@
  * drop taking two hundred mints a minute from a hundred wallets outranks one
  * taking the same from four.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { useRunnerApi } from "../lib/runnerClient";
+import { createTabStore } from "../lib/tabStore";
 import { useCustomRpcs } from "../lib/customRpc";
 import type { MintPulse } from "../lib/mintPulse";
 import { reuseBand, type IndexedCollection } from "../lib/creatorIndex";
@@ -118,53 +119,87 @@ function Spark({ spark }: { spark: readonly number[] }) {
   );
 }
 
+/**
+ * The feed, kept where leaving the tab cannot throw it away.
+ *
+ * At module scope on purpose. This tab suffered the worse half of the problem:
+ * its refresh interval lived in the component, so "every 30s" meant "every 30s
+ * while you watch it" — the one setting whose entire purpose is to keep
+ * working when you are not. The loop is the store's now. See src/lib/tabStore.
+ */
+interface LiveData {
+  view: LiveView | null;
+  /** The window the held feed was read for. */
+  minutes: number;
+  /** Contracts the previous read held, so an arrival can be told from the rest. */
+  seen: Set<string> | null;
+  justIn: Set<string>;
+  info: Record<string, CollectionInfo>;
+  twitterRelated: Record<string, IndexedCollection[]>;
+}
+
+const DEFAULT_EVERY = 30;
+
+const store = createTabStore<LiveData>(
+  { view: null, minutes: 15, seen: null, justIn: new Set(), info: {}, twitterRelated: {} },
+  {
+    describeError: (m) =>
+      /404/.test(m) ? "This server is too old for the live feed — update it from the Snipe tab." : m,
+  },
+);
+/** The refresh loop is started once, by whichever visit comes first. */
+let loopStarted = false;
+
 export default function LiveTab() {
   const { url, setUrl, token, setToken, base, call, save, serverVersion } = useRunnerApi();
   const { urls: customRpcs } = useCustomRpcs();
-  const [view, setView] = useState<LiveView | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [every, setEvery] = useState(30);
-  const [minutes, setMinutes] = useState(15);
-  const [nextIn, setNextIn] = useState(0);
+  const held = useSyncExternalStore(store.subscribe, store.getState);
+  const { view, minutes, justIn, info, twitterRelated } = held.data;
+  const { error, busy, every, nextIn } = held;
   const [sort, setSort] = useState<SortKey>("trend");
   const [hideWash, setHideWash] = useState(false);
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
-  const [justIn, setJustIn] = useState<Set<string>>(new Set());
-  const [info, setInfo] = useState<Record<string, CollectionInfo>>({});
-  const [twitterRelated, setTwitterRelated] = useState<Record<string, IndexedCollection[]>>({});
-  const seen = useRef<Set<string> | null>(null);
   const related = useRelated();
 
-  const load = useCallback(async (mins: number) => {
-    setBusy(true);
-    setError(null);
-    try {
-      save();
-      const r = (await call(`/api/live?minutes=${mins}`)) as unknown as LiveView;
-      const rows = r.rows ?? [];
-      const ids = new Set(rows.map((x) => x.contract.toLowerCase()));
-      if (seen.current) {
-        const arrived = [...ids].filter((c) => !seen.current!.has(c));
-        if (arrived.length > 0) {
-          setJustIn(new Set(arrived));
-          sndFeedTick();
-        }
-      }
-      seen.current = ids;
-      setView({ ...r, rows });
-      // A failed read is not a quiet chain, and the server now says which.
-      if (r.error) setError(`could not read the mint feed: ${r.error}`);
-      setNow(Math.floor(Date.now() / 1000));
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setError(
-        /404/.test(msg) ? "This server is too old for the live feed — update it from the Snipe tab." : msg,
-      );
-    } finally {
-      setBusy(false);
-    }
+  /**
+   * Read the feed for the window the store is holding.
+   *
+   * Throws rather than catching: the store turns that into the line of red
+   * text and keeps the rows already on screen.
+   */
+  const load = useCallback(async () => {
+    save();
+    const mins = store.getState().data.minutes;
+    const r = (await call(`/api/live?minutes=${mins}`)) as unknown as LiveView;
+    const rows = r.rows ?? [];
+    const ids = new Set(rows.map((x) => x.contract.toLowerCase()));
+    // On the first read everything is new, which is not news.
+    const prior = store.getState().data.seen;
+    const arrived = prior ? [...ids].filter((c) => !prior.has(c)) : [];
+    store.set({
+      view: { ...r, rows },
+      seen: ids,
+      ...(arrived.length > 0 ? { justIn: new Set(arrived) } : {}),
+    });
+    if (arrived.length > 0) sndFeedTick();
+    setNow(Math.floor(Date.now() / 1000));
   }, [call, save]);
+
+  /**
+   * A failed read is not a quiet chain, and the server says which — inside an
+   * otherwise successful response.
+   *
+   * Derived from the response rather than pushed into the store's error. It
+   * cannot be pushed: `run()` clears the error when the fetcher returns, and a
+   * write from inside the fetcher is queued ahead of that clear, so it would
+   * be wiped every time. Deriving it also means it goes away by itself the
+   * moment a read succeeds.
+   */
+  const feedError = view?.error ? `could not read the mint feed: ${view.error}` : null;
+
+  useEffect(() => {
+    store.setFetcher(base && token ? load : null);
+  }, [load, base, token]);
 
   /**
    * Install this browser's endpoint before the first read.
@@ -184,9 +219,20 @@ export default function LiveTab() {
     }
   }, [call, customRpcs]);
 
+  /**
+   * Opening the tab draws the feed already held and reads again only if it has
+   * aged. The endpoint goes down either way — it is one small POST, and it is
+   * how a changed RPC reaches the server at all.
+   */
   useEffect(() => {
     if (!base || !token) return;
-    void pushRpcs().then(() => load(minutes));
+    if (!loopStarted) {
+      loopStarted = true;
+      store.setEvery(DEFAULT_EVERY);
+    }
+    void pushRpcs().then(() => {
+      if (store.isStale()) void store.run();
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -194,24 +240,6 @@ export default function LiveTab() {
     const t = setInterval(() => setNow(Math.floor(Date.now() / 1000)), 1000);
     return () => clearInterval(t);
   }, []);
-
-  // Paused while the tab is hidden: a feed left open in a background tab
-  // spends its budget on rows nobody is looking at.
-  useEffect(() => {
-    if (!every || !base || !token) {
-      setNextIn(0);
-      return;
-    }
-    setNextIn(every);
-    const t = setInterval(() => {
-      setNextIn((n) => {
-        if (n > 1) return n - 1;
-        if (document.visibilityState === "visible") void load(minutes);
-        return every;
-      });
-    }, 1000);
-    return () => clearInterval(t);
-  }, [every, minutes, base, token, load]);
 
   /**
    * The marketplace side of these rows.
@@ -245,9 +273,11 @@ export default function LiveTab() {
         };
         if (!alive) return;
         if (r.known && Object.keys(r.known).length > 0) {
-          setInfo((prev) => ({ ...prev, ...r.known }));
+          store.set({ info: { ...store.getState().data.info, ...r.known } });
         }
-        if (r.twitters) setTwitterRelated((prev) => ({ ...prev, ...r.twitters }));
+        if (r.twitters) {
+          store.set({ twitterRelated: { ...store.getState().data.twitterRelated, ...r.twitters } });
+        }
         if (r.pending?.length && round < 6) timer = setTimeout(() => void ask(round + 1), 3000);
       } catch {
         // An older server has no such route; the column then says nothing,
@@ -339,8 +369,8 @@ export default function LiveTab() {
                 className={minutes === w.minutes ? "secondary active-chip" : "secondary"}
                 disabled={busy || !base || !token}
                 onClick={() => {
-                  setMinutes(w.minutes);
-                  void load(w.minutes);
+                  store.set({ minutes: w.minutes });
+                  void store.run();
                 }}
               >
                 {w.label}
@@ -355,12 +385,12 @@ export default function LiveTab() {
                 key={i.secs}
                 className={every === i.secs ? "secondary active-chip" : "secondary"}
                 disabled={!base || !token}
-                onClick={() => setEvery(i.secs)}
+                onClick={() => store.setEvery(i.secs)}
               >
                 {i.label}
               </button>
             ))}
-            <button className="secondary" disabled={busy || !base || !token} onClick={() => void load(minutes)}>
+            <button className="secondary" disabled={busy || !base || !token} onClick={() => void store.run()}>
               {busy ? <span className="spin">READING</span> : "refresh"}
             </button>
           </div>
@@ -392,7 +422,7 @@ export default function LiveTab() {
           </div>
         </div>
 
-        {error ? <p className="error">{error}</p> : null}
+        {error ?? feedError ? <p className="error">{error ?? feedError}</p> : null}
         <StaleServer version={serverVersion} />
 
         {view && rows.length > 0 ? (
