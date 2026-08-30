@@ -9,7 +9,8 @@ import {
 import { useActiveChain } from "../signer";
 import { formatEthShort } from "../lib/profit";
 import {
-  DEFAULT_SHOTS,
+  DEFAULT_AFTER,
+  DEFAULT_BEFORE,
   DEFAULT_STEP_MS,
   spreadLabel,
   type MintStyle,
@@ -172,7 +173,8 @@ export default function RemoteRunner(props: RemoteRunnerProps) {
    * the extra transactions.
    */
   const [style, setStyle] = useState<MintStyle>("single");
-  const [shots, setShots] = useState(DEFAULT_SHOTS);
+  const [before, setBefore] = useState(DEFAULT_BEFORE);
+  const [after, setAfter] = useState(DEFAULT_AFTER);
   const [stepMs, setStepMs] = useState(DEFAULT_STEP_MS);
   const [status, setStatus] = useState<StatusView | null>(null);
   const [openJob, setOpenJob] = useState<string | null>(null);
@@ -349,7 +351,7 @@ export default function RemoteRunner(props: RemoteRunnerProps) {
           extraRpcs: props.extraRpcs,
           timing: props.timing,
           style,
-          ...(style === "spread" ? { shots, stepMs } : {}),
+          ...(style === "spread" ? { before, after, stepMs } : {}),
           dryRun,
         }),
       });
@@ -565,11 +567,19 @@ export default function RemoteRunner(props: RemoteRunnerProps) {
             {style === "spread" ? (
               <>
                 <div className="field field-inline">
-                  <label>shots</label>
+                  <label>before</label>
                   <input
                     inputMode="numeric"
-                    value={shots}
-                    onChange={(e) => setShots(Math.max(1, Number(e.target.value) || 1))}
+                    value={before}
+                    onChange={(e) => setBefore(Math.max(0, Number(e.target.value) || 0))}
+                  />
+                </div>
+                <div className="field field-inline">
+                  <label>after</label>
+                  <input
+                    inputMode="numeric"
+                    value={after}
+                    onChange={(e) => setAfter(Math.max(0, Number(e.target.value) || 0))}
                   />
                 </div>
                 <div className="field field-inline">
@@ -580,18 +590,21 @@ export default function RemoteRunner(props: RemoteRunnerProps) {
                     onChange={(e) => setStepMs(Math.max(0, Number(e.target.value) || 0))}
                   />
                 </div>
-                <span className="pill">{spreadLabel(shots, stepMs)}</span>
+                <span className="pill">{spreadLabel(before, after, stepMs)}</span>
               </>
             ) : null}
           </div>
           {style === "spread" ? (
             <p className="hint dim" style={{ marginTop: 6 }}>
-              Each wallet signs {shots} transactions on consecutive nonces. The early
-              ones revert with <code>NotActive</code> and are meant to — what they buy is
-              a place in the sequencer&apos;s queue on both sides of the boundary. A burned
-              shot costs about 0.0000024 ETH, so {shots - 1} of them across 100 wallets is
-              roughly {(0.0000024 * (shots - 1) * 100).toFixed(5)} ETH. Wallets need gas for
-              every shot; the mint&apos;s own price is only ever charged once.
+              Each wallet signs {before + after + 1} transactions on consecutive nonces and
+              they go a step apart, so you have transactions arriving in every block either
+              side of the start. A block&apos;s timestamp is stamped when the sequencer seals
+              it, so the block that carries the mint is already full of people who arrived
+              <i> before</i> the start — a single volley at the start cannot be in it. The
+              early shots revert with <code>NotActive</code>; that is the price of not knowing
+              where the boundary falls. A burned shot costs about 0.0000024 ETH, so{" "}
+              {before + after} of them across 100 wallets is roughly{" "}
+              {(0.0000024 * (before + after) * 100).toFixed(5)} ETH.
             </p>
           ) : null}
 

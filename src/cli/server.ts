@@ -92,6 +92,7 @@ import { readDrop, runSnipe, waveSize, type RunOptions, type RunResult } from ".
 import { formatMintReport, sendTelegram, type MintedWallet } from "../lib/telegram";
 import { startTelegramBot } from "./telegramBot";
 import { addUpcoming, loadUpcoming, recolorUpcoming, removeUpcoming } from "./upcomingStore";
+import { loadJobs, restoreStatus, saveJobs, type StoredJob, type StoredStatus } from "./jobStore";
 import { buildUpcoming, sortByDate } from "../lib/upcoming";
 import { isPickable, PICKABLE } from "../lib/calendarColor";
 import { enrichDrops, measureBlockRate, readMints, scanPublicDrops } from "./dropScanner";
@@ -235,6 +236,36 @@ interface Job {
 let tunnelUrl: string | null = null;
 
 const jobs: Job[] = [];
+
+/**
+ * Write the pending queue to disk.
+ *
+ * Called after anything that changes what is still to run. Cheap — the queue
+ * is a handful of small records — and the alternative is what this replaces: a
+ * `pm2 restart` between drops silently throwing away a job someone set up
+ * hours earlier.
+ */
+function persistJobs(): void {
+  try {
+    saveJobs(
+      CONFIG_PATH,
+      jobs
+        .filter((j): j is Job & { status: StoredStatus } => j.status === "queued" || j.status === "armed")
+        .map((j) => ({
+          id: j.id,
+          label: j.label,
+          addedAt: j.addedAt,
+          status: j.status,
+          request: j.request,
+          startTime: j.startTime,
+          wallets: j.wallets,
+        })),
+    );
+  } catch (e) {
+    // Never let a disk problem take down a run that is otherwise fine.
+    log(`queue: couldn't save (${e instanceof Error ? e.message : String(e)})`);
+  }
+}
 /** At most one job may be armed/firing — see the nonce note in the header. */
 let activeJobId: string | null = null;
 
@@ -1000,7 +1031,8 @@ function buildRequest(body: Record<string, unknown>): Omit<RunOptions, "keys"> {
     // differs per drop: a contested free mint wants the spread, a quiet one
     // does not need the extra transactions.
     style: body.style === "spread" ? "spread" : "single",
-    shots: typeof body.shots === "number" && body.shots >= 1 ? Math.floor(body.shots) : undefined,
+    before: typeof body.before === "number" && body.before >= 0 ? Math.floor(body.before) : undefined,
+    after: typeof body.after === "number" && body.after >= 0 ? Math.floor(body.after) : undefined,
     stepMs: typeof body.stepMs === "number" && body.stepMs >= 0 ? Math.floor(body.stepMs) : undefined,
     dryRun: body.dryRun !== false,
   };
@@ -1559,6 +1591,7 @@ async function execute(job: Job) {
   const abort = new AbortController();
   job.abort = abort;
   job.status = "armed";
+  persistJobs();
   let keys = loadKeys(CONFIG_PATH, loadConfig(CONFIG_PATH).keysFile);
   if (job.wallets && job.wallets.length > 0) {
     const want = new Set(job.wallets);
@@ -1567,6 +1600,7 @@ async function execute(job: Job) {
       job.status = "error";
       job.error = "none of the wallets chosen for this job are on the server any more";
       activeJobId = null;
+      persistJobs();
       return;
     }
   }
@@ -1620,6 +1654,8 @@ async function execute(job: Job) {
     log(`job ${job.id} failed: ${job.error}`);
   } finally {
     activeJobId = null;
+    // Finished, one way or another — it leaves the file either way.
+    persistJobs();
   }
   await consolidate(job);
   await notify(job);
@@ -1705,6 +1741,48 @@ function tick() {
   if (next) void execute(next);
 }
 setInterval(tick, 1000);
+
+/**
+ * Bring back whatever was still pending when this process last stopped.
+ *
+ * Done before the scheduler's first tick has anything to look at, so a job
+ * whose stage is minutes away is armed on time rather than noticed late.
+ */
+function restoreQueue(): void {
+  const stored = loadJobs(CONFIG_PATH);
+  if (stored.length === 0) return;
+  const now = Date.now();
+  let back = 0;
+  for (const j of stored) {
+    const state = restoreStatus(j, now);
+    jobs.push({
+      id: j.id,
+      label: j.label,
+      addedAt: j.addedAt,
+      status: state.status,
+      request: j.request,
+      startTime: j.startTime,
+      wallets: j.wallets,
+      logs: [],
+      ...(state.status === "error" ? { error: state.error } : {}),
+    });
+    if (state.status === "queued") back++;
+    else log(`queue: job ${j.id} (${j.label}) — ${state.error}`);
+  }
+  persistJobs();
+  const when = (j: StoredJob) =>
+    j.startTime ? new Date(j.startTime * 1000).toISOString() : "start unknown";
+  log(
+    `queue      restored ${back}/${stored.length} pending job(s) from disk` +
+      (back > 0
+        ? ` — next ${stored
+            .filter((j) => j.startTime)
+            .sort((a, b) => (a.startTime ?? 0) - (b.startTime ?? 0))
+            .map(when)[0] ?? "unknown"}`
+        : ""),
+  );
+}
+restoreQueue();
 
 /**
  * Find the address this box is reachable at and, if it has changed, say so in
@@ -2566,6 +2644,7 @@ const server = createServer(async (req, res) => {
         logs: [],
       };
       jobs.push(job);
+      persistJobs();
       log(
         `queued job ${job.id} (${job.label}) for ${request.collection}` +
           (drop ? ` — ${formatEther(BigInt(drop.priceWei))} ETH, ${drop.totalSupply}/${drop.maxSupply} minted` : ""),
@@ -2586,6 +2665,7 @@ const server = createServer(async (req, res) => {
         return;
       }
       const [removed] = jobs.splice(i, 1);
+      persistJobs();
       log(`removed job ${removed.id}`);
       json(res, 200, { removed: removed.id });
       return;
@@ -2599,6 +2679,7 @@ const server = createServer(async (req, res) => {
       }
       job.abort?.abort();
       job.status = "aborted";
+      persistJobs();
       log(`abort requested for job ${job.id}`);
       json(res, 200, jobView(job));
       return;
@@ -2636,6 +2717,7 @@ const server = createServer(async (req, res) => {
         logs: [],
       };
       jobs.push(job);
+      persistJobs();
       json(res, 202, { started: true, id: job.id, dryRun: request.dryRun });
       return;
     }

@@ -6,6 +6,10 @@ dist/
 # Headless snipe runner — never commit real keys or a live config.
 snipe.keys
 snipe.config.json
+# State the server keeps beside the config: the watchlist, the arbitrage
+# database and the pending queue. The last two carry endpoint URLs, and on a
+# paid plan a URL is the API key.
+snipe.config.json.*
 snipe.env
 *.keys
 !*.keys.example

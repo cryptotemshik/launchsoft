@@ -19,6 +19,7 @@
  *
  *   npm run blast:bench
  *   npm run blast:bench -- --sizes 30,50,100,300 --runs 7 --wave 100
+ *   npm run blast:bench -- --live https://sequencer.mainnet.chain.robinhood.com --wallets 100
  *
  * The far end runs in its own process on purpose. Sharing an event loop with
  * the sender makes the sender's own scheduling look like network time, which
@@ -186,7 +187,69 @@ function number(flag: string, fallback: number): number {
   return raw[0];
 }
 
+/**
+ * How many requests a real endpoint takes at once.
+ *
+ * This is the measurement that was missing, and its absence cost a drop.
+ * `blast:bench` fires a hundred concurrent requests at a local server that
+ * accepts them all instantly, and `rpc:bench` measures a real endpoint one
+ * request at a time. Neither asks the question that decides a contested mint:
+ * when a hundred transactions leave this box together, how spread out are they
+ * by the time the far end has taken them?
+ *
+ * On-chain evidence says the answer is "very": a hundred transactions that
+ * left in 78ms came back out of the sequencer over nine blocks and 1.5
+ * seconds. The sequencer admits roughly 350 transactions per block and rotates
+ * between client connections, so a burst does not stay a burst.
+ *
+ * The probe sends `eth_chainId` — the same body the warmer uses. This chain's
+ * sequencer refuses that method, which is fine and even useful: the refusal is
+ * a full round trip, it costs the endpoint almost nothing, and it never
+ * touches a wallet or a transaction.
+ */
+async function probeLive(url: string, count: number): Promise<void> {
+  const ep = parseRpcEndpoints([url]);
+  if (ep.length === 0) throw new Error("--live needs an endpoint URL");
+  console.log(`live probe — ${count} concurrent request(s) to ${ep[0].label}`);
+
+  const warm = await nodeSender.warm(ep, count);
+  console.log(`warmed ${warm.opened}/${warm.wanted} connection(s)`);
+  await new Promise((r) => setTimeout(r, 300));
+
+  const body = JSON.stringify({ jsonrpc: "2.0", method: "eth_chainId", params: [], id: 1 });
+  const t0 = performance.now();
+  const done: number[] = [];
+  let failed = 0;
+  await Promise.all(
+    Array.from({ length: count }, async () => {
+      try {
+        await nodeSender.post(ep[0].url, body);
+      } catch {
+        failed++;
+      }
+      done.push(performance.now() - t0);
+    }),
+  );
+  done.sort((a, b) => a - b);
+  const at = (q: number) => fmt(done[Math.min(done.length - 1, Math.floor((done.length - 1) * q))]);
+  console.log(
+    `first ${fmt(done[0])}ms · p50 ${at(0.5)}ms · p90 ${at(0.9)}ms · last ${fmt(done[done.length - 1])}ms` +
+      `${failed ? ` · ${failed} failed` : ""}`,
+  );
+  console.log(
+    `\nspread between first and last: ${fmt(done[done.length - 1] - done[0])}ms.\n` +
+      `A block on this chain is 100-200ms, so anything above that means one burst\n` +
+      `cannot land in one block however well it is timed — which is the case for\n` +
+      `firing a stream across the boundary rather than a single volley at it.`,
+  );
+}
+
 async function main(): Promise<void> {
+  const liveAt = process.argv.indexOf("--live");
+  if (liveAt !== -1) {
+    await probeLive(process.argv[liveAt + 1] ?? "", number("--wallets", 100));
+    return;
+  }
   const sizes = numbers("--sizes", [22, 30, 50, 75, 100, 150]);
   const runs = number("--runs", 5);
   const endpointCount = number("--endpoints", 3);

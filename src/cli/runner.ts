@@ -47,7 +47,8 @@ import { mapWithLimit, readTransport } from "../lib/rpcRead";
 import { waitUntil } from "../lib/snipeTimer";
 import { envNumber } from "../lib/envNumber";
 import {
-  DEFAULT_SHOTS,
+  DEFAULT_AFTER,
+  DEFAULT_BEFORE,
   DEFAULT_STEP_MS,
   gasNeededWei,
   planFor,
@@ -78,7 +79,9 @@ export interface RunOptions {
    * it costs.
    */
   style?: MintStyle;
-  shots?: number;
+  /** Shots before the start, shots after it, and the gap between them. */
+  before?: number;
+  after?: number;
   stepMs?: number;
   /** Read and plan, but broadcast nothing. */
   dryRun: boolean;
@@ -458,13 +461,14 @@ export async function runSnipe(opts: RunOptions, hooks: RunHooks): Promise<RunRe
   // ── How the shots sit on the clock ──────────────────────────────────────
   const shotPlan = planFor(
     opts.style ?? "single",
-    opts.shots ?? DEFAULT_SHOTS,
+    opts.before ?? DEFAULT_BEFORE,
+    opts.after ?? DEFAULT_AFTER,
     opts.stepMs ?? DEFAULT_STEP_MS,
   );
   if (shotPlan.shots > 1) {
     log(
-      `style      spread — ${shotPlan.shots} shot(s) per wallet at ` +
-        `${shotPlan.offsets.map((o) => `${o > 0 ? "+" : ""}${o}ms`).join(", ")} around the start`,
+      `style      spread — ${shotPlan.shots} shot(s) per wallet, ` +
+        `${shotPlan.offsets[0]}ms to +${shotPlan.offsets[shotPlan.offsets.length - 1]}ms around the start`,
     );
   }
 
