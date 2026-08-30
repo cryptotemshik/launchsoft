@@ -1937,6 +1937,18 @@ button.secondary.link-btn {
 .scan-table {
   table-layout: fixed;
 }
+/* The fixed columns add up to 1054px and the name column takes what is left.
+   Without a floor, a window narrower than that gives the name nothing: the
+   column collapses to zero width, every row loses the one thing that
+   identifies it, and the dates wrap to four lines each. A minimum lets
+   .table-wrap scroll sideways instead, which is what the wrapper is for.
+   Scoped above the card breakpoint: under 640px the table becomes stacked
+   cards, and a minimum width there would put the whole page on a scrollbar. */
+@media (min-width: 641px) {
+  .scan-table {
+    min-width: 1260px;
+  }
+}
 .scan-table .cell-clip {
   overflow: hidden;
 }
