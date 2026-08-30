@@ -3074,6 +3074,26 @@ server.listen(PORT, HOST, () => {
         );
         audit("keys.state", { sealed: false });
       }
+      // Say what the policy will actually enforce, so a typo in the env is a
+      // line in the log now and not a refused withdrawal on a drop day. The
+      // silent version of this already happened: a placeholder pasted into
+      // SNIPE_WITHDRAW_TO was filtered without a word, and the operator
+      // believed it was set.
+      const rawWithdraw = (process.env.SNIPE_WITHDRAW_TO ?? "")
+        .split(",")
+        .map((a) => a.trim())
+        .filter(Boolean);
+      const goodWithdraw = rawWithdraw.filter((a) => /^0x[0-9a-fA-F]{40}$/.test(a));
+      for (const bad of rawWithdraw.filter((a) => !/^0x[0-9a-fA-F]{40}$/.test(a))) {
+        log(`policy     IGNORED "${bad}" in SNIPE_WITHDRAW_TO — not a 0x address`);
+      }
+      const registered = registryView(CONFIG_PATH, Date.now());
+      log(
+        `policy     withdrawals: ${goodWithdraw.length} instant address(es) from the env` +
+          `${cfg0.consolidateTo ? " +consolidateTo" : ""}, ${registered.length} registered` +
+          `${goodWithdraw.length + registered.length + (cfg0.consolidateTo ? 1 : 0) === 0 ? " — NONE: collecting ETH out will refuse until SNIPE_WITHDRAW_TO is set" : ""}` +
+          ` · mint cap ${process.env.SNIPE_POLICY_MAX_MINT_ETH?.trim() || "0.05"} ETH per tx`,
+      );
     } catch (e) {
       log(`keys       could not seal the wallet file: ${e instanceof Error ? e.message : e}`);
     }

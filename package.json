@@ -14,7 +14,8 @@
     "snipe:server": "tsx src/cli/server.ts",
     "rpc:bench": "tsx src/cli/bench.ts",
     "blast:bench": "tsx src/cli/blastBench.ts",
-    "deploy:cf": "npm run build && npx -y wrangler pages deploy"
+    "deploy:cf": "npm run build && npx -y wrangler pages deploy",
+    "keys:rekey": "tsx src/cli/rekey.ts"
   },
   "dependencies": {
     "@fontsource/jetbrains-mono": "^5.3.0",
