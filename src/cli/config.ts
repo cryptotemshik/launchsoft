@@ -10,6 +10,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { normalizePrivateKey } from "../lib/convert";
+import { keystorePassphrase, readKeysText } from "./keystore";
 
 export interface SnipeConfig {
   /** Chain id from the registry (4663 = Robinhood Chain). */
@@ -156,13 +157,12 @@ export function serialiseKeys(entries: KeyEntry[]): string {
 
 export function loadKeyEntries(configPath: string, keysFile: string): KeyEntry[] {
   const abs = keysPath(configPath, keysFile);
-  let text: string;
-  try {
-    text = readFileSync(abs, "utf8");
-  } catch {
-    // A missing file just means "no wallets yet" — the Wallets tab creates it.
-    return [];
-  }
+  // The file may be sealed. `readKeysText` opens it when it is, hands it back
+  // as-is when it is not, and throws rather than pretending there are no
+  // wallets when it cannot — see keystore.ts.
+  const text = readKeysText(abs, keystorePassphrase());
+  // A missing file just means "no wallets yet" — the Wallets tab creates it.
+  if (text === null) return [];
   return parseKeysFile(text, abs);
 }
 

@@ -92,6 +92,12 @@ import { startTelegramBot } from "./telegramBot";
 import { addUpcoming, annotateUpcoming, loadUpcoming, removeUpcoming } from "./upcomingStore";
 import { loadJobs, restoreStatus, saveJobs, type StoredJob, type StoredStatus } from "./jobStore";
 import { indexDbPath, openDropIndex, type DropIndex } from "./dropIndex";
+import {
+  keystorePassphrase,
+  migrateToEncrypted,
+  PASSPHRASE_ENV,
+  writeKeysText,
+} from "./keystore";
 import { coverageHours, indexOnce } from "./dropIndexer";
 import { buildUpcoming, cleanNote, sortByDate } from "../lib/upcoming";
 import { isPickable, PICKABLE } from "../lib/calendarColor";
@@ -1561,8 +1567,10 @@ function saveExtraRpcs(urls: string[]): string[] {
 function writeKeys(entries: KeyEntry[]) {
   const cfg = loadConfig(CONFIG_PATH);
   const abs = keysPath(CONFIG_PATH, cfg.keysFile);
-  // 0600: readable only by the user running the server.
-  writeFileSync(abs, serialiseKeys(entries), { mode: 0o600 });
+  // Sealed when a passphrase is set, in the clear when it is not, and always
+  // through a temporary file and a rename so a crash mid-write cannot leave
+  // half a wallet list. 0600 either way.
+  writeKeysText(abs, serialiseKeys(entries), keystorePassphrase());
 }
 
 /**
@@ -2842,6 +2850,38 @@ server.listen(PORT, HOST, () => {
             `(SNIPE_WAVE_SIZE / SNIPE_WAVE_GAP_MS)`
         : `fires every wallet at every endpoint at once — wave dispatch off (SNIPE_WAVE_SIZE=0)`,
     );
+    /**
+     * Seal the key file, or say plainly that it is not sealed.
+     *
+     * At startup rather than on demand: the wallets have to be readable the
+     * moment a job arms, and finding out then that the passphrase is wrong is
+     * finding out at 17:29:59. Doing it here turns that into a line in the log
+     * on a quiet afternoon.
+     *
+     * A failure is logged and the server carries on. It has not changed
+     * anything — `migrateToEncrypted` proves the round trip before it
+     * overwrites — and a box that refuses to boot is a lost drop, which is a
+     * worse outcome than a file that is still in the clear and says so.
+     */
+    try {
+      const pass = keystorePassphrase();
+      const cfg0 = loadConfig(CONFIG_PATH);
+      const abs = keysPath(CONFIG_PATH, cfg0.keysFile);
+      const r = migrateToEncrypted(abs, pass);
+      if (r.state === "migrated") {
+        log(`keys       encrypted the wallet file just now (${PASSPHRASE_ENV} is set)`);
+      } else if (r.state === "already-encrypted") {
+        log(`keys       wallet file is encrypted on disk`);
+      } else if (r.state === "left-plain") {
+        log(
+          `keys       PLAIN TEXT on disk — anything that can read the file has every wallet. ` +
+            `Set ${PASSPHRASE_ENV} and restart to seal it.`,
+        );
+      }
+    } catch (e) {
+      log(`keys       could not seal the wallet file: ${e instanceof Error ? e.message : e}`);
+    }
+
     if (INDEX_ON) {
       // Opening it can fail — a read-only disk, a database from a newer
       // build — and that has to stay a line in the log rather than a dead
