@@ -2001,6 +2001,10 @@ button.secondary.link-btn {
   min-width: 0;
   padding: 3px 9px;
   font-size: 11px;
+  /* Never shrunk to fit: a flex item under `nowrap` gives up width before it
+     gives up being on one line, and what it gives up is the end of its own
+     label. Overflowing is at least visible; "remov" is not. */
+  flex: none;
 }
 .scan-table .cell-clip {
   overflow: hidden;
@@ -2842,4 +2846,76 @@ button.secondary.link-btn {
   font-family: var(--mono);
   font-size: 9px;
   letter-spacing: 0.08em;
+}
+
+/* ── A person's own marks on a drop ──────────────────────────────────────
+   Everything else in these tables is a fact read off a contract. A colour and
+   a note are the two things nobody can read off one, so they get their own
+   small vocabulary rather than borrowing a column's. */
+
+/* The chosen colour on the row's first cell. On the cell, not the row: under
+   border-collapse a row's border is drawn by its cells anyway, and this keeps
+   it in line with the arrival flash that uses the same edge. */
+.scan-table td.tinted {
+  box-shadow: inset 3px 0 0 var(--cal-ink, transparent);
+}
+
+/* Colour, note, and the one destructive action, at the top of an opened row. */
+.row-note {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 0 12px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+/* The note when it is not being edited: a button that does not look like one,
+   because most rows have no note and a row of empty buttons is noise. */
+.note-read {
+  background: none;
+  border: none;
+  padding: 2px 0;
+  margin: 0;
+  font: inherit;
+  color: var(--text);
+  text-align: left;
+  cursor: text;
+  flex: 1;
+  min-width: 0;
+}
+.note-read:hover .note-text {
+  border-bottom-color: var(--line);
+}
+.note-text {
+  border-bottom: 1px solid transparent;
+}
+.note-edit {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+}
+.note-input {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 13px;
+  padding: 5px 8px;
+}
+.note-btn {
+  padding: 4px 10px !important;
+  font-size: 11px !important;
+  width: auto !important;
+  /* Never squashed by the flex row it sits in: a shrunk button clips its own
+     label, which is how "remove" came to read "remov". */
+  flex: none;
+}
+
+.drawer-note {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
 }

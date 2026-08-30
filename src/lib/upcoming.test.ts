@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   IDLE,
+  MAX_NOTE,
   buildUpcoming,
+  cleanNote,
   formatWhen,
   normaliseTwitter,
   parseWhen,
@@ -312,5 +314,33 @@ describe("buildUpcoming with a contract", () => {
     const a = buildUpcoming({ name: "X", contract: ADDR }, NOW_C);
     const b = buildUpcoming({ name: "X", contract: ADDR.toLowerCase() }, NOW_C);
     expect("mint" in a && "mint" in b && a.mint.contract === b.mint.contract).toBe(true);
+  });
+});
+
+describe("a note on a watched drop", () => {
+  it("keeps what someone typed", () => {
+    expect(cleanNote("  allow-listed, 2 wallets  ")).toBe("allow-listed, 2 wallets");
+  });
+
+  it("treats an empty note as no note", () => {
+    expect(cleanNote("")).toBeUndefined();
+    expect(cleanNote("   ")).toBeUndefined();
+  });
+
+  it("ignores anything that is not text", () => {
+    expect(cleanNote(undefined)).toBeUndefined();
+    expect(cleanNote(42)).toBeUndefined();
+    expect(cleanNote({ note: "hi" })).toBeUndefined();
+  });
+
+  it("flattens newlines and control characters into spaces", () => {
+    // It is one field on a card; a note with its own paragraphs would break
+    // every row it appears in.
+    expect(cleanNote("first\nsecond")).toBe("first second");
+    expect(cleanNote("tab\there")).toBe("tab here");
+  });
+
+  it("caps a note that would fill a disk", () => {
+    expect(cleanNote("x".repeat(MAX_NOTE + 500))).toHaveLength(MAX_NOTE);
   });
 });

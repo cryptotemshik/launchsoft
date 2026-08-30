@@ -233,6 +233,23 @@ export interface DropTableProps {
   /** The last column. The scanner puts snipe there; the watchlist, remove. */
   actions: (d: ScannedDrop) => ReactNode;
   /**
+   * A palette key to paint the row's left edge with.
+   *
+   * The watchlist lets a person colour an entry, and a colour nobody can see
+   * without opening a row is not a colour. Painted on the first cell rather
+   * than the row: a border on a `<tr>` under `border-collapse` is drawn by the
+   * cells anyway, and this way it lines up with the edge flash.
+   */
+  rowTint?: (d: ScannedDrop) => string | undefined;
+  /**
+   * Extra content at the top of an opened row, above the risk breakdown.
+   *
+   * The watchlist puts the colour and the note there. It belongs in the open
+   * row rather than in a column of its own: a note is a sentence, and a
+   * sentence does not fit in a table that already spends 1010px on facts.
+   */
+  detailExtra?: (d: ScannedDrop) => ReactNode;
+  /**
    * Where the collection name should link, or null for a row with nowhere to
    * go. The watchlist holds drops that are still only an account and a
    * rumour: those get their name as text rather than as a link that 404s.
@@ -255,6 +272,8 @@ export default function DropTable({
   desc,
   onSort,
   actions,
+  rowTint,
+  detailExtra,
   linkOf,
 }: DropTableProps) {
   const [openRow, setOpenRow] = useState<string | null>(null);
@@ -356,7 +375,10 @@ export default function DropTable({
                     onClick={() => setOpenRow(open ? null : key)}
                     title="Open the risk breakdown"
                   >
-                    <td data-label="opens">
+                    <td
+                      data-label="opens"
+                      className={rowTint?.(d) ? `tinted cal-c-${rowTint(d)}` : undefined}
+                    >
                       <span className={`cell-name cd ${STATE_CLASS[st]}`}>
                         {st === "live"
                           ? "LIVE"
@@ -622,6 +644,7 @@ export default function DropTable({
                   {open ? (
                     <tr className="detail-row">
                       <td colSpan={11}>
+                        {detailExtra?.(d)}
                         <RiskDetail drop={d} report={report} pulse={rowPulse} meta={info[key]} />
                       </td>
                     </tr>

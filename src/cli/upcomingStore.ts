@@ -82,27 +82,42 @@ export function addUpcoming(
   return { list: next };
 }
 
-/** Remove one by id. Returns what it removed, so the caller can name it. */
 /**
- * Change the colour of one entry, leaving everything else alone.
+ * Change what a person said about one entry, leaving the drop itself alone.
  *
- * A colour is the one field that changes often and means nothing to the drop
- * itself, so it gets its own narrow door rather than a general "save this
- * record" that could quietly overwrite a date typed on a phone.
+ * The colour and the note are the two fields that change often and mean
+ * nothing to the drop: they are somebody's opinion of it. So they get their
+ * own narrow door rather than a general "save this record" that could quietly
+ * overwrite a date typed on a phone.
+ *
+ * A field left out of the patch is left alone, which is what lets the colour
+ * picker and the note box write independently without either clearing the
+ * other. Setting a field to undefined explicitly is how it gets cleared.
  */
-export function recolorUpcoming(
+export interface UpcomingAnnotation {
+  color?: string | undefined;
+  note?: string | undefined;
+}
+
+export function annotateUpcoming(
   configPath: string,
   id: string,
-  color: string | undefined,
+  patch: UpcomingAnnotation,
 ): { updated?: UpcomingMint; list: UpcomingMint[] } {
   const list = loadUpcoming(configPath);
   const found = list.find((m) => m.id === id);
   if (!found) return { list };
-  // "auto" is the absence of a choice, so it is stored as one — an entry that
-  // has been set back to automatic looks exactly like one never coloured.
   const updated: UpcomingMint = { ...found };
-  if (color === undefined || color === "auto") delete updated.color;
-  else updated.color = color;
+  if ("color" in patch) {
+    // "auto" is the absence of a choice, so it is stored as one — an entry set
+    // back to automatic looks exactly like one that was never coloured.
+    if (patch.color === undefined || patch.color === "auto") delete updated.color;
+    else updated.color = patch.color;
+  }
+  if ("note" in patch) {
+    if (patch.note === undefined) delete updated.note;
+    else updated.note = patch.note;
+  }
   const next = list.map((m) => (m.id === id ? updated : m));
   saveUpcoming(configPath, next);
   return { updated, list: next };

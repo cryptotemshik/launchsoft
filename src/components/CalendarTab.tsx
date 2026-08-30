@@ -21,6 +21,8 @@ import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 
 import { formatEther } from "viem";
 import { useRunnerApi } from "../lib/runnerClient";
 import { createTabStore } from "../lib/tabStore";
+import { notifyWatchlistChanged, onWatchlistChanged } from "../lib/watchlistSignal";
+import { ColorPicker, NoteBox } from "./DropNote";
 import {
   dayFraction,
   groupByDay,
@@ -35,7 +37,7 @@ import {
 import type { ScannedDrop } from "../lib/dropScan";
 import type { CollectionInfo } from "../lib/collectionInfo";
 import { seedWatched } from "../lib/watchedStore";
-import { colorClass, COLOR_LABEL, PICKABLE, type Pickable } from "../lib/calendarColor";
+import { colorClass, type Pickable } from "../lib/calendarColor";
 import { twitterUrl } from "../lib/collectionInfo";
 import type { UpcomingMint } from "../lib/upcoming";
 import { openSeaCollectionUrlBySlug } from "../chains";
@@ -109,6 +111,19 @@ const store = createTabStore<CalendarData>(
   },
 );
 
+/**
+ * The other view of this list has written to it — drop what is held.
+ *
+ * A store with a fetcher reads again at once, so a colour picked in one tab is
+ * the colour in the other before you get there. One belonging to a tab nobody
+ * has opened yet simply counts as stale.
+ */
+onWatchlistChanged((source) => {
+  if (source === store) return;
+  store.invalidate();
+  void store.run();
+});
+
 export default function CalendarTab() {
   const { url, setUrl, token, setToken, base, call, save, serverVersion } = useRunnerApi();
   const held = useSyncExternalStore(store.subscribe, store.getState);
@@ -150,6 +165,7 @@ export default function CalendarTab() {
         startsAt: m.at ?? 0,
         supply: m.supply,
         color: m.color,
+        note: m.note,
         twitter: m.twitter ? m.twitter.replace(/^https?:\/\/(www\.)?x\.com\//i, "") : null,
       }));
 
@@ -294,6 +310,33 @@ export default function CalendarTab() {
         method: "PATCH",
         body: JSON.stringify({ color }),
       });
+      notifyWatchlistChanged(store);
+    } catch (e) {
+      store.setError(e instanceof Error ? e.message : String(e));
+      void store.run();
+    }
+  }
+
+  /**
+   * Write the note, the same way a colour is written.
+   *
+   * Shown at once and sent after, for the same reason: a round trip before
+   * the words appear reads as a box that ate them.
+   */
+  async function annotate(eventId: string, note: string) {
+    const listId = ids[eventId];
+    if (!listId) return;
+    store.set({
+      events: store
+        .getState()
+        .data.events.map((e) => (e.id === eventId ? { ...e, note: note || undefined } : e)),
+    });
+    try {
+      await call(`/api/upcoming?id=${encodeURIComponent(listId)}`, {
+        method: "PATCH",
+        body: JSON.stringify({ note }),
+      });
+      notifyWatchlistChanged(store);
     } catch (e) {
       store.setError(e instanceof Error ? e.message : String(e));
       void store.run();
@@ -310,6 +353,7 @@ export default function CalendarTab() {
     }
     try {
       await call(`/api/upcoming?id=${encodeURIComponent(listId)}`, { method: "DELETE" });
+      notifyWatchlistChanged(store);
       setSelected(null);
       // Struck off here as well as on the server. A refresh already in flight
       // was started before the delete and would put the row back, and waiting
@@ -412,6 +456,7 @@ export default function CalendarTab() {
             busy={busy}
             onAdd={async (draft) => {
               await call("/api/upcoming", { method: "POST", body: JSON.stringify(draft) });
+              notifyWatchlistChanged();
               setAdding(false);
               await store.run();
             }}
@@ -550,6 +595,7 @@ export default function CalendarTab() {
           onClose={() => setSelected(null)}
           onHide={() => hide(chosen.id)}
           onRecolor={(c) => void recolor(chosen.id, c)}
+          onNote={ids[chosen.id] ? (n) => annotate(chosen.id, n) : undefined}
           onForget={ids[chosen.id] ? () => void forget(chosen.id) : undefined}
         />
       ) : null}
@@ -572,36 +618,6 @@ export default function CalendarTab() {
  * change and must never be arbitrary text. Six is enough to group a week and
  * few enough to tell apart at a glance.
  */
-function ColorPicker({ value, onPick }: { value: Pickable; onPick: (c: Pickable) => void }) {
-  const [open, setOpen] = useState(false);
-  return (
-    <span className="swatch-wrap">
-      <button
-        className={`swatch swatch-${value}`}
-        title={`colour: ${COLOR_LABEL[value]}`}
-        aria-label={`colour: ${COLOR_LABEL[value]}`}
-        onClick={() => setOpen(!open)}
-      />
-      {open ? (
-        <span className="swatch-menu">
-          {PICKABLE.map((c) => (
-            <button
-              key={c}
-              className={`swatch swatch-${c}${c === value ? " swatch-on" : ""}`}
-              title={COLOR_LABEL[c]}
-              aria-label={COLOR_LABEL[c]}
-              onClick={() => {
-                onPick(c);
-                setOpen(false);
-              }}
-            />
-          ))}
-        </span>
-      ) : null}
-    </span>
-  );
-}
-
 /**
  * Put something on the calendar by hand.
  *
@@ -764,6 +780,7 @@ function EventDrawer({
   onClose,
   onHide,
   onRecolor,
+  onNote,
   onForget,
 }: {
   event: CalendarEvent;
@@ -772,6 +789,8 @@ function EventDrawer({
   onClose: () => void;
   onHide: () => void;
   onRecolor: (c: Pickable) => void;
+  /** Absent for a row the watchlist does not own — nowhere to store a note. */
+  onNote?: (note: string) => Promise<void>;
   /** Absent for a row the watchlist does not own — nothing to strike off. */
   onForget?: () => void;
 }) {
@@ -902,6 +921,12 @@ function EventDrawer({
               auto tells free mints from paid ones
             </span>
           </div>
+          {onNote ? (
+            <div className="drawer-note">
+              <span className="bar-label">NOTE</span>
+              <NoteBox value={e.note} onSave={onNote} />
+            </div>
+          ) : null}
           <button className="secondary" onClick={onHide} title="Just this browser. Nothing is deleted.">
             HIDE FROM THE CALENDAR
           </button>

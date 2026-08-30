@@ -41,7 +41,35 @@ export interface UpcomingMint {
    * anything else falls back to the price-derived default.
    */
   color?: string;
+  /**
+   * Whatever you want to remember about this drop.
+   *
+   * The list already holds what the chain knows. This is for what it does not:
+   * which allow-list you are on, what the founder said in the space, why this
+   * one is worth the wallets and that one is not. Capped and stripped of
+   * control characters because it is rendered as text in three places and
+   * carried through Telegram, and because an unbounded field in a JSON file
+   * that a bot writes is a way to fill a disk.
+   */
+  note?: string;
   addedAt: number;
+}
+
+/** Long enough for a real thought, short enough to stay one line of a card. */
+export const MAX_NOTE = 280;
+
+/**
+ * A note as it will be stored, or undefined for "no note".
+ *
+ * An empty note and a missing one are the same thing, so clearing the box
+ * removes the field rather than storing "".
+ */
+export function cleanNote(raw: unknown): string | undefined {
+  if (typeof raw !== "string") return undefined;
+  // Newlines included: this is one field on a card, and a note with its own
+  // paragraphs would break every row it appears in.
+  const text = raw.replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, MAX_NOTE);
+  return text === "" ? undefined : text;
 }
 
 /** Minutes east of UTC that a bare date typed into the bot is read in. */

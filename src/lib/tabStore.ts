@@ -57,6 +57,14 @@ export interface TabStore<T> {
   setError(message: string | null): void;
   /** True when the held data is old enough to be worth replacing. */
   isStale(nowMs?: number): boolean;
+  /**
+   * Declare what is held out of date, without reading anything.
+   *
+   * For when something else changed the data underneath — another tab writing
+   * to the same list. The rows stay on screen; they are simply no longer
+   * treated as fresh, so the next open reads again.
+   */
+  invalidate(): void;
   /** Start, restart or stop the refresh loop. Survives the tab unmounting. */
   setEvery(secs: number): void;
   /** For tests: forget everything, including the loop. */
@@ -144,6 +152,9 @@ export function createTabStore<T extends object>(
     },
     setError(message) {
       put({ error: message });
+    },
+    invalidate() {
+      put({ at: 0 });
     },
     isStale(nowMs = Date.now()) {
       return state.at === 0 || nowMs - state.at > staleMs;

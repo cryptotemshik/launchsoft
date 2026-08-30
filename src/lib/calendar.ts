@@ -44,6 +44,14 @@ export interface CalendarEvent {
    * matters to you this week.
    */
   color?: string;
+  /**
+   * What a person wrote about this drop.
+   *
+   * Same origin as `color`: it comes from the watchlist entry, never from the
+   * chain. The calendar shows it and can edit it, and the watchlist sees the
+   * same words — they are one annotation on one row.
+   */
+  note?: string;
 }
 
 export type EventStatus = "undated" | "upcoming" | "soon" | "live" | "ended";
@@ -120,8 +128,10 @@ function combine(a: CalendarEvent, b: CalendarEvent): CalendarEvent {
     perWallet: pick(typed.perWallet, read.perWallet),
     twitter: pick(typed.twitter, read.twitter) ?? null,
     risk: pick(read.risk, typed.risk) ?? null,
-    // Colour is a person's choice, so it can only come from the typed side.
+    // A colour and a note are a person's, so they can only come from the
+    // typed side. The chain has no opinion about what matters to you.
     color: typed.color,
+    note: typed.note,
   };
 }
 

@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
   addUpcoming,
   loadUpcoming,
-  recolorUpcoming,
+  annotateUpcoming,
   removeUpcoming,
   saveUpcoming,
 } from "./upcomingStore";
@@ -140,7 +140,7 @@ describe("painting an entry", () => {
   it("stores the colour someone picked", () => {
     const cfg = configIn();
     addUpcoming(cfg, mint());
-    recolorUpcoming(cfg, "aaaa1111", "cyan");
+    annotateUpcoming(cfg, "aaaa1111", { color: "cyan" });
     expect(loadUpcoming(cfg)[0].color).toBe("cyan");
   });
 
@@ -149,14 +149,14 @@ describe("painting an entry", () => {
     // never coloured, or the price-derived default would never come back.
     const cfg = configIn();
     addUpcoming(cfg, mint({ color: "red" }));
-    recolorUpcoming(cfg, "aaaa1111", "auto");
+    annotateUpcoming(cfg, "aaaa1111", { color: "auto" });
     expect(loadUpcoming(cfg)[0]).not.toHaveProperty("color");
   });
 
   it("leaves everything else on the entry alone", () => {
     const cfg = configIn();
     addUpcoming(cfg, mint({ at: 4242, supply: 500, dayOnly: true }));
-    recolorUpcoming(cfg, "aaaa1111", "violet");
+    annotateUpcoming(cfg, "aaaa1111", { color: "violet" });
     const [m] = loadUpcoming(cfg);
     expect({ at: m.at, supply: m.supply, dayOnly: m.dayOnly, name: m.name }).toEqual({
       at: 4242,
@@ -169,7 +169,7 @@ describe("painting an entry", () => {
   it("touches nothing when the id is unknown", () => {
     const cfg = configIn();
     addUpcoming(cfg, mint({ color: "grey" }));
-    const { updated, list } = recolorUpcoming(cfg, "nope", "red");
+    const { updated, list } = annotateUpcoming(cfg, "nope", { color: "red" });
     expect(updated).toBeUndefined();
     expect(list[0].color).toBe("grey");
   });
@@ -178,11 +178,65 @@ describe("painting an entry", () => {
     const cfg = configIn();
     addUpcoming(cfg, mint());
     addUpcoming(cfg, mint({ id: "bbbb2222", name: "Second", twitter: "https://x.com/second" }));
-    recolorUpcoming(cfg, "bbbb2222", "amber");
+    annotateUpcoming(cfg, "bbbb2222", { color: "amber" });
     const list = loadUpcoming(cfg);
     expect(list.map((m) => [m.name, m.color])).toEqual([
       ["Test Drop", undefined],
       ["Second", "amber"],
     ]);
+  });
+});
+
+/** A config with one entry, ready to be annotated. */
+function seed(): string {
+  const cfg = configIn();
+  addUpcoming(cfg, mint({ supply: 1000, at: 1234 }));
+  return cfg;
+}
+
+describe("notes on a watched drop", () => {
+  it("keeps what was written", () => {
+    const cfg = seed();
+    annotateUpcoming(cfg, "aaaa1111", { note: "allow-listed, 2 wallets" });
+    expect(loadUpcoming(cfg).find((m) => m.id === "aaaa1111")?.note).toBe(
+      "allow-listed, 2 wallets",
+    );
+  });
+
+  it("clears the field rather than storing an empty one", () => {
+    const cfg = seed();
+    annotateUpcoming(cfg, "aaaa1111", { note: "something" });
+    annotateUpcoming(cfg, "aaaa1111", { note: undefined });
+    expect("note" in (loadUpcoming(cfg).find((m) => m.id === "aaaa1111") ?? {})).toBe(false);
+  });
+
+  it("leaves the colour alone, and the colour leaves it alone", () => {
+    // The picker and the note box write independently; either clearing the
+    // other would make the second edit look like it undid the first.
+    const cfg = seed();
+    annotateUpcoming(cfg, "aaaa1111", { color: "cyan" });
+    annotateUpcoming(cfg, "aaaa1111", { note: "watch the founder" });
+    const after = loadUpcoming(cfg).find((m) => m.id === "aaaa1111");
+    expect(after?.color).toBe("cyan");
+    expect(after?.note).toBe("watch the founder");
+    annotateUpcoming(cfg, "aaaa1111", { color: "auto" });
+    expect(loadUpcoming(cfg).find((m) => m.id === "aaaa1111")?.note).toBe("watch the founder");
+  });
+
+  it("touches nothing when the patch is empty", () => {
+    const cfg = seed();
+    annotateUpcoming(cfg, "aaaa1111", { color: "red", note: "keep me" });
+    annotateUpcoming(cfg, "aaaa1111", {});
+    const after = loadUpcoming(cfg).find((m) => m.id === "aaaa1111");
+    expect(after?.color).toBe("red");
+    expect(after?.note).toBe("keep me");
+  });
+
+  it("leaves the rest of the entry as it was", () => {
+    const cfg = seed();
+    const before = loadUpcoming(cfg).find((m) => m.id === "aaaa1111");
+    annotateUpcoming(cfg, "aaaa1111", { note: "n" });
+    const after = loadUpcoming(cfg).find((m) => m.id === "aaaa1111");
+    expect({ ...after, note: undefined }).toEqual({ ...before, note: undefined });
   });
 });

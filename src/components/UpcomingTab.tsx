@@ -12,6 +12,9 @@
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { useRunnerApi } from "../lib/runnerClient";
 import { createTabStore } from "../lib/tabStore";
+import { notifyWatchlistChanged, onWatchlistChanged } from "../lib/watchlistSignal";
+import { ColorPicker, NoteBox } from "./DropNote";
+import { isPickable, type Pickable } from "../lib/calendarColor";
 import type { UpcomingMint } from "../lib/upcoming";
 import type { ScannedDrop } from "../lib/dropScan";
 import { larpReport, type LarpReport } from "../lib/larp";
@@ -72,6 +75,19 @@ const store = createTabStore<UpcomingData>(
         : m,
   },
 );
+
+/**
+ * The other view of this list has written to it — drop what is held.
+ *
+ * A store with a fetcher reads again at once, so a colour picked in one tab is
+ * the colour in the other before you get there. One belonging to a tab nobody
+ * has opened yet simply counts as stale.
+ */
+onWatchlistChanged((source) => {
+  if (source === store) return;
+  store.invalidate();
+  void store.run();
+});
 
 export default function UpcomingTab() {
   const { url, setUrl, token, setToken, base, call, save, serverVersion } = useRunnerApi();
@@ -202,6 +218,7 @@ export default function UpcomingTab() {
         body: JSON.stringify(draft),
       })) as unknown as { upcoming?: UpcomingMint[] };
       store.set({ list: Array.isArray(r.upcoming) ? r.upcoming : [] });
+      notifyWatchlistChanged(store);
       setDraft({ name: "", twitter: "", contract: "", supply: "", when: "" });
       setAdding(false);
       // The row is on the list but has no stage or handle behind it yet, and
@@ -309,6 +326,40 @@ export default function UpcomingTab() {
     return () => clearInterval(t);
   }, []);
 
+  /**
+   * Write what a person thinks about a row: its colour, or its note.
+   *
+   * Optimistic — the swatch moves and the note appears at once, and the write
+   * follows. Waiting for a round trip to watch a colour change would make the
+   * picker feel broken; a failed write shows up as red text and the next read
+   * puts the row back.
+   */
+  const annotate = useCallback(
+    async (m: UpcomingMint, patch: { color?: Pickable; note?: string }) => {
+      const applied: Partial<UpcomingMint> = {};
+      if (patch.color !== undefined) {
+        applied.color = patch.color === "auto" ? undefined : patch.color;
+      }
+      if (patch.note !== undefined) applied.note = patch.note || undefined;
+      store.set({
+        list: (store.getState().data.list ?? []).map((x) =>
+          x.id === m.id ? { ...x, ...applied } : x,
+        ),
+      });
+      try {
+        await call(`/api/upcoming?id=${encodeURIComponent(m.id)}`, {
+          method: "PATCH",
+          body: JSON.stringify(patch),
+        });
+        notifyWatchlistChanged(store);
+      } catch (e) {
+        store.setError(e instanceof Error ? e.message : String(e));
+        void store.run();
+      }
+    },
+    [call],
+  );
+
   async function remove(m: UpcomingMint) {
     if (!confirm(`Remove ${m.name} from the list?`)) return;
     try {
@@ -316,6 +367,7 @@ export default function UpcomingTab() {
         method: "DELETE",
       })) as unknown as { upcoming?: UpcomingMint[] };
       if (Array.isArray(r.upcoming)) store.set({ list: r.upcoming });
+      notifyWatchlistChanged(store);
     } catch (e) {
       store.setError(e instanceof Error ? e.message : String(e));
     }
@@ -492,25 +544,39 @@ export default function UpcomingTab() {
             linkOf={(d) =>
               isReal(d.contract) ? openSeaCollectionUrlBySlug(slug, d.contract) : null
             }
-            actions={(d) => (
-              <>
-                {isReal(d.contract) ? (
-                  <SnipeButton contract={d.contract} />
-                ) : null}
-                <button
-                  className="secondary"
-                  style={{ padding: "2px 10px", fontSize: 11, width: "auto" }}
-                  disabled={busy}
-                  onClick={(ev) => {
-                    ev.stopPropagation();
-                    const m = entryFor(d.contract);
-                    if (m) void remove(m);
-                  }}
-                >
-                  remove
-                </button>
-              </>
-            )}
+            rowTint={(d) => {
+              const m = entryFor(d.contract);
+              return isPickable(m?.color) ? m.color : undefined;
+            }}
+            detailExtra={(d) => {
+              const m = entryFor(d.contract);
+              if (!m) return null;
+              return (
+                <div className="row-note">
+                  <ColorPicker
+                    value={isPickable(m.color) ? m.color : "auto"}
+                    onPick={(c) => void annotate(m, { color: c })}
+                  />
+                  <NoteBox value={m.note} onSave={(note) => annotate(m, { note })} />
+                  {/* Removal lives here rather than in the row.
+                      Two words do not fit the 132px the actions column has —
+                      "remove" was being clipped mid-letter — and the one
+                      action that loses data is better a click in than a
+                      mis-tap away. */}
+                  <button
+                    className="secondary danger-btn note-btn"
+                    disabled={busy}
+                    onClick={(ev) => {
+                      ev.stopPropagation();
+                      void remove(m);
+                    }}
+                  >
+                    remove
+                  </button>
+                </div>
+              );
+            }}
+            actions={(d) => (isReal(d.contract) ? <SnipeButton contract={d.contract} /> : null)}
           />
         ) : null}
 

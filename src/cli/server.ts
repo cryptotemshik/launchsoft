@@ -89,11 +89,11 @@ import {
 import { readDrop, runSnipe, waveSize, type RunOptions, type RunResult } from "./runner";
 import { formatMintReport, sendTelegram, type MintedWallet } from "../lib/telegram";
 import { startTelegramBot } from "./telegramBot";
-import { addUpcoming, loadUpcoming, recolorUpcoming, removeUpcoming } from "./upcomingStore";
+import { addUpcoming, annotateUpcoming, loadUpcoming, removeUpcoming } from "./upcomingStore";
 import { loadJobs, restoreStatus, saveJobs, type StoredJob, type StoredStatus } from "./jobStore";
 import { indexDbPath, openDropIndex, type DropIndex } from "./dropIndex";
 import { coverageHours, indexOnce } from "./dropIndexer";
-import { buildUpcoming, sortByDate } from "../lib/upcoming";
+import { buildUpcoming, cleanNote, sortByDate } from "../lib/upcoming";
 import { isPickable, PICKABLE } from "../lib/calendarColor";
 import { DEFAULT_AFTER, DEFAULT_BEFORE, DEFAULT_STEP_MS, planFor } from "../lib/spread";
 import { enrichDrops, measureBlockRate, readMints, scanPublicDrops } from "./dropScanner";
@@ -2342,7 +2342,12 @@ const server = createServer(async (req, res) => {
         json(res, 400, { error: `color must be one of ${PICKABLE.join(", ")}` });
         return;
       }
-      const { updated, list } = recolorUpcoming(CONFIG_PATH, id, wanted as string | undefined);
+      // Only what the body actually carries is touched, so the colour picker
+      // and the note box can write without either clearing the other.
+      const patch: { color?: string | undefined; note?: string | undefined } = {};
+      if ("color" in body) patch.color = wanted as string | undefined;
+      if ("note" in body) patch.note = cleanNote(body.note);
+      const { updated, list } = annotateUpcoming(CONFIG_PATH, id, patch);
       json(res, updated ? 200 : 404, {
         updated,
         upcoming: sortByDate(list),
