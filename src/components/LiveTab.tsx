@@ -429,7 +429,7 @@ export default function LiveTab() {
                   return (
                     <tr
                       key={r.contract}
-                      className={`project-row${justIn.has(r.contract.toLowerCase()) ? " feed-row" : ""}`}
+                      className={`project-row${justIn.has(r.contract.toLowerCase()) ? " row-just-in" : ""}`}
                     >
                       <td data-label="collection" className="cell-clip">
                         <a

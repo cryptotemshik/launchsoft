@@ -352,7 +352,7 @@ export default function DropTable({
                 return (
                   <Fragment key={d.contract}>
                   <tr
-                    className={`project-row${justIn?.has(key) ? " feed-row" : ""}${open ? " row-open" : ""}`}
+                    className={`project-row${justIn?.has(key) ? " row-just-in" : ""}${open ? " row-open" : ""}`}
                     onClick={() => setOpenRow(open ? null : key)}
                     title="Open the risk breakdown"
                   >

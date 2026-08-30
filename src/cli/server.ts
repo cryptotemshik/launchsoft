@@ -886,12 +886,18 @@ async function startScan(hours: number): Promise<Record<string, unknown>> {
       behind < blocksForHours(INCREMENTAL_LIMIT_HOURS, blocksPerHour);
 
     // The index has already read these blocks, so answering from it costs one
-    // query against a local file instead of millions of blocks of logs. Only
-    // when it reaches back far enough — a caller asking for thirty days while
-    // the walk has reached six gets the real read rather than a short answer
-    // dressed up as a long one.
+    // query against a local file instead of millions of blocks of logs.
+    //
+    // It answers when it reaches far enough. It also answers when it does not,
+    // provided the only alternative is a read that cannot finish: live scans
+    // are capped at MAX_SCAN_HOURS because a longer one does not come back
+    // through a tunnel, so a fourteen-day window against an index eight days
+    // deep used to fall through to a twelve-million-block log read and hang.
+    // A short answer that says how short it is beats a spinner that never
+    // resolves — `indexHours` is what it says it with.
     const covered = dropIndex ? coverageHours(dropIndex, tip, blocksPerHour) : null;
-    if (dropIndex && covered !== null && covered >= hours) {
+    const beyondLiveRead = hours > MAX_SCAN_HOURS;
+    if (dropIndex && covered !== null && covered > 0 && (covered >= hours || beyondLiveRead)) {
       const drops = dropIndex.sinceBlock(Number(windowFrom));
       for (const d of drops) {
         creators.remember({ contract: d.contract, name: d.name, startTime: d.startTime, owner: d.owner });
@@ -932,7 +938,10 @@ async function startScan(hours: number): Promise<Record<string, unknown>> {
         tookMs: Date.now() - started,
       };
       scanCache.set(hours, { at: Date.now(), body });
-      log(`scan: ${hours}h from the index · ${drops.length} collections · ${body.tookMs}ms`);
+      log(
+        `scan: ${hours}h from the index · ${drops.length} collections · ${body.tookMs}ms` +
+          (covered < hours ? ` · index only reaches ${Math.round(covered)}h so far` : ""),
+      );
       return body as Record<string, unknown>;
     }
 

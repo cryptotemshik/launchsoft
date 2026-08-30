@@ -45,10 +45,15 @@ import {
  * How far back a scan may look.
  *
  * The last two only work against a server that keeps a drop index: reading
- * fourteen or thirty days of logs on demand takes longer than a tunnel allows
- * a request. With the index the reading has already happened, so they cost the
+ * two or three weeks of logs on demand takes longer than a tunnel allows a
+ * request. With the index the reading has already happened, so they cost the
  * same as any other window — and against an older server they simply come back
  * clamped to a week, which is what that server can do.
+ *
+ * 21d rather than 30d. The index holds thirty days, but a thirty-day answer is
+ * around 52,000 collections in one response and the cap that keeps it from
+ * being a ten-megabyte download would throw a third of them away regardless.
+ * Three weeks is the longest window that arrives whole.
  */
 const WINDOWS = [
   { hours: 6, label: "6h" },
@@ -56,7 +61,7 @@ const WINDOWS = [
   { hours: 72, label: "3d" },
   { hours: 168, label: "7d" },
   { hours: 336, label: "14d" },
-  { hours: 720, label: "30d" },
+  { hours: 504, label: "21d" },
 ] as const;
 
 /**
@@ -559,23 +564,33 @@ export default function ScannerTab() {
                 {view?.incremental ? " · incremental" : ""}
               </span>
             ) : null}
-            {view ? (
+            {view ? (() => {
+              /* The index is still walking backwards when it is young, so a
+                 21d question can get an 8d answer. Saying "indexed" and
+                 nothing else would make a short answer look like a full one,
+                 which is the one thing a scanner must never do. */
+              const reach = Math.floor((view.indexHours ?? 0) / 24);
+              const short = view.source === "index" && (view.indexHours ?? 0) + 1 < view.hours;
+              return (
               <span
-                className="pill ok"
+                className={short ? "pill warn" : "pill ok"}
                 title={
                   view.source === "index"
-                    ? `Answered from the server's index, which reaches ${Math.round((view.indexHours ?? 0) / 24)} day(s) back. No chain reading happened for this.`
+                    ? short
+                      ? `The index only reaches ${reach} day(s) back so far — it fills at about a day of history a minute. These are the drops from that much of the ${Math.round(view.hours / 24)}-day window, not all of it.`
+                      : `Answered from the server's index, which reaches ${reach} day(s) back. No chain reading happened for this.`
                     : "Read from the chain for this request."
                 }
               >
                 {num(view.collections)} found · {num(view.enriched)} read ·{" "}
                 {((view.tookMs ?? 0) / 1000).toFixed(1)}s
-                {view.source === "index" ? " · indexed" : ""}
+                {view.source === "index" ? (short ? ` · indexed ${reach}d of ${Math.round(view.hours / 24)}d` : " · indexed") : ""}
                 {view.cachedAt
                   ? ` · ${Math.max(0, Math.round((Date.now() - view.cachedAt) / 1000))}s ago`
                   : ""}
               </span>
-            ) : null}
+              );
+            })() : null}
             {view?.readRpc ? (
               <span
                 className={view.publicRpc || view.readRpcNote ? "pill warn" : "pill"}

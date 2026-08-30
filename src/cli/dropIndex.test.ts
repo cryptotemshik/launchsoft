@@ -63,17 +63,31 @@ describe("keeping drops on disk", () => {
     expect(back.seenAt).toBe(2);
   });
 
-  it("returns soonest first", () => {
+  it("returns the most recently configured first", () => {
     db = open();
     db.put(
       [
-        drop({ contract: "0x0000000000000000000000000000000000000003", startTime: 3000 }),
-        drop({ contract: "0x0000000000000000000000000000000000000001", startTime: 1000 }),
-        drop({ contract: "0x0000000000000000000000000000000000000002", startTime: 2000 }),
+        drop({ contract: "0x0000000000000000000000000000000000000003", block: 300 }),
+        drop({ contract: "0x0000000000000000000000000000000000000001", block: 100 }),
+        drop({ contract: "0x0000000000000000000000000000000000000002", block: 200 }),
       ],
       1,
     );
-    expect(db.sinceBlock(0).map((d) => d.startTime)).toEqual([1000, 2000, 3000]);
+    expect(db.sinceBlock(0).map((d) => d.block)).toEqual([300, 200, 100]);
+  });
+
+  it("gives up its oldest rows to the limit, never its newest", () => {
+    // Thirty days is far more rows than the cap, so something is always left
+    // out. Ordered the other way it was the drops opening tomorrow — the only
+    // part anyone opens the scanner for.
+    db = open();
+    db.put(
+      Array.from({ length: 5 }, (_, i) =>
+        drop({ contract: `0x${String(i).padStart(40, "0")}`, block: 100 + i }),
+      ),
+      1,
+    );
+    expect(db.sinceBlock(0, 2).map((d) => d.block)).toEqual([104, 103]);
   });
 
   it("selects by the block a stage was configured in, not by when it opens", () => {

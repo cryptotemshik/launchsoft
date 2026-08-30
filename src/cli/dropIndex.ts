@@ -29,11 +29,19 @@ export interface DropIndex {
   /** Insert or refresh a batch, in one transaction. */
   put(drops: readonly ScannedDrop[], at: number): void;
   /**
-   * Drops whose stage was last configured at or after `fromBlock`.
+   * Drops whose stage was last configured at or after `fromBlock`, newest
+   * first.
    *
    * By block rather than by start time, because that is what a scan window
    * means: "collections someone touched in the last N hours". A drop
    * configured today for next month belongs in today's scan.
+   *
+   * Newest first because of the limit. Thirty days is around 52,000 rows and
+   * the cap is 20,000, so something has to be left out — and ordered the
+   * other way the rows left out were the recent ones. A thirty-day scan then
+   * answered with drops from thirty to nineteen days ago and silently omitted
+   * everything opening tomorrow, which is the only part anyone opens the
+   * scanner for. The caller sorts for display anyway.
    */
   sinceBlock(fromBlock: number, limit?: number): IndexedDrop[];
   /** How many rows are held. */
@@ -94,7 +102,7 @@ export function openDropIndex(path: string): DropIndex {
       seen_at = excluded.seen_at
   `);
   const selectSince = db.prepare(
-    "SELECT * FROM drops WHERE block >= ? ORDER BY start_time ASC LIMIT ?",
+    "SELECT * FROM drops WHERE block >= ? ORDER BY block DESC LIMIT ?",
   );
   const countAll = db.prepare("SELECT COUNT(*) AS n FROM drops");
   const deleteBefore = db.prepare("DELETE FROM drops WHERE start_time < ?");

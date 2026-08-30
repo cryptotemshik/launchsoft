@@ -996,11 +996,31 @@ tr.project-detail td {
 }
 
 /* ── Micro-animations ────────────────────────────────────────────────────── */
-/* A new feed row slides down 8px and flashes its left edge green for 1.2s. */
-.feed-row {
+/* A new row slides down 8px and flashes its left edge green for 1.2s. */
+
+/* A table row the last scan did not have.
+ *
+ * Its own class, because the name it used to share — .feed-row — belongs to
+ * the activity list further down this file, and that one is `display: flex`.
+ * A table row given `display: flex` stops being a table row: its cells become
+ * blocks, the colgroup stops applying to them, and the row shrinks to the
+ * first column's width while the header keeps the full 1204px. That is what
+ * the scanner did to every row a refresh turned up — a handful at 24h, and
+ * every row at 14d, where the whole table came apart.
+ *
+ * The flash hangs off the first cell rather than the row. A ::before on a
+ * <tr> has nowhere to live: the table wraps it in an anonymous cell, which is
+ * a twelfth column the colgroup says nothing about, so it takes its width
+ * from the one flexible column — the collection name, down from 190px to 95 —
+ * and pushes the table past its wrapper. A cell can hold a pseudo-element
+ * without inventing a column. */
+.row-just-in {
   animation: feedIn 0.3s cubic-bezier(0.16, 1, 0.3, 1) backwards;
+}
+.row-just-in > td:first-child {
   position: relative;
 }
+.row-just-in > td:first-child::before,
 .feed-row::before {
   content: "";
   position: absolute;
@@ -1245,6 +1265,9 @@ tr.project-detail td {
 }
 .feed-row {
   display: flex;
+  /* Anchors the green edge flash above. It used to come from the shared
+     .feed-row animation block, which is now the table's own .row-just-in. */
+  position: relative;
   align-items: center;
   gap: 12px;
   padding: 10px 14px;
