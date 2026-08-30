@@ -131,9 +131,3 @@ export const RadarIcon = (p: SVGProps<SVGSVGElement>) => (
   </svg>
 );
 
-/** Two prices for one thing — the arbitrage tab. */
-export const ScalesIcon = (p: SVGProps<SVGSVGElement>) => (
-  <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.4" {...p}>
-    <path d="M8 2v12M4 14h8M3 6h10M3 6 1 10.5h4L3 6Zm10 0-2 4.5h4L13 6Z" />
-  </svg>
-);

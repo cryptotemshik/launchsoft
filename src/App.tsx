@@ -4,7 +4,6 @@ import ConnectBar from "./components/ConnectBar";
 import DashboardTab from "./components/DashboardTab";
 import UpcomingTab from "./components/UpcomingTab";
 import ScannerTab from "./components/ScannerTab";
-import ArbitrageTab from "./components/ArbitrageTab";
 import LiveTab from "./components/LiveTab";
 import CalendarTab from "./components/CalendarTab";
 import LaunchTab from "./components/LaunchTab";
@@ -31,7 +30,6 @@ import {
   PulseIcon,
   RocketIcon,
   WalletIcon,
-  ScalesIcon,
 } from "./components/icons";
 
 type Tab =
@@ -47,7 +45,7 @@ type Tab =
   | "scanner"
   | "live"
   | "calendar"
-  | "arbitrage";
+;
 
 const TAB_ICON = {
   launch: RocketIcon,
@@ -62,7 +60,6 @@ const TAB_ICON = {
   scanner: RadarIcon,
   live: ActivityIcon,
   calendar: CalendarGridIcon,
-  arbitrage: ScalesIcon,
 } as const;
 
 export default function App() {
@@ -110,7 +107,6 @@ export default function App() {
           ["live", "LIVE"],
           ["calendar", "CALENDAR"],
           ["upcoming", "WATCHLIST"],
-          ["arbitrage", "ARBITRAGE"],
         ] as const).map(([t, label]) => {
           const Icon = TAB_ICON[t];
           return (
@@ -212,7 +208,6 @@ export default function App() {
           there. */}
       {tab === "upcoming" ? <UpcomingTab /> : null}
       {tab === "scanner" ? <ScannerTab /> : null}
-      {tab === "arbitrage" ? <ArbitrageTab /> : null}
       {tab === "calendar" ? <CalendarTab /> : null}
       {tab === "live" ? <LiveTab /> : null}
       <div className="footer">

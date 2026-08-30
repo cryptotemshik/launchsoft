@@ -37,8 +37,6 @@ import { privateKeyToAccount } from "viem/accounts";
 import { collect, disperse } from "./funding";
 import { scanChain } from "./holdings";
 import { lookupCollections } from "./collectionLookup";
-import { arbDbPath, openArbStore, type ArbStore } from "./arbStore";
-import { watchOnce } from "./arbWatcher";
 import { pulseByCollection, type MintPulse } from "../lib/mintPulse";
 import { CreatorIndex } from "../lib/creatorIndex";
 import { SEADROP } from "../lib/dropScan";
@@ -631,74 +629,6 @@ const creators = new CreatorIndex();
 
 const PULSE_HOURS = 1;
 
-/**
- * Arbitrage observation.
- *
- * Off unless SNIPE_ARB=1. It executes nothing and holds no keys — it reads
- * completed Seaport fills and records what spread was there to be taken — but
- * it is still a second reader on the chain, and a box that only snipes should
- * not pay for it.
- *
- * The defaults come from three hours of measured traffic rather than taste:
- * the median spread is around 0.0004 ETH, a 0.001 floor keeps 93% of the
- * money while dropping more than half the noise, and gas for a two-leg
- * execution is 0.0000175 ETH — small enough that it never decides anything.
- */
-const ARB_ON = process.env.SNIPE_ARB === "1";
-const ARB_POLL_MS = envNumber(process.env.SNIPE_ARB_POLL_MS, 30_000, 1);
-const ARB_MIN_PROFIT = process.env.SNIPE_ARB_MIN_PROFIT ?? "0.001";
-const ARB_MAX_PAID = process.env.SNIPE_ARB_MAX_PAID ?? "0.3";
-/** Fifteen minutes of this chain — how long a bid is taken to still stand. */
-const ARB_WINDOW_MIN = envNumber(process.env.SNIPE_ARB_WINDOW_MIN, 15, 1);
-/** How much history a first run reaches back for, so the page is not empty. */
-const ARB_BACKFILL_HOURS = envNumber(process.env.SNIPE_ARB_BACKFILL_HOURS, 6, 1);
-
-let arbStore: ArbStore | null = null;
-/** Why there is no store, when the answer is not simply "switched off". */
-let arbWhy: string | null = null;
-let arbLast: { at: number; note: string } | null = null;
-
-function arbOptions(blocksPerHour: number) {
-  return {
-    windowBlocks: Math.round((blocksPerHour / 60) * ARB_WINDOW_MIN),
-    gasWei: parseEther("0.0000175"),
-    minProfitWei: parseEther(ARB_MIN_PROFIT as `${number}`),
-    maxPaidWei: parseEther(ARB_MAX_PAID as `${number}`),
-  };
-}
-
-/**
- * One pass of the watcher, then schedule the next.
- *
- * Deliberately serial: a second pass while the first is still reading would
- * re-read the same blocks and fight over the same rows for nothing.
- */
-async function arbTick(): Promise<void> {
-  try {
-    const cfg = loadConfig(CONFIG_PATH);
-    const info = getChainInfo(cfg.chainId);
-    if (!info || !arbStore) return;
-    const client = makeReadClient(info.chain, scanRpcs(cfg));
-    const perHour = blockRate?.perHour ?? 35_600;
-    const r = await watchOnce(client as never, arbStore, {
-      ...arbOptions(perHour),
-      backfillBlocks: BigInt(Math.round(perHour * ARB_BACKFILL_HOURS)),
-    });
-    if (r) {
-      arbLast = {
-        at: Date.now(),
-        note: `${r.fills} fills · ${r.stored} new · ${r.tookMs}ms`,
-      };
-      if (r.stored > 0) {
-        log(`arb: blocks ${r.fromBlock}-${r.toBlock} · ${r.fills} fills · ${r.stored} opportunities`);
-      }
-    }
-  } catch (e) {
-    arbLast = { at: Date.now(), note: e instanceof Error ? e.message.split("\n")[0] : String(e) };
-  } finally {
-    setTimeout(() => void arbTick(), ARB_POLL_MS);
-  }
-}
 const PULSE_TTL_MS = 30_000;
 /**
  * The windows the live feed offers, in minutes.
@@ -2738,51 +2668,6 @@ const server = createServer(async (req, res) => {
      * the per-collection roll-up and the log all come from the same table, and
      * three requests for one table is three chances for them to disagree.
      */
-    if (url.pathname === "/api/arb" && req.method === "GET") {
-      if (!arbStore) {
-        json(res, 200, {
-          enabled: false,
-          why:
-            arbWhy ??
-            (ARB_ON
-              ? "starting up — the database has not opened yet"
-              : "set SNIPE_ARB=1 in snipe.env and restart to start observing"),
-        });
-        return;
-      }
-      const now = Math.floor(Date.now() / 1000);
-      const day = 86_400;
-      const collection = url.searchParams.get("collection") ?? undefined;
-      const limit = Math.min(500, Math.max(1, Number(url.searchParams.get("limit") ?? 200) || 200));
-      const cfg = loadConfig(CONFIG_PATH);
-      const info = getChainInfo(cfg.chainId);
-      json(res, 200, {
-        enabled: true,
-        apiVersion: API_VERSION,
-        /** Observation only — the panel must never imply a trade happened. */
-        mode: "SHADOW",
-        settings: {
-          minProfitEth: ARB_MIN_PROFIT,
-          maxPaidEth: ARB_MAX_PAID,
-          windowMinutes: ARB_WINDOW_MIN,
-          pollMs: ARB_POLL_MS,
-          backfillHours: ARB_BACKFILL_HOURS,
-        },
-        lastPass: arbLast,
-        lastBlock: Number(arbStore.getState("lastBlock") ?? 0),
-        today: arbStore.totals(now - day),
-        week: arbStore.totals(now - 7 * day),
-        all: arbStore.totals(0),
-        daily: arbStore.daily(14),
-        hourly: arbStore.hourly(24),
-        collections: arbStore.byCollection(now - 7 * day, 30),
-        recent: arbStore.recent(limit, collection),
-        explorerUrl: info?.explorerUrl,
-        openSeaSlug: info?.openSeaSlug,
-        now,
-      });
-      return;
-    }
 
     json(res, 404, { error: "not found" });
   } catch (e) {
@@ -2814,27 +2699,6 @@ server.listen(PORT, HOST, () => {
             `(SNIPE_WAVE_SIZE / SNIPE_WAVE_GAP_MS)`
         : `fires every wallet at every endpoint at once — wave dispatch off (SNIPE_WAVE_SIZE=0)`,
     );
-    if (ARB_ON) {
-      // Opening it can fail — the driver is a native module that a plain
-      // `git pull` does not install — and that must stay a line in the log
-      // rather than a dead server. Everything else here works without it.
-      void openArbStore(arbDbPath(CONFIG_PATH))
-        .then((store) => {
-          arbStore = store;
-          log(
-            `arbitrage watch ON — observing only, no keys, no transactions · ` +
-              `min profit ${ARB_MIN_PROFIT} ETH · max buy ${ARB_MAX_PAID} ETH · ` +
-              `reaching ${ARB_BACKFILL_HOURS}h back on first run`,
-          );
-          setTimeout(() => void arbTick(), 2_000);
-        })
-        .catch((e: unknown) => {
-          const why = e instanceof Error ? e.message.split("\n")[0] : String(e);
-          arbWhy = `could not open its database (${why}) — run "npm i" in the repo, then restart`;
-          log(`arbitrage watch OFF — could not open its database: ${why}`);
-          log(`arbitrage watch OFF — run "npm i" in this directory, then restart`);
-        });
-    }
     if (MINT_ENV_RPCS.length > 0) {
       log(`arms and mints through ${uniq(mintRpcs(cfg).map(rpcHost)).join(", ")} — kept to itself`);
     }
