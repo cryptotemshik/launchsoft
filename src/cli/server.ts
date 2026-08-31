@@ -27,7 +27,7 @@
  */
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { timingSafeEqual, randomUUID } from "node:crypto";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync, renameSync as renameSyncNode } from "node:fs";
 import { resolve } from "node:path";
 import { execFile } from "node:child_process";
 import * as os from "node:os";
@@ -94,6 +94,18 @@ import { audit as auditLine, type AuditEvent } from "./audit";
 import { judgeTransaction, type PolicyContext } from "./signPolicy";
 import { connectSigner, makeInProcessSigner, type Signer } from "./signer";
 import { loadAddressBook, writeAddressBook, type WalletRef } from "./addressBook";
+import {
+  createChallenge,
+  endSession,
+  exportSessions,
+  importSessions,
+  isAdmin,
+  sessionOf,
+  sweepExpired,
+  verifyLogin,
+  type Session,
+} from "./auth";
+
 import {
   MATURE_MS,
   maturedAddresses,
@@ -300,6 +312,39 @@ function tokenOk(header: string | undefined): boolean {
   // timingSafeEqual throws on length mismatch, so equalise first.
   if (a.length !== b.length) return false;
   return timingSafeEqual(a, b);
+}
+
+/**
+ * Sessions on disk, so a restart does not sign everyone out.
+ *
+ * Beside the config like the queue. Only live sessions are kept; a nonce is
+ * too short-lived to be worth persisting.
+ */
+function sessionsPath(): string {
+  return `${resolve(CONFIG_PATH)}.sessions.json`;
+}
+function loadSessionsFromDisk(): void {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(sessionsPath(), "utf8"));
+    if (Array.isArray(parsed)) importSessions(parsed as [string, Session][]);
+  } catch {
+    /* none yet, or unreadable — a fresh start just means everyone logs in again */
+  }
+}
+function saveSessions(): void {
+  try {
+    const tmp = `${sessionsPath()}.tmp`;
+    writeFileSync(tmp, `${JSON.stringify(exportSessions(), null, 2)}\n`, { mode: 0o600 });
+    renameSyncNode(tmp, sessionsPath());
+  } catch (e) {
+    log(`sessions: couldn't save (${e instanceof Error ? e.message : String(e)})`);
+  }
+}
+
+/** The session behind a request's bearer token, or null. */
+function requestSession(req: IncomingMessage): Session | null {
+  const token = (req.headers.authorization ?? "").replace(/^Bearer\s+/i, "");
+  return sessionOf(token);
 }
 
 function cors(req: IncomingMessage, res: ServerResponse) {
@@ -2074,6 +2119,9 @@ await resolveKeystorePassphrase().catch((e) => {
   console.error(`keystore: could not resolve the passphrase from AWS — ${e instanceof Error ? e.message : e}`);
   process.exit(1);
 });
+loadSessionsFromDisk();
+// Expired nonces and sessions cost nothing to hold but should not accumulate.
+setInterval(() => sweepExpired(), 10 * 60 * 1000).unref?.();
 restoreQueue();
 
 /**
@@ -2139,6 +2187,55 @@ const server = createServer(async (req, res) => {
   // Unauthenticated liveness probe — says nothing about the wallets.
   if (url.pathname === "/api/ping") {
     json(res, 200, { ok: true, service: "launchpad-snipe", apiVersion: API_VERSION });
+    return;
+  }
+
+  // ── Account login: public, because it is how you get a session ──────────
+  // These sit before the SNIPE_TOKEN gate. The operator token still opens
+  // everything as before; sessions are the new, per-wallet identity that the
+  // per-user features will hang off. `verify` proves the wallet by signature;
+  // `challenge` hands out what to sign; `me` and `logout` read the session
+  // from the bearer token.
+  if (url.pathname === "/api/auth/challenge" && req.method === "POST") {
+    try {
+      const body = await readBody(req);
+      const address = typeof body.address === "string" ? body.address : "";
+      json(res, 200, createChallenge(address));
+    } catch (e) {
+      json(res, 400, { error: e instanceof Error ? e.message : String(e) });
+    }
+    return;
+  }
+  if (url.pathname === "/api/auth/verify" && req.method === "POST") {
+    try {
+      const body = await readBody(req);
+      const { token, session } = await verifyLogin({
+        address: typeof body.address === "string" ? body.address : "",
+        nonce: typeof body.nonce === "string" ? body.nonce : "",
+        signature: (typeof body.signature === "string" ? body.signature : "0x") as `0x${string}`,
+      });
+      saveSessions();
+      audit("auth.login", { address: session.address });
+      json(res, 200, { token, address: session.address, admin: isAdmin(session.address), expiresAt: session.expiresAt });
+    } catch (e) {
+      json(res, 401, { error: e instanceof Error ? e.message : String(e) });
+    }
+    return;
+  }
+  if (url.pathname === "/api/auth/me" && req.method === "GET") {
+    const s = requestSession(req);
+    if (!s) {
+      json(res, 401, { error: "no session" });
+      return;
+    }
+    json(res, 200, { address: s.address, admin: isAdmin(s.address), expiresAt: s.expiresAt });
+    return;
+  }
+  if (url.pathname === "/api/auth/logout" && req.method === "POST") {
+    const token = (req.headers.authorization ?? "").replace(/^Bearer\s+/i, "");
+    endSession(token);
+    saveSessions();
+    json(res, 200, { ok: true });
     return;
   }
 

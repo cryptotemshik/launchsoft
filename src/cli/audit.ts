@@ -50,7 +50,9 @@ export type AuditEvent =
   /** A withdrawal address entered its one-hour wait. */
   | "withdraw.registered"
   /** A withdrawal address was struck off. */
-  | "withdraw.removed";
+  | "withdraw.removed"
+  /** A wallet signed in. */
+  | "auth.login";
 
 export interface AuditLine {
   /** ISO 8601, in UTC. Local time in an audit trail is an argument waiting. */
