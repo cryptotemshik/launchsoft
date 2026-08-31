@@ -6,6 +6,7 @@ import { loadKeyEntries } from "./config";
 import {
   isEncrypted,
   keystorePassphrase,
+  resolveKeystorePassphrase,
   migrateToEncrypted,
   PASSPHRASE_ENV,
   readKeysText,
@@ -213,5 +214,21 @@ describe("the seam the rest of the server uses", () => {
     const cfg = project("");
     writeKeysText(join(cfg, "..", "keys.txt"), KEYS, PASS);
     expect(() => loadKeyEntries(cfg, "keys.txt")).toThrow(/encrypted but/);
+  });
+});
+
+describe("resolving the passphrase from AWS", () => {
+  it("does nothing when one is already set", async () => {
+    const env: NodeJS.ProcessEnv = { [PASSPHRASE_ENV]: "already-here" };
+    await resolveKeystorePassphrase(env);
+    expect(env[PASSPHRASE_ENV]).toBe("already-here");
+  });
+
+  it("does nothing when no secret is configured", async () => {
+    // No AWS call is even attempted — the on-disk env stays the source, and a
+    // box that never opted into AWS never reaches for the metadata service.
+    const env: NodeJS.ProcessEnv = {};
+    await resolveKeystorePassphrase(env);
+    expect(env[PASSPHRASE_ENV]).toBeUndefined();
   });
 });

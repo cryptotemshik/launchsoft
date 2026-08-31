@@ -105,6 +105,7 @@ import { indexDbPath, openDropIndex, type DropIndex } from "./dropIndex";
 import {
   keystorePassphrase,
   migrateToEncrypted,
+  resolveKeystorePassphrase,
   PASSPHRASE_ENV,
   writeKeysText,
 } from "./keystore";
@@ -2065,6 +2066,14 @@ function restoreQueue(): void {
         : ""),
   );
 }
+// Bring the keystore passphrase in from AWS before anything reads a key, if
+// that is how this box is configured. A failure here is fatal on purpose: a
+// server that cannot get its passphrase must not fall through to running
+// without one and silently treating every wallet as unreadable.
+await resolveKeystorePassphrase().catch((e) => {
+  console.error(`keystore: could not resolve the passphrase from AWS — ${e instanceof Error ? e.message : e}`);
+  process.exit(1);
+});
 restoreQueue();
 
 /**

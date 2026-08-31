@@ -22,7 +22,7 @@
  */
 import { existsSync, unlinkSync, readFileSync } from "node:fs";
 import { loadConfig, loadKeyEntries, keysPath } from "./config";
-import { keystorePassphrase, isEncrypted, PASSPHRASE_ENV } from "./keystore";
+import { keystorePassphrase, isEncrypted, PASSPHRASE_ENV, resolveKeystorePassphrase } from "./keystore";
 import { getChainInfo } from "../chains";
 import { maturedAddresses } from "./withdrawRegistry";
 import { makeInProcessSigner, serveSigner } from "./signer";
@@ -49,8 +49,12 @@ const abs = keysPath(configPath, cfg.keysFile);
 if (existsSync(abs) && !isEncrypted(readFileSync(abs, "utf8"))) {
   fail(`the key file is not encrypted — seal it first (set ${PASSPHRASE_ENV} and start the API once, or run keys:rekey)`);
 }
+// Fetch the passphrase from AWS first, if that is how this box is set up.
+await resolveKeystorePassphrase().catch((e) => {
+  fail(`could not resolve the passphrase from AWS — ${e instanceof Error ? e.message : e}`);
+});
 if (!keystorePassphrase()) {
-  fail(`${PASSPHRASE_ENV} is not set — the daemon cannot open the wallet file without it`);
+  fail(`${PASSPHRASE_ENV} is not set (and SNIPE_KEYSTORE_SECRET_ID is not configured) — the daemon cannot open the wallet file`);
 }
 
 // Prove the passphrase opens the file now, at startup, rather than at 17:30:00

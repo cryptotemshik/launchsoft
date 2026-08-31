@@ -56,6 +56,26 @@ interface Envelope {
   data: string;
 }
 
+/**
+ * Bring the passphrase into the environment before anything needs it.
+ *
+ * If it is already set (snipe.env, an inline var) that stands. Otherwise, when
+ * SNIPE_KEYSTORE_SECRET_ID names a Secrets Manager secret, the passphrase is
+ * fetched from AWS with the instance role and put in the environment in memory
+ * — so the disk holds nothing that can open the keys. Anything else is left
+ * as-is: no secret configured means the on-disk env is the source, exactly as
+ * before.
+ *
+ * Called once at startup, before the key file is read.
+ */
+export async function resolveKeystorePassphrase(env = process.env): Promise<void> {
+  if (keystorePassphrase(env)) return;
+  const secretId = env.SNIPE_KEYSTORE_SECRET_ID?.trim();
+  if (!secretId) return;
+  const { fetchSecret } = await import("./awsSecret");
+  env[PASSPHRASE_ENV] = await fetchSecret(secretId, env.SNIPE_AWS_REGION?.trim() || undefined);
+}
+
 export function keystorePassphrase(env = process.env): string | null {
   const raw = env[PASSPHRASE_ENV];
   // A blank passphrase is not a passphrase. Treating "" as one would encrypt
