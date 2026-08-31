@@ -13,6 +13,7 @@
  * drop taking two hundred mints a minute from a hundred wallets outranks one
  * taking the same from four.
  */
+import AdminOnly from "./AdminOnly";
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import RunnerConnect from "./RunnerConnect";
 import { useRunnerApi } from "../lib/runnerClient";
@@ -396,10 +397,12 @@ export default function LiveTab() {
               </span>
             ) : null}
             {view?.readRpc ? (
-              <span className={view.publicRpc ? "pill warn" : "pill"}>
-                via <b>{view.readRpc}</b>
-                {view.publicRpc ? " · public" : ""}
-              </span>
+              <AdminOnly>
+                <span className={view.publicRpc ? "pill warn" : "pill"}>
+                  via <b>{view.readRpc}</b>
+                  {view.publicRpc ? " · public" : ""}
+                </span>
+              </AdminOnly>
             ) : null}
           </div>
         </div>

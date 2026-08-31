@@ -10,6 +10,7 @@
  * The reading happens on the server, through the same endpoints everything else
  * uses. Nothing here talks to a chain directly.
  */
+import AdminOnly from "./AdminOnly";
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import RunnerConnect from "./RunnerConnect";
 import { parseEther } from "viem";
@@ -576,53 +577,54 @@ export default function ScannerTab() {
               );
             })() : null}
             {view?.readRpc ? (
-              <span
-                className={view.publicRpc || view.readRpcNote ? "pill warn" : "pill"}
-                title={
-                  view.readRpcNote
-                    ? view.readRpcNote
-                    : view.publicRpc
-                      ? "The chain's public RPC meters requests and answers a scan with 429. Paste your own endpoint in the Snipe tab and it is used here too."
-                      : "The endpoint this server reads through"
-                }
-              >
-                via <b>{view.readRpc}</b>
-                {/* Naming the endpoint is a lie when it refuses every log
-                    request: reads fall through to the next one in the list and
-                    the badge went on crediting the endpoint that never answered. */}
-                {view.readRpcNote ? " · not answering" : view.publicRpc ? " · public" : ""}
-              </span>
+              <AdminOnly>
+                <span
+                  className={view.publicRpc || view.readRpcNote ? "pill warn" : "pill"}
+                  title={
+                    view.readRpcNote
+                      ? view.readRpcNote
+                      : view.publicRpc
+                        ? "The chain's public RPC meters requests and answers a scan with 429. Paste your own endpoint in the Snipe tab and it is used here too."
+                        : "The endpoint this server reads through"
+                  }
+                >
+                  via <b>{view.readRpc}</b>
+                  {view.readRpcNote ? " · not answering" : view.publicRpc ? " · public" : ""}
+                </span>
+              </AdminOnly>
             ) : null}
           </div>
         </div>
 
         {error ? <p className="error">{error}</p> : null}
-        {view?.readRpcNote ? (
-          <p className="dim hint">
-            <b>{view.readRpcNote}</b> Scanning wants wide `eth_getLogs` ranges,
-            which most free plans cap hard — an hour of this chain is around
-            35,000 blocks. Point the scan at an endpoint without that cap, or
-            leave it on the chain's own RPC, which has none.
-          </p>
-        ) : null}
-        {rpcNote ? <p className="error">endpoint refused: {rpcNote}</p> : null}
-        {error && /429|rate limit/i.test(error) && customRpcs.length === 0 ? (
-          <p className="dim hint">
-            That was the chain's public RPC, which meters requests and answers a
-            scan of this size with 429. Paste your own endpoint in the RPC box
-            on the Snipe tab — it is one shared setting, and the scanner picks
-            it up from there.
-          </p>
-        ) : null}
-        {error && /429|rate limit/i.test(error) && customRpcs.length > 0 ? (
-          <p className="dim hint">
-            <button className="secondary link-btn" onClick={() => void pushRpcs().then(() => load(hours, true))}>
-              install {customRpcs.length === 1 ? "your endpoint" : "your endpoints"} and re-scan
-            </button>{" "}
-            — this browser has one set, but the server was reading through
-            something else.
-          </p>
-        ) : null}
+        <AdminOnly>
+          {view?.readRpcNote ? (
+            <p className="dim hint">
+              <b>{view.readRpcNote}</b> Scanning wants wide `eth_getLogs` ranges,
+              which most free plans cap hard — an hour of this chain is around
+              35,000 blocks. Point the scan at an endpoint without that cap, or
+              leave it on the chain's own RPC, which has none.
+            </p>
+          ) : null}
+          {rpcNote ? <p className="error">endpoint refused: {rpcNote}</p> : null}
+          {error && /429|rate limit/i.test(error) && customRpcs.length === 0 ? (
+            <p className="dim hint">
+              That was the chain's public RPC, which meters requests and answers a
+              scan of this size with 429. Paste your own endpoint in the RPC box
+              on the Snipe tab — it is one shared setting, and the scanner picks
+              it up from there.
+            </p>
+          ) : null}
+          {error && /429|rate limit/i.test(error) && customRpcs.length > 0 ? (
+            <p className="dim hint">
+              <button className="secondary link-btn" onClick={() => void pushRpcs().then(() => load(hours, true))}>
+                install {customRpcs.length === 1 ? "your endpoint" : "your endpoints"} and re-scan
+              </button>{" "}
+              — this browser has one set, but the server was reading through
+              something else.
+            </p>
+          ) : null}
+        </AdminOnly>
         <StaleServer version={serverVersion} />
 
         {view ? (
