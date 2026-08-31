@@ -14,8 +14,17 @@ import { useCallback, useEffect, useState } from "react";
 const URL_KEY = "launchpad.runner.url";
 const TOKEN_KEY = "launchpad.runner.token";
 
+/**
+ * The backend a normal visitor talks to, baked in at build time so they never
+ * see or type a server address — that is operator machinery. Set VITE_RUNNER_URL
+ * when building for the public site; left empty, only the operator (who types a
+ * URL in the runner panel) reaches a server, which is exactly today's behaviour.
+ */
+export const DEFAULT_RUNNER_URL =
+  ((import.meta as unknown as { env?: Record<string, string> }).env?.VITE_RUNNER_URL ?? "").trim();
+
 export function loadRunnerUrl(): string {
-  return localStorage.getItem(URL_KEY) ?? "";
+  return localStorage.getItem(URL_KEY) ?? DEFAULT_RUNNER_URL;
 }
 
 export function loadRunnerToken(): string {

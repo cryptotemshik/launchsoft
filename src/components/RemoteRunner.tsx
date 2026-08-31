@@ -6,6 +6,7 @@ import {
   openSeaCollectionUrl,
   type ChainInfo,
 } from "../chains";
+import { useAccount, useConnect } from "wagmi";
 import { useActiveChain, useSigner } from "../signer";
 import { formatEthShort } from "../lib/profit";
 import {
@@ -15,7 +16,7 @@ import {
   spreadLabel,
   type MintStyle,
 } from "../lib/spread";
-import { saveRunnerCreds, signInWithWallet, useRunnerApi } from "../lib/runnerClient";
+import { saveRunnerCreds, signInWithWallet, useMe, useRunnerApi } from "../lib/runnerClient";
 import StaleServer from "./StaleServer";
 import Addr from "./Addr";
 import FundJobPanel from "./FundJobPanel";
@@ -165,6 +166,12 @@ export default function RemoteRunner(props: RemoteRunnerProps) {
     serverVersion,
   } = api;
   const signer = useSigner();
+  const { me } = useMe();
+  const { isConnected: walletConnected } = useAccount();
+  const { connect: connectWallet, connectors } = useConnect();
+  // The server URL, token and node internals are the operator's: a normal
+  // visitor signs in with their wallet and never sees any of it.
+  const admin = Boolean(me?.admin);
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [signingIn, setSigningIn] = useState(false);
@@ -272,11 +279,15 @@ export default function RemoteRunner(props: RemoteRunnerProps) {
    */
   async function signIn() {
     if (!base) {
-      setError("enter the server URL first");
+      setError("the service address isn't configured yet");
       return;
     }
-    if (!signer.address || !signer.walletClient) {
-      setError("connect a wallet first (top bar)");
+    // One button does both steps: if no wallet is connected to the browser
+    // yet, connect it first, then the user presses sign-in once more to sign.
+    if (!walletConnected || !signer.address || !signer.walletClient) {
+      setError(null);
+      setLoginNote("connecting your wallet — approve it, then press sign in again");
+      if (connectors[0]) connectWallet({ connector: connectors[0] });
       return;
     }
     const address = signer.address;
@@ -492,71 +503,79 @@ export default function RemoteRunner(props: RemoteRunnerProps) {
     // happens now, and the review step points at it rather than at a button
     // that no longer exists.
     <div className="panel" id="remote-runner">
-      <h2>Remote runner (VPS) — queue</h2>
+      <h2>Runner — queue</h2>
       <p className="dim" style={{ marginTop: 0 }}>
-        Queue drops hours in advance on a server sitting next to the chain&apos;s
-        sequencer. Each job is armed ahead of its stage (nonces read, transactions
-        pre-signed, connections warmed) and fires on the server&apos;s own clock —
-        so this is exactly as fast as starting it over SSH.
+        Queue drops in advance on a server sitting next to the chain&apos;s
+        sequencer. Each job is armed ahead of its stage and fires on the
+        server&apos;s own clock, so once a drop is queued you can close this page
+        and it will still fire.
       </p>
-      <p className="dim">
-        <b>Wallets come from the server</b>, from its <code>snipe.keys</code> file —
-        not from the Wallets box above, which the server never sees. They live
-        there permanently, so once a drop is queued you can close this page (or
-        turn the phone off) and it will still fire and report to Telegram. Keys
-        never travel to this panel; it only ever receives addresses and balances.
-      </p>
+      {admin ? (
+        <p className="dim">
+          <b>Wallets come from the server</b>, from its <code>snipe.keys</code> file —
+          not from the Wallets box above. Keys never travel to this panel; it only
+          ever receives addresses and balances.
+        </p>
+      ) : null}
 
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-        <div className="field" style={{ flex: 2, minWidth: 240 }}>
-          <label>server URL</label>
-          <input
-            value={url}
-            onChange={(e) => setUrl(e.target.value)}
-            placeholder="https://your-tunnel.trycloudflare.com"
-          />
+      {admin ? (
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <div className="field" style={{ flex: 2, minWidth: 240 }}>
+            <label>server URL</label>
+            <input
+              value={url}
+              onChange={(e) => setUrl(e.target.value)}
+              placeholder="https://your-tunnel.trycloudflare.com"
+            />
+          </div>
+          <div className="field" style={{ flex: 1, minWidth: 180 }}>
+            <label>token</label>
+            <input
+              type="password"
+              value={token}
+              onChange={(e) => setToken(e.target.value)}
+              placeholder="SNIPE_TOKEN"
+              autoComplete="off"
+            />
+          </div>
         </div>
-        <div className="field" style={{ flex: 1, minWidth: 180 }}>
-          <label>token</label>
-          <input
-            type="password"
-            value={token}
-            onChange={(e) => setToken(e.target.value)}
-            placeholder="SNIPE_TOKEN"
-            autoComplete="off"
-          />
-        </div>
-      </div>
+      ) : null}
       <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap", marginTop: 8 }}>
-        <button className="secondary" onClick={() => void connect()} disabled={busy || !base || !token}>
-          {busy ? <span className="spin">BUSY</span> : connected ? "refresh" : "connect"}
-        </button>
+        {admin ? (
+          <button className="secondary" onClick={() => void connect()} disabled={busy || !base || !token}>
+            {busy ? <span className="spin">BUSY</span> : connected ? "refresh" : "connect"}
+          </button>
+        ) : null}
         <button
-          className="secondary"
+          className={admin ? "secondary" : "primary"}
           onClick={() => void signIn()}
-          disabled={signingIn || !base || !signer.isConnected}
-          title={
-            signer.isConnected
-              ? "prove your wallet and get a session token — no SNIPE_TOKEN needed"
-              : "connect a wallet in the top bar first"
-          }
+          disabled={signingIn || !base}
+          title="prove your wallet to get in — no token to paste"
         >
-          {signingIn ? <span className="spin">SIGNING</span> : "sign in with wallet"}
+          {signingIn ? (
+            <span className="spin">SIGNING</span>
+          ) : !walletConnected ? (
+            "connect wallet"
+          ) : (
+            "sign in with wallet"
+          )}
         </button>
-        <label className="dim" style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <input
-            type="checkbox"
-            checked={rememberToken}
-            onChange={(e) => setRememberToken(e.target.checked)}
-          />
-          remember token in this browser
-        </label>
+        {admin ? (
+          <label className="dim" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <input
+              type="checkbox"
+              checked={rememberToken}
+              onChange={(e) => setRememberToken(e.target.checked)}
+            />
+            remember token in this browser
+          </label>
+        ) : null}
         {connected ? (
           <span className="pill ok">
             connected{pending.length ? ` · ${pending.length} pending` : ""}
           </span>
         ) : null}
-        {connected ? (
+        {connected && admin ? (
           <button
             className="secondary"
             style={{ padding: "3px 12px", fontSize: 11 }}
@@ -579,7 +598,7 @@ export default function RemoteRunner(props: RemoteRunnerProps) {
         </p>
       ) : null}
 
-      <StaleServer version={serverVersion} />
+      {admin ? <StaleServer version={serverVersion} /> : null}
 
       {rpcError ? (
         <p className="warn" style={{ marginBottom: 0 }}>
@@ -589,7 +608,7 @@ export default function RemoteRunner(props: RemoteRunnerProps) {
         </p>
       ) : null}
 
-      {connected && status?.readRpc ? (
+      {connected && admin && status?.readRpc ? (
         <p className="hint dim" style={{ marginBottom: 0 }}>
           The server reads balances and nonces through <b>{status.readRpc}</b>.
           {rpcsDiffer ? (
