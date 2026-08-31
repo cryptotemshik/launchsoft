@@ -22,6 +22,7 @@ interface Alert {
   firstAt: number;
   lastAt: number;
   minted: number;
+  whales: string[];
 }
 interface Feed {
   alerts: Alert[];
@@ -37,6 +38,8 @@ export default function WhaleAlertTab() {
   const chainInfo = useActiveChain();
   const [feed, setFeed] = useState<Feed | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [list, setList] = useState<{ address: string; label?: string }[] | null>(null);
+  const [showList, setShowList] = useState(false);
   const seenCounts = useRef<Map<string, number>>(new Map());
 
   const pro = Boolean(me?.tier === "pro" || me?.admin);
@@ -108,7 +111,30 @@ export default function WhaleAlertTab() {
             enable notifications
           </button>
         ) : null}
+        <button
+          className="secondary"
+          style={{ fontSize: 11, padding: "2px 10px" }}
+          onClick={() => {
+            setShowList((v) => !v);
+            if (!list) void call("/api/curated").then((c) => setList((c as { whales: { address: string; label?: string }[] }).whales ?? [])).catch(() => {});
+          }}
+        >
+          {showList ? "hide whale list" : "whale list"}
+        </button>
       </div>
+      {showList ? (
+        <div className="panel" style={{ margin: "0 0 12px", padding: "8px 12px", maxHeight: 240, overflowY: "auto" }}>
+          <div className="dim" style={{ fontSize: 11, marginBottom: 4 }}>
+            {list ? `${list.length} whales tracked` : "loading…"}
+          </div>
+          {(list ?? []).map((w) => (
+            <div key={w.address} className="mono-break" style={{ fontSize: 11, padding: "1px 0" }}>
+              {w.address}
+              {w.label ? <span className="dim"> · {w.label}</span> : null}
+            </div>
+          ))}
+        </div>
+      ) : null}
       {error ? <p className="error">{error}</p> : null}
       {(feed?.watching ?? 0) === 0 ? (
         <p className="dim">No whales are curated yet. (The owner adds them in the Admin tab.)</p>
@@ -125,6 +151,11 @@ export default function WhaleAlertTab() {
                 </div>
                 <div className="dim" style={{ fontSize: 12 }}>last {timeAgo(Math.floor(a.lastAt / 1000))}</div>
               </div>
+              {a.whales?.length ? (
+                <div className="dim mono-break" style={{ fontSize: 11, marginTop: 4 }}>
+                  {a.whales.map((w) => shortAddress(w)).join(" · ")}
+                </div>
+              ) : null}
               {chainInfo && a.contract.startsWith("0x") ? (
                 <a
                   href={openSeaCollectionUrl(chainInfo, a.contract as `0x${string}`) ?? "#"}

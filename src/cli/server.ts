@@ -2695,10 +2695,15 @@ const server = createServer(async (req, res) => {
   // Reading it is a Pro feature; the site's Whale Alert tab
   // fetch the addresses here and then read their on-chain activity directly.
   if (url.pathname === "/api/curated" && req.method === "GET") {
-    // The whale list itself is the owner's — only the admin panel reads it.
-    // Everyone else sees alerts (counts, collections), never the wallets.
-    if (!isAdminReq(req)) {
-      json(res, 403, { error: "admins only" });
+    // The whale list is a Pro feature to view — Pro users can open the full
+    // roster; only the admin can change it (the /api/admin/whales routes).
+    const a = acting(req);
+    if (!a) {
+      json(res, 401, { error: "sign in with your wallet first" });
+      return;
+    }
+    if (!isProReq(req)) {
+      json(res, 402, { error: "the whale list is a Pro feature", tier: "free" });
       return;
     }
     json(res, 200, loadCurated(CONFIG_PATH));
@@ -2718,9 +2723,6 @@ const server = createServer(async (req, res) => {
       return;
     }
     const info = getChainInfo(loadConfig(CONFIG_PATH).chainId);
-    // Never reveal which wallets are whales — that list is the product's edge
-    // and the owner's alone. A viewer gets the collection, the count, and when;
-    // the whale addresses stay on the server.
     const alerts = currentAlerts(CONFIG_PATH, { windowMs: WHALE_WINDOW_MS }).map((al) => ({
       contract: al.contract,
       name: creators.nameFor(al.contract) ?? null,
@@ -2728,6 +2730,7 @@ const server = createServer(async (req, res) => {
       minted: al.minted,
       firstAt: al.firstAt,
       lastAt: al.lastAt,
+      whales: al.whales,
     }));
     json(res, 200, {
       alerts,
