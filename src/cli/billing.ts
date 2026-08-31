@@ -29,6 +29,7 @@ export type EntryKind =
   | "snipe"
   | "subscription"
   | "refund"
+  | "funding"
   | "admin-credit"
   | "admin-debit";
 
@@ -180,6 +181,32 @@ export function chargeSubscription(
     wei: (-amountWei).toString(),
     usdCents: opts.usdCents,
     note: opts.note,
+  });
+}
+
+/**
+ * Spend balance to fund the account's own snipe wallets from its deposit.
+ *
+ * A real transfer of ETH out of the deposit wallet backs this, so the debit is
+ * the exact wei that left (value plus its gas). Refused if the balance will not
+ * cover it — the caller must check before it moves the money, or the ledger and
+ * the wallet would disagree.
+ */
+export function spendForFunding(
+  configPath: string,
+  amountWei: bigint,
+  note?: string,
+  nowMs = Date.now(),
+): BillingState {
+  if (amountWei <= 0n) throw new Error("a funding spend must be positive");
+  if (balanceOf(configPath) < amountWei) {
+    throw new InsufficientBalance(amountWei, balanceOf(configPath));
+  }
+  return append(configPath, {
+    at: nowMs,
+    kind: "funding",
+    wei: (-amountWei).toString(),
+    note,
   });
 }
 

@@ -119,6 +119,7 @@ import {
 } from "./accounts";
 import {
   adminAdjust,
+  balanceOf,
   chargeSnipe,
   chargeSubscription,
   deposit as creditDeposit,
@@ -126,6 +127,7 @@ import {
   InsufficientBalance,
   loadBilling,
   refund as refundBalance,
+  spendForFunding,
 } from "./billing";
 import {
   addCredited,
@@ -1184,12 +1186,14 @@ function treasuryAddress(): `0x${string}` | null {
 }
 
 /**
- * Move a deposit wallet's balance to the treasury.
+ * Move ETH out of a deposit wallet to the treasury.
  *
  * Signs with the deposit wallet's own key (which this process holds) and sends
- * a plain transfer, leaving a small gas margin. The swept value is recorded so
- * the crediting maths stays exact across the sweep. Best-effort: a failure logs
- * and the next pass tries again.
+ * a plain transfer, leaving a small gas margin. `cap` bounds how much moves —
+ * used to settle exactly the fees the owner is owed rather than the whole
+ * balance, so the rest stays as the account's spendable funds. The moved value
+ * is recorded as an outflow so deposit crediting stays exact. Best-effort: a
+ * failure logs and the next pass tries again.
  */
 async function sweepDeposit(
   cfgPath: string,
@@ -1197,8 +1201,8 @@ async function sweepDeposit(
   cfg: SnipeConfig,
   treasury: `0x${string}`,
   bal: bigint,
+  cap?: bigint,
 ): Promise<bigint> {
-  if (bal < SWEEP_MIN_WEI) return 0n;
   const key = depositKey(cfgPath, keystorePassphrase());
   if (!key) return 0n;
   const account = privateKeyToAccount(key);
@@ -1206,8 +1210,9 @@ async function sweepDeposit(
   const maxFeePerGas = parseGwei(cfg.gas.maxFeeGwei);
   const maxPriorityFeePerGas = parseGwei(cfg.gas.tipGwei);
   const gas = 21_000n;
-  const value = bal - gas * maxFeePerGas * 2n; // 2× margin for base-fee drift
-  if (value <= 0n) return 0n;
+  const spendable = bal - gas * maxFeePerGas * 2n; // 2× margin for base-fee drift
+  const value = cap === undefined ? spendable : bigMin(spendable, cap);
+  if (value < SWEEP_MIN_WEI || value <= 0n) return 0n;
   const hash = await wallet.sendTransaction({
     to: treasury,
     value,
@@ -1216,8 +1221,29 @@ async function sweepDeposit(
     maxPriorityFeePerGas,
   });
   addSwept(cfgPath, value);
-  log(`sweep: ${formatEther(value)} ETH → treasury (${hash})`);
+  log(`settle: ${formatEther(value)} ETH → treasury (${hash})`);
   return value;
+}
+
+function bigMin(a: bigint, b: bigint): bigint {
+  return a < b ? a : b;
+}
+
+/**
+ * Fees this account has been charged that could still be refunded, so a
+ * settlement never sweeps money a reverted snipe would give back. A snipe fee
+ * is booked when the job is queued and returned if the run mints nothing, so a
+ * job still queued, armed, or firing is money not yet final. Everything else
+ * the account owes (a resolved snipe, a Pro period) is safe to settle.
+ */
+function pendingChargedWei(cfgPath: string): bigint {
+  let total = 0n;
+  for (const j of jobs) {
+    if (j.cfgPath !== cfgPath || !j.chargedWei) continue;
+    const live = j.status === "queued" || j.status === "armed" || j.id === activeJobId;
+    if (live) total += BigInt(j.chargedWei);
+  }
+  return total;
 }
 
 /**
@@ -1245,20 +1271,30 @@ async function depositTick(): Promise<void> {
       } catch {
         continue;
       }
-      // Credit whatever has arrived but not yet been counted — sweep-proof.
-      const owed = uncreditedWei(cfgPath, bal);
-      if (owed > 0n) {
-        creditDeposit(cfgPath, owed, `deposit seen at ${dep}`);
-        addCredited(cfgPath, owed);
-        log(`deposit: credited ${formatEther(owed)} ETH to ${addr}`);
+      // Credit whatever has arrived but not yet been counted — outflow-proof.
+      const arrived = uncreditedWei(cfgPath, bal);
+      if (arrived > 0n) {
+        creditDeposit(cfgPath, arrived, `deposit seen at ${dep}`);
+        addCredited(cfgPath, arrived);
+        log(`deposit: credited ${formatEther(arrived)} ETH to ${addr}`);
       }
-      // Then move it to the treasury, if one is configured — this is how the
-      // owner receives the money. Never blocks the crediting above.
+      // Then settle to the treasury only what the owner is actually owed —
+      // fees, not the account's spendable funds, which now stay on the deposit
+      // wallet so the account can fund snipes from them. The surplus of the
+      // wallet's balance over the ledger balance is exactly the fees charged
+      // but not yet moved; hold back anything a still-pending snipe could
+      // refund. Never blocks the crediting above.
       if (treasury) {
         try {
-          await sweepDeposit(cfgPath, info, cfg, treasury, bal);
+          // The same balance the crediting above used, so a deposit that lands
+          // after this pass reads it is caught next time round rather than
+          // mistaken here for an owed fee and swept away.
+          const owed = bal - balanceOf(cfgPath) - pendingChargedWei(cfgPath);
+          if (owed >= SWEEP_MIN_WEI) {
+            await sweepDeposit(cfgPath, info, cfg, treasury, bal, owed);
+          }
         } catch (e) {
-          log(`sweep failed for ${addr}: ${e instanceof Error ? e.message.split("\n")[0] : e}`);
+          log(`settle failed for ${addr}: ${e instanceof Error ? e.message.split("\n")[0] : e}`);
         }
       }
     }
@@ -3506,6 +3542,106 @@ const server = createServer(async (req, res) => {
             audit("funds.dispersed", { from: fromAddress, targets: targets.length, account: a.address });
           }
           json(res, 200, { ...result, logs: lines });
+          return;
+        }
+
+        // ── Fund your snipe wallets straight from your deposit balance ────────
+        // The custodial source: the service holds your deposit wallet's key and
+        // moves ETH from it to your snipe wallets on your say-so, spending your
+        // balance. What you can spend is the ledger balance — never the fees
+        // still sitting in the wallet waiting to settle to the owner — so a dry
+        // run prices the move first and it is refused unless the balance covers
+        // it. The exact wei that leaves is then taken from the balance and
+        // booked as an outflow, keeping ledger and wallet in step.
+        if (url.pathname === "/api/fund-from-deposit" && req.method === "POST") {
+          const body = await readBody(req);
+          const cfg = loadConfig(a.cfgPath);
+          const info = getChainInfo(cfg.chainId);
+          if (!info) throw new Error(`chain ${cfg.chainId} isn't in the registry`);
+          const dep = depositAddress(a.cfgPath);
+          if (!dep) throw new Error("no deposit address yet — open the profile once to create one");
+          const key = depositKey(a.cfgPath, keystorePassphrase());
+          if (!key) throw new Error("the deposit key is unavailable");
+
+          const entries = walletBook(a.cfgPath);
+          const stored = entries.map((w) => w.address).filter((x) => x.toLowerCase() !== dep.toLowerCase());
+          const targets = chooseWallets(body, "targets", stored, (x) => x);
+          if (targets.length === 0) throw new Error("no snipe wallets to fund — add one first");
+
+          const num = (v: unknown): string => (typeof v === "string" ? v.trim() : "");
+          const topUpTo = num(body.topUpToEth);
+          const amount = num(body.amountEth);
+          let amountWei = 0n;
+          let topUpToWei: bigint | undefined;
+          if (topUpTo) {
+            if (!/^\d+(\.\d+)?$/.test(topUpTo)) throw new Error("topUpToEth must be a plain number");
+            topUpToWei = parseEther(topUpTo);
+            if (topUpToWei <= 0n) throw new Error("topUpToEth must be greater than zero");
+          } else {
+            if (!/^\d+(\.\d+)?$/.test(amount)) throw new Error("amountEth must be a plain number");
+            amountWei = parseEther(amount);
+            if (amountWei <= 0n) throw new Error("amountEth must be greater than zero");
+          }
+
+          const depSigner = makeInProcessSigner({
+            loadKeys: () => [{ key }],
+            policy: () => policyContext(a.cfgPath, a.address),
+          });
+          const plan = {
+            chainId: cfg.chainId,
+            extraRpcs: readRpcs(cfg),
+            gas: { maxFeeGwei: cfg.gas.maxFeeGwei, tipGwei: cfg.gas.tipGwei },
+            from: dep,
+            signer: depSigner,
+            targets,
+            amountWei,
+            topUpToWei,
+            skipIfAtLeastWei:
+              typeof body.skipIfAtLeastEth === "string" && body.skipIfAtLeastEth
+                ? parseEther(body.skipIfAtLeastEth)
+                : undefined,
+          };
+
+          // Price it first, always, and check the balance covers it — the
+          // wallet physically holds more (the unsettled fees), so only the
+          // ledger stands between a user and the owner's money.
+          const dry = await disperse({ ...plan, dryRun: true }, () => {});
+          const need = BigInt(dry.requiredWei);
+          const have = balanceOf(a.cfgPath);
+          if (need > have) {
+            json(res, 402, {
+              error: "not enough balance to fund that much — top up your deposit or fund less",
+              needWei: need.toString(),
+              haveWei: have.toString(),
+            });
+            return;
+          }
+          if (body.dryRun !== false) {
+            json(res, 200, { ...dry, haveWei: have.toString() });
+            return;
+          }
+
+          // Real move: meter the wallet across it so the exact outflow (value
+          // and its gas) is what leaves the ledger, whatever gas actually cost.
+          const client = makeReadClient(info.chain, readRpcs(cfg));
+          const before = await client.getBalance({ address: dep }).catch(() => null);
+          const lines: string[] = [];
+          const result = await disperse({ ...plan, dryRun: false }, (line) => {
+            lines.push(line);
+            log(`fund-from-deposit[${a.address}]: ${line}`);
+          });
+          const after = await client.getBalance({ address: dep }).catch(() => null);
+          let outflow =
+            before != null && after != null && before > after
+              ? before - after
+              : BigInt(result.requiredWei);
+          outflow = bigMin(outflow, balanceOf(a.cfgPath));
+          if (outflow > 0n) {
+            spendForFunding(a.cfgPath, outflow, `funded ${result.funded} wallet(s) from deposit`);
+            addSwept(a.cfgPath, outflow);
+          }
+          audit("funds.fromDeposit", { targets: result.funded, wei: outflow.toString(), account: a.address });
+          json(res, 200, { ...result, logs: lines, spentWei: outflow.toString(), balanceWei: balanceOf(a.cfgPath).toString() });
           return;
         }
       } catch (e) {

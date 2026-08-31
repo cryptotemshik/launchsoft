@@ -13,6 +13,7 @@ import {
   InsufficientBalance,
   loadBilling,
   refund,
+  spendForFunding,
 } from "./billing";
 
 let dir: string;
@@ -105,5 +106,27 @@ describe("subscriptions, refunds, admin adjustments", () => {
     adminAdjust(cfg, -ETH / 2n, "correction");
     expect(balanceOf(cfg)).toBe(ETH / 2n);
     expect(() => adminAdjust(cfg, -ETH, "too much")).toThrow(/negative balance/);
+  });
+});
+
+describe("funding snipe wallets from the balance", () => {
+  it("takes the outflow from the balance and books it as funding", () => {
+    deposit(cfg, ETH);
+    spendForFunding(cfg, ETH / 4n, "funded 3 wallets");
+    expect(balanceOf(cfg)).toBe(ETH - ETH / 4n);
+    const last = loadBilling(cfg).entries.at(-1)!;
+    expect(last.kind).toBe("funding");
+    expect(last.wei).toBe((-(ETH / 4n)).toString());
+  });
+
+  it("refuses to fund more than the balance holds", () => {
+    deposit(cfg, ETH / 2n);
+    expect(() => spendForFunding(cfg, ETH, "too much")).toThrow(InsufficientBalance);
+    expect(balanceOf(cfg)).toBe(ETH / 2n);
+  });
+
+  it("refuses a non-positive funding spend", () => {
+    deposit(cfg, ETH);
+    expect(() => spendForFunding(cfg, 0n)).toThrow(/positive/);
   });
 });

@@ -25,7 +25,12 @@ interface DepositRecord {
   key: string;
   /** Total wei ever credited to the balance from this address. */
   creditedWei: string;
-  /** Total wei ever swept out of this address to the treasury. */
+  /**
+   * Total wei ever moved *out* of this address by any means — swept to the
+   * treasury, or spent funding the account's snipe wallets. Everything that has
+   * reached the address is therefore `balance + this`, which is what keeps
+   * deposit crediting exact no matter how the money later leaves.
+   */
   sweptWei: string;
 }
 
@@ -120,7 +125,7 @@ export function addCredited(configPath: string, delta: bigint): void {
   write(configPath, rec);
 }
 
-/** Mark `value` more wei as swept out to the treasury. */
+/** Mark `value` more wei as moved out of the deposit wallet (sweep or funding). */
 export function addSwept(configPath: string, value: bigint): void {
   const rec = read(configPath);
   if (!rec) return;

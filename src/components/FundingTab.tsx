@@ -109,26 +109,30 @@ export default function FundingTab() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  // Disperse. Source of the money: a wallet connected in the browser (it signs
-  // each transfer itself — the key never leaves the browser), a private key
-  // pasted for this call alone, or, for the operator, one of the wallets
-  // already on the server.
-  const [payerMode, setPayerMode] = useState<"connected" | "stored" | "key">("connected");
+  // Disperse. Source of the money: your deposit balance (the service moves it
+  // from your deposit wallet), a wallet connected in the browser (it signs each
+  // transfer itself — the key never leaves the browser), a private key pasted
+  // for this call alone, or, for the operator, one of the wallets already on
+  // the server.
+  const [payerMode, setPayerMode] = useState<"deposit" | "connected" | "stored" | "key">("connected");
   const [modeTouched, setModeTouched] = useState(false);
   const [payerAddress, setPayerAddress] = useState("");
   const [payerKey, setPayerKey] = useState("");
   const [amount, setAmount] = useState("0.001");
   const [skipFunded, setSkipFunded] = useState(true);
   const [dResult, setDResult] = useState<DisperseResult | null>(null);
+  // Your spendable balance, for the deposit source. Only a signed-in account
+  // has one; the operator's main world does not, so this stays null for them.
+  const [balanceEth, setBalanceEth] = useState<string | null>(null);
 
   // The operator funds a hundred wallets at once — a connected wallet would ask
   // to approve each one — so default them to pasting a payer key. A normal user
-  // funds a handful and wants their own connected wallet, which never trusts
-  // the server with a key. Only until they pick a source themselves.
+  // funds from the balance they have already topped up, the one source that
+  // needs nothing open. Only until they pick a source themselves.
   useEffect(() => {
-    if (!modeTouched) setPayerMode(admin ? "key" : "connected");
+    if (!modeTouched) setPayerMode(admin ? "key" : "deposit");
   }, [admin, modeTouched]);
-  function pickMode(m: "connected" | "stored" | "key") {
+  function pickMode(m: "deposit" | "connected" | "stored" | "key") {
     setModeTouched(true);
     setPayerMode(m);
   }
@@ -183,6 +187,11 @@ export default function FundingTab() {
       });
       setConnected(true);
       setError(null);
+      // The deposit source needs to know what is spendable. Best-effort — the
+      // wallet list is what this panel is really about.
+      void call("/api/billing")
+        .then((b) => setBalanceEth((b as { balanceEth?: string }).balanceEth ?? null))
+        .catch(() => setBalanceEth(null));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -205,7 +214,41 @@ export default function FundingTab() {
   }
 
   function doDisperse(dryRun: boolean) {
-    return payerMode === "connected" ? runConnectedDisperse(dryRun) : runDisperse(dryRun);
+    if (payerMode === "deposit") return runDepositDisperse(dryRun);
+    if (payerMode === "connected") return runConnectedDisperse(dryRun);
+    return runDisperse(dryRun);
+  }
+
+  /**
+   * Fund from the deposit balance.
+   *
+   * The service moves ETH out of your deposit wallet into your snipe wallets
+   * and takes it off your balance — the one source that needs no key from you
+   * and no wallet open, because the custodian already holds the deposit key.
+   * The server prices it and refuses if the balance will not cover it.
+   */
+  async function runDepositDisperse(dryRun: boolean) {
+    setBusy(true);
+    setError(null);
+    setDResult(null);
+    try {
+      const body: Record<string, unknown> = {
+        amountEth: amount.trim(),
+        dryRun,
+        ...(skipFunded ? { skipIfAtLeastEth: amount.trim() } : {}),
+        ...(fundTo.size < wallets.length ? { targets: [...fundTo] } : {}),
+      };
+      const r = (await call("/api/fund-from-deposit", {
+        method: "POST",
+        body: JSON.stringify(body),
+      })) as unknown as DisperseResult & { balanceWei?: string };
+      setDResult(r);
+      if (!dryRun) await refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function runDisperse(dryRun: boolean) {
@@ -525,17 +568,27 @@ export default function FundingTab() {
           <div className="panel">
             <h2>Send out — one source → {fundTo.size} of {wallets.length}</h2>
             <p className="dim" style={{ marginTop: 0 }}>
-              Where the money comes from. <b>Connected wallet</b> is the safest:
-              the wallet in your browser signs each transfer itself, so no key
-              ever reaches the server — at the cost of one approval per wallet,
-              which suits a handful. <b>Paste a payer key</b> hands the server a
-              key for this one call, used and forgotten, and funds any number of
-              wallets in a single round-trip.
+              Where the money comes from.
+              {!admin ? (
+                <> <b>Deposit balance</b> is the simplest — no key, no wallet to
+                open: the service moves it from your deposit wallet.</>
+              ) : null}{" "}
+              <b>Connected wallet</b> is self-custody: the wallet in your browser
+              signs each transfer itself, so no key ever reaches the server — at
+              the cost of one approval per wallet, which suits a handful.{" "}
+              <b>Paste a payer key</b> hands the server a key for this one call,
+              used and forgotten, and funds any number of wallets in a single
+              round-trip.
               {admin ? (
                 <> <b>Stored wallet</b> pays from one already on the server.</>
               ) : null}
             </p>
             <div className="mode-toggle" style={{ marginBottom: 12 }}>
+              {!admin ? (
+                <button className={payerMode === "deposit" ? "active" : ""} onClick={() => pickMode("deposit")}>
+                  deposit balance
+                </button>
+              ) : null}
               <button className={payerMode === "connected" ? "active" : ""} onClick={() => pickMode("connected")}>
                 connected wallet
               </button>
@@ -549,7 +602,19 @@ export default function FundingTab() {
               ) : null}
             </div>
 
-            {payerMode === "connected" ? (
+            {payerMode === "deposit" ? (
+              <div className="field">
+                <p className="dim" style={{ margin: 0 }}>
+                  paying from your deposit balance
+                  {balanceEth != null ? (
+                    <>
+                      {" "}— <b className={Number(balanceEth) > 0 ? "ok" : "warn"}>{Number(balanceEth).toFixed(5)} ETH</b>{" "}
+                      available. Top it up on the <b>Profile</b> tab.
+                    </>
+                  ) : null}
+                </p>
+              </div>
+            ) : payerMode === "connected" ? (
               <div className="field">
                 {signer.isConnected && signer.address ? (
                   walletOnRightChain ? (
@@ -635,11 +700,13 @@ export default function FundingTab() {
                 disabled={
                   busy ||
                   fundTo.size === 0 ||
-                  (payerMode === "connected"
-                    ? !signer.isConnected || !walletOnRightChain
-                    : payerMode === "key"
-                      ? !payerKey.trim()
-                      : !payerAddress)
+                  (payerMode === "deposit"
+                    ? false
+                    : payerMode === "connected"
+                      ? !signer.isConnected || !walletOnRightChain
+                      : payerMode === "key"
+                        ? !payerKey.trim()
+                        : !payerAddress)
                 }
                 onClick={() => void doDisperse(false)}
               >

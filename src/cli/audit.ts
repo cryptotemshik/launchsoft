@@ -37,6 +37,8 @@ export type AuditEvent =
   | "funds.collected"
   /** ETH sent into stored wallets. */
   | "funds.dispersed"
+  /** ETH moved from an account's deposit balance into its snipe wallets. */
+  | "funds.fromDeposit"
   /** NFTs moved out of stored wallets. */
   | "nfts.swept"
   /** A mint job was armed, and with how much. */
