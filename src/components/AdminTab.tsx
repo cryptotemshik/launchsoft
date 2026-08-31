@@ -41,10 +41,10 @@ export default function AdminTab() {
   const [note, setNote] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [whales, setWhales] = useState<{ address: string; label?: string }[]>([]);
-  const [influencers, setInfluencers] = useState<{ address: string; name: string; twitter?: string }[]>([]);
   const chainInfo = useActiveChain();
   const [discContract, setDiscContract] = useState("");
   const [discBusy, setDiscBusy] = useState(false);
+  const [minEth, setMinEth] = useState("6");
   const [candidates, setCandidates] = useState<Holder[]>([]);
 
   const load = useCallback(async () => {
@@ -59,10 +59,8 @@ export default function AdminTab() {
       setSummary(r.summary);
       const c = (await call("/api/curated")) as unknown as {
         whales: { address: string; label?: string }[];
-        influencers: { address: string; name: string; twitter?: string }[];
       };
       setWhales(c.whales ?? []);
-      setInfluencers(c.influencers ?? []);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -134,19 +132,6 @@ export default function AdminTab() {
     const label = prompt("Label (optional)")?.trim() || "";
     void curatedAction("/api/admin/whales", { method: "POST", body: JSON.stringify({ address, label }) }, "whale added");
   }
-  function addInfluencer() {
-    const address = prompt("Influencer wallet address (0x…)")?.trim();
-    if (!address) return;
-    const name = prompt("Name")?.trim();
-    if (!name) return;
-    const twitter = prompt("Twitter/X handle (optional)")?.trim() || "";
-    void curatedAction(
-      "/api/admin/influencers",
-      { method: "POST", body: JSON.stringify({ address, name, twitter }) },
-      "influencer added",
-    );
-  }
-
   async function discoverWhales() {
     const api = chainInfo?.blockscoutApi;
     if (!api) {
@@ -163,15 +148,15 @@ export default function AdminTab() {
     setNote(null);
     setCandidates([]);
     try {
-      const holders = await fetchTopHolders(api, contract, 40);
-      // Enrich the top 20 with an ETH balance for a rough "size" read — the one
-      // figure we can price. Best-effort and rate-limit-friendly (sequential).
+      const holders = await fetchTopHolders(api, contract, 60);
+      // Look up each holder's ETH balance — the one figure we can price — so
+      // the list can be ranked and filtered by real wealth, not just how many
+      // of this one collection they hold. Sequential to stay under rate limits.
       const withBal: Holder[] = [];
       for (const h of holders) {
-        withBal.push(
-          withBal.length < 20 ? { ...h, balanceWei: await fetchEthBalance(api, h.address) } : h,
-        );
+        withBal.push({ ...h, balanceWei: await fetchEthBalance(api, h.address) });
       }
+      withBal.sort((a, b) => (BigInt(b.balanceWei ?? "0") > BigInt(a.balanceWei ?? "0") ? 1 : -1));
       setCandidates(withBal);
       if (holders.length === 0) setNote("no holders came back for that contract");
     } catch (e) {
@@ -182,6 +167,35 @@ export default function AdminTab() {
   }
 
   const whaleSet = new Set(whales.map((w) => w.address.toLowerCase()));
+  const minWei = (() => {
+    const n = Number(minEth);
+    return Number.isFinite(n) && n > 0 ? BigInt(Math.floor(n * 1e9)) * 1_000_000_000n : 0n;
+  })();
+  const overThreshold = candidates.filter(
+    (h) => h.balanceWei != null && BigInt(h.balanceWei) >= minWei && !whaleSet.has(h.address.toLowerCase()),
+  );
+  async function addAllOverThreshold() {
+    setBusy(true);
+    setError(null);
+    setNote(null);
+    try {
+      for (const h of overThreshold) {
+        await call("/api/admin/whales", {
+          method: "POST",
+          body: JSON.stringify({
+            address: h.address,
+            label: `${Number(formatEther(BigInt(h.balanceWei!))).toFixed(2)} ETH`,
+          }),
+        });
+      }
+      setNote(`added ${overThreshold.length} whale(s) with ≥ ${minEth} ETH`);
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
 
   if (!base || !token) {
     return (
@@ -268,21 +282,42 @@ export default function AdminTab() {
       <div style={{ marginTop: 24 }}>
         <h3 style={{ marginBottom: 8 }}>Discover whales from a collection</h3>
         <p className="dim" style={{ marginTop: 0, fontSize: 12 }}>
-          Paste a collection contract — its biggest holders are ranked here so you
-          can add them as whales. Sized by ETH balance (the one figure with a
-          price); NFT portfolio value has no floor feed on this chain.
+          Paste a collection contract — its holders (who by definition trade NFTs
+          on this chain) are looked up and ranked by ETH balance. Set a minimum
+          and add everyone above it in one click. There is no USD floor feed for
+          these NFTs, so wealth is measured in ETH (~$2.5k/ETH → 6 ETH ≈ $15k).
         </p>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
           <input
             value={discContract}
             onChange={(e) => setDiscContract(e.target.value)}
             placeholder="0x… collection contract"
-            style={{ flex: 1, minWidth: 260, fontFamily: "var(--mono)" }}
+            style={{ flex: 1, minWidth: 220, fontFamily: "var(--mono)" }}
           />
+          <label className="dim" style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
+            min
+            <input
+              value={minEth}
+              onChange={(e) => setMinEth(e.target.value)}
+              style={{ width: 56 }}
+            />
+            ETH
+          </label>
           <button className="primary" disabled={discBusy} onClick={() => void discoverWhales()}>
             {discBusy ? <span className="spin">SCANNING</span> : "find holders"}
           </button>
         </div>
+        {candidates.length > 0 ? (
+          <div style={{ marginTop: 8 }}>
+            <button
+              className="secondary"
+              disabled={busy || overThreshold.length === 0}
+              onClick={() => void addAllOverThreshold()}
+            >
+              add all ≥ {minEth} ETH ({overThreshold.length})
+            </button>
+          </div>
+        ) : null}
         {candidates.length > 0 ? (
           <ul style={{ listStyle: "none", padding: 0, margin: "10px 0 0", fontSize: 12 }}>
             {candidates.map((h) => {
@@ -353,41 +388,6 @@ export default function AdminTab() {
               </li>
             ))}
             {whales.length === 0 ? <li className="dim">none yet</li> : null}
-          </ul>
-        </div>
-
-        <div style={{ flex: 1, minWidth: 260 }}>
-          <h3 style={{ marginBottom: 8 }}>
-            Influencers <span className="dim" style={{ fontSize: 12 }}>({influencers.length})</span>
-            <button className="secondary" style={{ ...btn, marginLeft: 8 }} disabled={busy} onClick={addInfluencer}>
-              + add
-            </button>
-          </h3>
-          <ul style={{ listStyle: "none", padding: 0, margin: 0, fontSize: 12 }}>
-            {influencers.map((i) => (
-              <li key={i.address} style={{ display: "flex", justifyContent: "space-between", gap: 8, padding: "3px 0" }}>
-                <span title={i.address}>
-                  <strong>{i.name}</strong>
-                  {i.twitter ? <span className="dim"> · @{i.twitter}</span> : null}{" "}
-                  <span className="dim mono-break">{shortAddress(i.address)}</span>
-                </span>
-                <button
-                  className="secondary"
-                  style={btn}
-                  disabled={busy}
-                  onClick={() =>
-                    void curatedAction(
-                      `/api/admin/influencers?address=${i.address}`,
-                      { method: "DELETE" },
-                      "influencer removed",
-                    )
-                  }
-                >
-                  remove
-                </button>
-              </li>
-            ))}
-            {influencers.length === 0 ? <li className="dim">none yet</li> : null}
           </ul>
         </div>
       </div>

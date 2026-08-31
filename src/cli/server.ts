@@ -122,10 +122,8 @@ import {
   loadBilling,
 } from "./billing";
 import {
-  addInfluencer,
   addWhale,
   loadCurated,
-  removeInfluencer,
   removeWhale,
 } from "./curated";
 
@@ -2511,8 +2509,8 @@ const server = createServer(async (req, res) => {
     return;
   }
 
-  // ── Pro data: the curated whale & influencer lists ──────────────────────
-  // Reading them is a Pro feature; the site's Whale Alert and Influencers tabs
+  // ── Pro data: the curated whale list ─────────────────────────────────────
+  // Reading it is a Pro feature; the site's Whale Alert tab
   // fetch the addresses here and then read their on-chain activity directly.
   if (url.pathname === "/api/curated" && req.method === "GET") {
     const a = acting(req);
@@ -2521,7 +2519,7 @@ const server = createServer(async (req, res) => {
       return;
     }
     if (!isProReq(req)) {
-      json(res, 402, { error: "Whale Alert and Influencers are Pro features", tier: "free" });
+      json(res, 402, { error: "Whale Alert is a Pro feature", tier: "free" });
       return;
     }
     json(res, 200, loadCurated(CONFIG_PATH));
@@ -2540,33 +2538,6 @@ const server = createServer(async (req, res) => {
       } else {
         const body = await readBody(req);
         json(res, 200, addWhale(CONFIG_PATH, String(body.address ?? ""), String(body.label ?? "") || undefined));
-      }
-    } catch (e) {
-      json(res, 400, { error: e instanceof Error ? e.message : String(e) });
-    }
-    return;
-  }
-  if (url.pathname === "/api/admin/influencers" && (req.method === "POST" || req.method === "DELETE")) {
-    if (!isAdminReq(req)) {
-      json(res, 403, { error: "admins only" });
-      return;
-    }
-    try {
-      if (req.method === "DELETE") {
-        const address = url.searchParams.get("address") ?? "";
-        json(res, 200, removeInfluencer(CONFIG_PATH, address));
-      } else {
-        const body = await readBody(req);
-        json(
-          res,
-          200,
-          addInfluencer(
-            CONFIG_PATH,
-            String(body.address ?? ""),
-            String(body.name ?? ""),
-            String(body.twitter ?? "") || undefined,
-          ),
-        );
       }
     } catch (e) {
       json(res, 400, { error: e instanceof Error ? e.message : String(e) });
