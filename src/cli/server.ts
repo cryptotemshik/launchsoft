@@ -121,6 +121,13 @@ import {
   grantFreeSnipes,
   loadBilling,
 } from "./billing";
+import {
+  addInfluencer,
+  addWhale,
+  loadCurated,
+  removeInfluencer,
+  removeWhale,
+} from "./curated";
 
 import {
   MATURE_MS,
@@ -392,6 +399,14 @@ interface Acting {
 function isAdminReq(req: IncomingMessage): boolean {
   const s = requestSession(req);
   return Boolean(s && isAdmin(s.address));
+}
+/** True when the request may use Pro features: an admin, or a Pro account. */
+function isProReq(req: IncomingMessage): boolean {
+  const s = requestSession(req);
+  if (!s) return false;
+  if (isAdmin(s.address)) return true;
+  const acct = getAccount(ACCOUNTS_ROOT, s.address);
+  return Boolean(acct && isPro(acct));
 }
 function acting(req: IncomingMessage): Acting | null {
   if (tokenOk(req.headers.authorization)) {
@@ -2477,6 +2492,69 @@ const server = createServer(async (req, res) => {
       proUntil: acct?.proUntil ?? null,
       entries: bill.entries.slice(-50).reverse(),
     });
+    return;
+  }
+
+  // ── Pro data: the curated whale & influencer lists ──────────────────────
+  // Reading them is a Pro feature; the site's Whale Alert and Influencers tabs
+  // fetch the addresses here and then read their on-chain activity directly.
+  if (url.pathname === "/api/curated" && req.method === "GET") {
+    const a = acting(req);
+    if (!a) {
+      json(res, 401, { error: "sign in with your wallet first" });
+      return;
+    }
+    if (!isProReq(req)) {
+      json(res, 402, { error: "Whale Alert and Influencers are Pro features", tier: "free" });
+      return;
+    }
+    json(res, 200, loadCurated(CONFIG_PATH));
+    return;
+  }
+  // Admin curates those lists.
+  if (url.pathname === "/api/admin/whales" && (req.method === "POST" || req.method === "DELETE")) {
+    if (!isAdminReq(req)) {
+      json(res, 403, { error: "admins only" });
+      return;
+    }
+    try {
+      if (req.method === "DELETE") {
+        const address = url.searchParams.get("address") ?? "";
+        json(res, 200, removeWhale(CONFIG_PATH, address));
+      } else {
+        const body = await readBody(req);
+        json(res, 200, addWhale(CONFIG_PATH, String(body.address ?? ""), String(body.label ?? "") || undefined));
+      }
+    } catch (e) {
+      json(res, 400, { error: e instanceof Error ? e.message : String(e) });
+    }
+    return;
+  }
+  if (url.pathname === "/api/admin/influencers" && (req.method === "POST" || req.method === "DELETE")) {
+    if (!isAdminReq(req)) {
+      json(res, 403, { error: "admins only" });
+      return;
+    }
+    try {
+      if (req.method === "DELETE") {
+        const address = url.searchParams.get("address") ?? "";
+        json(res, 200, removeInfluencer(CONFIG_PATH, address));
+      } else {
+        const body = await readBody(req);
+        json(
+          res,
+          200,
+          addInfluencer(
+            CONFIG_PATH,
+            String(body.address ?? ""),
+            String(body.name ?? ""),
+            String(body.twitter ?? "") || undefined,
+          ),
+        );
+      }
+    } catch (e) {
+      json(res, 400, { error: e instanceof Error ? e.message : String(e) });
+    }
     return;
   }
   if (url.pathname === "/api/auth/logout" && req.method === "POST") {

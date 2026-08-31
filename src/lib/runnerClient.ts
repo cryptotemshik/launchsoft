@@ -9,7 +9,7 @@
  * localStorage when the user opts in; otherwise it lives in sessionStorage and
  * is gone when the browser closes.
  */
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 const URL_KEY = "launchpad.runner.url";
 const TOKEN_KEY = "launchpad.runner.token";
@@ -94,6 +94,43 @@ export async function signInWithWallet(
   };
   if (!v.ok || !body.token) throw new Error(body.error ?? `sign-in failed (${v.status})`);
   return { token: body.token, address: body.address ?? address, admin: Boolean(body.admin) };
+}
+
+export interface Me {
+  address: string;
+  admin: boolean;
+  tier: "free" | "pro";
+  proUntil: number | null;
+  profile: { nickname?: string; avatarUrl?: string; twitter?: string; telegram?: string };
+}
+
+/**
+ * Who the browser is signed in as, from the server — or null when there is no
+ * session yet. Used to decide what the UI offers (the admin tab, Pro-only
+ * features, free-tier caps). It only ever hides or reveals; every gated route
+ * checks for itself server-side, so a forged answer here buys nothing.
+ */
+export function useMe(): { me: Me | null; loading: boolean; reload: () => void } {
+  const { base, token, call } = useRunnerApi();
+  const [me, setMe] = useState<Me | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    let live = true;
+    if (!base || !token) {
+      setMe(null);
+      return;
+    }
+    setLoading(true);
+    void call("/api/auth/me")
+      .then((m) => live && setMe(m as unknown as Me))
+      .catch(() => live && setMe(null))
+      .finally(() => live && setLoading(false));
+    return () => {
+      live = false;
+    };
+  }, [base, token, call, tick]);
+  return { me, loading, reload: () => setTick((n) => n + 1) };
 }
 
 export function useRunnerApi(): RunnerApi {

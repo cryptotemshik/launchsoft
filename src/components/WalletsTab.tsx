@@ -23,10 +23,12 @@ import {
   type NotifyPermission,
 } from "../lib/notify";
 import { timeAgo } from "../lib/convert";
+import { useMe } from "../lib/runnerClient";
 import { shortAddress } from "./ConnectBar";
 import { AddrLink, TxLink } from "./Bits";
 
 const POLL_MS = 5_000;
+const FREE_TRACKER_MAX = 3;
 const KIND_CLASS: Record<WalletEvent["kind"], string> = {
   mint: "ev-mint",
   buy: "ev-buy",
@@ -37,6 +39,7 @@ const KIND_CLASS: Record<WalletEvent["kind"], string> = {
 
 export default function WalletsTab() {
   const chainInfo = useActiveChain();
+  const { me } = useMe();
   const api = chainInfo?.blockscoutApi;
 
   const [wallets, setWallets] = useState<WatchedWallet[]>(loadWatchlist);
@@ -109,6 +112,16 @@ export default function WalletsTab() {
     const { wallets: parsed, invalid } = parseWalletBlob(blob);
     if (parsed.length === 0) {
       setAddNote("No valid 0x… addresses found. Paste one per line (label optional).");
+      return;
+    }
+    // Free accounts track a handful of wallets; Pro is unlimited. Signed-out
+    // visitors are treated as free. The cap is on the total, so adding what
+    // would overflow it is refused with a clear nudge.
+    const pro = Boolean(me?.tier === "pro" || me?.admin);
+    if (!pro && wallets.length + parsed.length > FREE_TRACKER_MAX) {
+      setAddNote(
+        `The free plan tracks up to ${FREE_TRACKER_MAX} wallets — upgrade to Pro for an unlimited tracker.`,
+      );
       return;
     }
     const before = wallets.length;

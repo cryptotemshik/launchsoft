@@ -145,3 +145,17 @@ export const ShieldIcon = (p: SVGProps<SVGSVGElement>) => (
     <path d="M9 12l2 2 4-4" />
   </svg>
 );
+
+export const WhaleIcon = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...base(p)}>
+    <path d="M3 12c3 4 7 5 11 3 2-1 4-3 6-6 0 5-3 9-8 10-4 .8-8-1-9-4z" />
+    <path d="M3 12c0-3 2-5 5-5" />
+    <circle cx="8.5" cy="10.5" r=".6" fill="currentColor" />
+  </svg>
+);
+
+export const StarIcon = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...base(p)}>
+    <path d="M12 3l2.6 5.3 5.9.9-4.3 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8L3.5 9.2l5.9-.9z" />
+  </svg>
+);

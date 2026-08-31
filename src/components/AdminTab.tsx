@@ -37,6 +37,8 @@ export default function AdminTab() {
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [whales, setWhales] = useState<{ address: string; label?: string }[]>([]);
+  const [influencers, setInfluencers] = useState<{ address: string; name: string; twitter?: string }[]>([]);
 
   const load = useCallback(async () => {
     if (!base || !token) return;
@@ -48,6 +50,12 @@ export default function AdminTab() {
       };
       setAccounts(r.accounts);
       setSummary(r.summary);
+      const c = (await call("/api/curated")) as unknown as {
+        whales: { address: string; label?: string }[];
+        influencers: { address: string; name: string; twitter?: string }[];
+      };
+      setWhales(c.whales ?? []);
+      setInfluencers(c.influencers ?? []);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -97,6 +105,39 @@ export default function AdminTab() {
     }
     const reason = prompt("Reason (for the ledger):", "goodwill") ?? "admin adjustment";
     void action("/api/admin/adjust", { address, wei: wei.toString(), note: reason }, `adjusted ${shortAddress(address)}`);
+  }
+
+  async function curatedAction(path: string, init: RequestInit, ok: string) {
+    setBusy(true);
+    setError(null);
+    setNote(null);
+    try {
+      await call(path, init);
+      setNote(ok);
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+  function addWhale() {
+    const address = prompt("Whale wallet address (0x…)")?.trim();
+    if (!address) return;
+    const label = prompt("Label (optional)")?.trim() || "";
+    void curatedAction("/api/admin/whales", { method: "POST", body: JSON.stringify({ address, label }) }, "whale added");
+  }
+  function addInfluencer() {
+    const address = prompt("Influencer wallet address (0x…)")?.trim();
+    if (!address) return;
+    const name = prompt("Name")?.trim();
+    if (!name) return;
+    const twitter = prompt("Twitter/X handle (optional)")?.trim() || "";
+    void curatedAction(
+      "/api/admin/influencers",
+      { method: "POST", body: JSON.stringify({ address, name, twitter }) },
+      "influencer added",
+    );
   }
 
   if (!base || !token) {
@@ -176,6 +217,77 @@ export default function AdminTab() {
             ) : null}
           </tbody>
         </table>
+      </div>
+
+      <div style={{ display: "flex", gap: 24, flexWrap: "wrap", marginTop: 24 }}>
+        <div style={{ flex: 1, minWidth: 260 }}>
+          <h3 style={{ marginBottom: 8 }}>
+            Whales <span className="dim" style={{ fontSize: 12 }}>({whales.length})</span>
+            <button className="secondary" style={{ ...btn, marginLeft: 8 }} disabled={busy} onClick={addWhale}>
+              + add
+            </button>
+          </h3>
+          <ul style={{ listStyle: "none", padding: 0, margin: 0, fontSize: 12 }}>
+            {whales.map((w) => (
+              <li key={w.address} style={{ display: "flex", justifyContent: "space-between", gap: 8, padding: "3px 0" }}>
+                <span className="mono-break" title={w.address}>
+                  {shortAddress(w.address)}
+                  {w.label ? <span className="dim"> · {w.label}</span> : null}
+                </span>
+                <button
+                  className="secondary"
+                  style={btn}
+                  disabled={busy}
+                  onClick={() =>
+                    void curatedAction(
+                      `/api/admin/whales?address=${w.address}`,
+                      { method: "DELETE" },
+                      "whale removed",
+                    )
+                  }
+                >
+                  remove
+                </button>
+              </li>
+            ))}
+            {whales.length === 0 ? <li className="dim">none yet</li> : null}
+          </ul>
+        </div>
+
+        <div style={{ flex: 1, minWidth: 260 }}>
+          <h3 style={{ marginBottom: 8 }}>
+            Influencers <span className="dim" style={{ fontSize: 12 }}>({influencers.length})</span>
+            <button className="secondary" style={{ ...btn, marginLeft: 8 }} disabled={busy} onClick={addInfluencer}>
+              + add
+            </button>
+          </h3>
+          <ul style={{ listStyle: "none", padding: 0, margin: 0, fontSize: 12 }}>
+            {influencers.map((i) => (
+              <li key={i.address} style={{ display: "flex", justifyContent: "space-between", gap: 8, padding: "3px 0" }}>
+                <span title={i.address}>
+                  <strong>{i.name}</strong>
+                  {i.twitter ? <span className="dim"> · @{i.twitter}</span> : null}{" "}
+                  <span className="dim mono-break">{shortAddress(i.address)}</span>
+                </span>
+                <button
+                  className="secondary"
+                  style={btn}
+                  disabled={busy}
+                  onClick={() =>
+                    void curatedAction(
+                      `/api/admin/influencers?address=${i.address}`,
+                      { method: "DELETE" },
+                      "influencer removed",
+                    )
+                  }
+                >
+                  remove
+                </button>
+              </li>
+            ))}
+            {influencers.length === 0 ? <li className="dim">none yet</li> : null}
+          </ul>
+        </div>
       </div>
     </div>
   );

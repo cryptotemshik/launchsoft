@@ -15,6 +15,8 @@ import StatusTab from "./components/StatusTab";
 import WalletsTab from "./components/WalletsTab";
 import ProfileTab from "./components/ProfileTab";
 import AdminTab from "./components/AdminTab";
+import WhaleAlertTab from "./components/WhaleAlertTab";
+import InfluencersTab from "./components/InfluencersTab";
 import { installClickSound } from "./lib/sound";
 import { useRunnerApi } from "./lib/runnerClient";
 import { useActiveChain } from "./signer";
@@ -35,6 +37,8 @@ import {
   WalletIcon,
   UserIcon,
   ShieldIcon,
+  WhaleIcon,
+  StarIcon,
 } from "./components/icons";
 
 type Tab =
@@ -52,6 +56,8 @@ type Tab =
   | "calendar"
   | "profile"
   | "admin"
+  | "whales"
+  | "influencers"
 ;
 
 const TAB_ICON = {
@@ -69,6 +75,8 @@ const TAB_ICON = {
   calendar: CalendarGridIcon,
   profile: UserIcon,
   admin: ShieldIcon,
+  whales: WhaleIcon,
+  influencers: StarIcon,
 } as const;
 
 export default function App() {
@@ -139,6 +147,8 @@ export default function App() {
       <div className="tabs">
         {([
           ["wallets", "TRACKER"],
+          ["whales", "WHALES"],
+          ["influencers", "INFLUENCERS"],
           ["scanner", "SCANNER"],
           ["live", "LIVE"],
           ["calendar", "CALENDAR"],
@@ -264,6 +274,8 @@ export default function App() {
       {tab === "live" ? <LiveTab /> : null}
       {tab === "profile" ? <ProfileTab /> : null}
       {tab === "admin" && isAdmin ? <AdminTab /> : null}
+      {tab === "whales" ? <WhaleAlertTab /> : null}
+      {tab === "influencers" ? <InfluencersTab /> : null}
       <div className="footer">
         {info.label} · explorer:{" "}
         <a href={info.explorerUrl} target="_blank" rel="noreferrer">
