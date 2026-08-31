@@ -96,6 +96,7 @@ import {
   setChatId as tgSetChatId,
   unlink as tgUnlink,
 } from "./telegramLink";
+import { getScanBlock, loadTracker, setScanBlock, setTracker } from "./tracker";
 import { startTelegramBot } from "./telegramBot";
 import { addUpcoming, annotateUpcoming, loadUpcoming, removeUpcoming, sameDrop } from "./upcomingStore";
 import { loadJobs, restoreStatus, saveJobs, type StoredJob, type StoredStatus } from "./jobStore";
@@ -1279,6 +1280,111 @@ async function whaleTick(): Promise<void> {
     log(`whale alert: pass failed (${why})`);
   } finally {
     if (WHALE_ON) setTimeout(() => void whaleTick(), WHALE_POLL_MS);
+  }
+}
+
+// ── Tracker: watch each account's tracked wallets and push moves to Telegram ─
+// The browser tracker only fires while its tab is open; this is the always-on
+// half. One sweep covers everyone: gather the wallets every linked account is
+// tracking, read the ERC-721 acquisitions landing in any of them since the last
+// pass, and route each to the account(s) watching that wallet. The same log
+// filter and parser as the whale engine — a tracked wallet is just a whale of
+// one's own choosing.
+const TRACKER_ON = process.env.SNIPE_TRACKER_ALERT !== "0";
+const TRACKER_POLL_MS = envNumber(process.env.SNIPE_TRACKER_POLL_MS, 60_000, 5_000);
+/** Free accounts track a few wallets; Pro lifts the cap to something generous. */
+const FREE_TRACKER_MAX = 3;
+const TRACKER_MAX_PRO = 100;
+let trackerLast: { at: number; note: string } = { at: 0, note: "starting" };
+
+const shortHex = (a: string) => `${a.slice(0, 6)}…${a.slice(-4)}`;
+
+async function trackerTick(): Promise<void> {
+  try {
+    const cfg = loadConfig(CONFIG_PATH);
+    const info = getChainInfo(cfg.chainId);
+    if (!info) return;
+    // Only accounts that can actually receive the alert are worth scanning for.
+    const watchers = new Map<string, { cfgPath: string; label?: string }[]>();
+    for (const addr of accountDirs(ACCOUNTS_ROOT)) {
+      const cfgPath = accountConfigPath(ACCOUNTS_ROOT, addr);
+      if (!tgIsLinked(cfgPath)) continue;
+      for (const w of loadTracker(cfgPath)) {
+        const k = w.address.toLowerCase();
+        const arr = watchers.get(k) ?? [];
+        arr.push({ cfgPath, label: w.label });
+        watchers.set(k, arr);
+      }
+    }
+    if (watchers.size === 0) {
+      trackerLast = { at: Date.now(), note: "no tracked wallets on any linked account" };
+      return;
+    }
+    const recipients = [...watchers.keys()];
+    const recipSet = new Set(recipients);
+    const client = makeReadClient(info.chain, scanRpcs(cfg));
+    const tip = await client.getBlockNumber();
+    let from = BigInt(getScanBlock(CONFIG_PATH) || 0);
+    if (from === 0n || from >= tip) {
+      setScanBlock(CONFIG_PATH, Number(tip)); // anchor at the tip, watch forward
+      trackerLast = { at: Date.now(), note: `watching ${recipients.length} wallets from block ${tip}` };
+      return;
+    }
+    if (tip - from > WHALE_MAX_CATCHUP) from = tip - WHALE_MAX_CATCHUP;
+    const batches = whaleTopicBatches(recipients, 100);
+    let found = 0;
+    for (let lo = from + 1n; lo <= tip; lo += WHALE_STEP_BLOCKS) {
+      const hi = lo + WHALE_STEP_BLOCKS - 1n > tip ? tip : lo + WHALE_STEP_BLOCKS - 1n;
+      // One message per (account, wallet, collection) in this range, so ten
+      // mints in a row are "minted 10×", not ten pings.
+      const agg = new Map<
+        string,
+        { cfgPath: string; label?: string; wallet: string; contract: string; count: number; minted: boolean }
+      >();
+      for (const batch of batches) {
+        const logs = (await client.request({
+          method: "eth_getLogs",
+          params: [
+            {
+              fromBlock: `0x${lo.toString(16)}`,
+              toBlock: `0x${hi.toString(16)}`,
+              topics: [TRANSFER_TOPIC, null, batch],
+            },
+          ],
+        } as never)) as unknown as { address?: string; topics?: string[]; blockNumber?: string }[];
+        const acqs = parseAcquisitions(logs ?? [], recipSet);
+        for (const acq of acqs) {
+          for (const sub of watchers.get(acq.whale) ?? []) {
+            const key = `${sub.cfgPath}|${acq.whale}|${acq.contract}`;
+            const e =
+              agg.get(key) ??
+              { cfgPath: sub.cfgPath, label: sub.label, wallet: acq.whale, contract: acq.contract, count: 0, minted: false };
+            e.count += 1;
+            e.minted = e.minted || acq.minted;
+            agg.set(key, e);
+          }
+        }
+      }
+      for (const e of agg.values()) {
+        found += 1;
+        const name = creators.nameFor(e.contract as `0x${string}`) ?? e.contract;
+        const who = e.label ? escapeHtml(e.label) : shortHex(e.wallet);
+        const verb = e.minted ? "minted" : "acquired";
+        const times = e.count > 1 ? ` ${e.count}×` : "";
+        notifyAccount(
+          e.cfgPath,
+          `👀 <b>${who}</b> ${verb}${times} ${escapeHtml(name)}\n<code>${e.contract}</code>`,
+        );
+      }
+      setScanBlock(CONFIG_PATH, Number(hi));
+    }
+    trackerLast = { at: Date.now(), note: `${recipients.length} wallets · ${found} moves this pass` };
+  } catch (e) {
+    const why = e instanceof Error ? e.message.split("\n")[0] : String(e);
+    trackerLast = { at: Date.now(), note: `pass failed: ${why}` };
+    log(`tracker: pass failed (${why})`);
+  } finally {
+    if (TRACKER_ON) setTimeout(() => void trackerTick(), TRACKER_POLL_MS);
   }
 }
 
@@ -3181,6 +3287,33 @@ const server = createServer(async (req, res) => {
     return;
   }
 
+  // ── Tracker: the server's copy of an account's watched wallets ──────────────
+  // The browser owns the list; this is where it mirrors it so the 24/7 sweep
+  // can push a tracked wallet's moves to Telegram even with no tab open.
+  if (url.pathname === "/api/tracker" && (req.method === "GET" || req.method === "PUT")) {
+    const a = acting(req);
+    if (!a) {
+      json(res, 401, { error: "sign in with your wallet first" });
+      return;
+    }
+    const acct = a.address ? getAccount(ACCOUNTS_ROOT, a.address) : null;
+    const max = !a.address || (acct && isPro(acct)) ? TRACKER_MAX_PRO : FREE_TRACKER_MAX;
+    if (req.method === "GET") {
+      json(res, 200, { wallets: loadTracker(a.cfgPath), max });
+      return;
+    }
+    const body = await readBody(req);
+    const list = Array.isArray(body.wallets)
+      ? (body.wallets as unknown[]).filter(
+          (w): w is { address: string; label?: string } =>
+            !!w && typeof (w as { address?: unknown }).address === "string",
+        )
+      : [];
+    const { stored, dropped } = setTracker(a.cfgPath, list, max);
+    json(res, 200, { wallets: stored, dropped, max });
+    return;
+  }
+
   // Pay for a month of Pro from the balance, priced in dollars, debited in ETH.
   if (url.pathname === "/api/subscribe" && req.method === "POST") {
     const a = acting(req);
@@ -3998,6 +4131,7 @@ const server = createServer(async (req, res) => {
         index: dropIndex
           ? { days: INDEX_DAYS, held: dropIndex.count(), last: indexLast }
           : { days: 0, held: 0, last: null, why: indexNote ?? "off" },
+        tracker: TRACKER_ON ? trackerLast : null,
         readRpc: info ? rpcHost(readRpc(cfg, info)) : null,
         jobs: jobs.map(jobView),
       });
@@ -4978,6 +5112,10 @@ server.listen(PORT, HOST, () => {
     if (DEPOSITS_ON) {
       log("deposits    crediting per-account deposit addresses (SNIPE_DEPOSITS=0 to disable)");
       setTimeout(() => void depositTick(), 8_000);
+    }
+    if (TRACKER_ON) {
+      log("tracker     pushing tracked-wallet moves to linked Telegram (SNIPE_TRACKER_ALERT=0 to disable)");
+      setTimeout(() => void trackerTick(), 10_000);
     }
   } catch {
     log("config not readable yet — queue requests will report the error");

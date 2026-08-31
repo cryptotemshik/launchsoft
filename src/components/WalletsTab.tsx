@@ -23,7 +23,7 @@ import {
   type NotifyPermission,
 } from "../lib/notify";
 import { timeAgo } from "../lib/convert";
-import { useMe } from "../lib/runnerClient";
+import { useMe, useRunnerApi } from "../lib/runnerClient";
 import { shortAddress } from "./ConnectBar";
 import { AddrLink, TxLink } from "./Bits";
 
@@ -40,6 +40,7 @@ const KIND_CLASS: Record<WalletEvent["kind"], string> = {
 export default function WalletsTab() {
   const chainInfo = useActiveChain();
   const { me } = useMe();
+  const { base, token, call } = useRunnerApi();
   const api = chainInfo?.blockscoutApi;
 
   const [wallets, setWallets] = useState<WatchedWallet[]>(loadWatchlist);
@@ -59,6 +60,18 @@ export default function WalletsTab() {
     () => wallets.map((w) => w.address).join(","),
     [wallets],
   );
+
+  // When signed in, mirror the watchlist to the server so its 24/7 sweep can
+  // push a tracked wallet's moves to Telegram even with no tab open. The browser
+  // stays the source of truth; this just keeps the server's copy in step.
+  useEffect(() => {
+    if (!base || !token) return;
+    void call("/api/tracker", {
+      method: "PUT",
+      body: JSON.stringify({ wallets: wallets.map((w) => ({ address: w.address, label: w.label })) }),
+    }).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [walletsKey, base, token]);
 
   async function poll() {
     if (!api || wallets.length === 0 || checking) return;
@@ -148,6 +161,12 @@ export default function WalletsTab() {
           bulk: one per line, an optional label on the same line
           (<code>0xabc… whale</code>).
         </p>
+        {base && token ? (
+          <p className="hint dim" style={{ marginTop: -4 }}>
+            📲 Connect Telegram on the <b>Profile</b> tab and these moves reach you
+            even with this tab closed.
+          </p>
+        ) : null}
         <textarea
           rows={4}
           value={blob}
