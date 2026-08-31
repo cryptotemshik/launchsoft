@@ -26,6 +26,7 @@ import { keystorePassphrase, isEncrypted, PASSPHRASE_ENV } from "./keystore";
 import { getChainInfo } from "../chains";
 import { maturedAddresses } from "./withdrawRegistry";
 import { makeInProcessSigner, serveSigner } from "./signer";
+import { writeAddressBook } from "./addressBook";
 import type { PolicyContext } from "./signPolicy";
 import { parseEther } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
@@ -98,6 +99,20 @@ const signer = makeInProcessSigner({
   loadKeys: () => loadKeyEntries(configPath, cfg.keysFile),
   policy,
 });
+
+// Publish the public address book so the keyless API can list wallets without
+// a passphrase. The daemon is the one process that can, so it is the one that
+// keeps this current — at startup, and it is refreshed here whenever wallets
+// change (there is no wallet-change path in the daemon yet, so startup is
+// enough for now; it is rewritten every boot).
+writeAddressBook(
+  configPath,
+  cfg.keysFile,
+  loadKeyEntries(configPath, cfg.keysFile).map((e) => ({
+    address: privateKeyToAccount(e.key).address,
+    label: e.label,
+  })),
+);
 
 // A stale socket file from a crash refuses to bind; the daemon owns this path,
 // so clearing it on start is safe and is the difference between a clean

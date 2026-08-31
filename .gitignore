@@ -13,6 +13,10 @@ snipe.config.json.*
 snipe.env
 *.keys
 !*.keys.example
+# The public address book and the signer socket are runtime state beside the
+# config. The book holds only addresses, but it is still per-box state.
+*.addresses.json
+*.signer.sock
 # A key file named something else is still a key file. The runner takes the
 # name from `keysFile`, so nothing stops someone calling it keys.txt.
 keys.txt

@@ -93,6 +93,7 @@ import { loadJobs, restoreStatus, saveJobs, type StoredJob, type StoredStatus } 
 import { audit as auditLine, type AuditEvent } from "./audit";
 import { judgeTransaction, type PolicyContext } from "./signPolicy";
 import { connectSigner, makeInProcessSigner, type Signer } from "./signer";
+import { loadAddressBook, writeAddressBook, type WalletRef } from "./addressBook";
 import {
   MATURE_MS,
   maturedAddresses,
@@ -412,9 +413,7 @@ async function buildProfitReport(): Promise<Record<string, unknown>> {
   if (!info) throw new Error(`chain ${cfg.chainId} isn't in the registry`);
 
   const started = Date.now();
-  const addresses = loadKeyEntries(CONFIG_PATH, cfg.keysFile).map(
-    (e) => privateKeyToAccount(e.key).address,
-  );
+  const addresses = walletBook().map((w) => w.address);
   const costs = costByCollection(loadMints(CONFIG_PATH));
   const known = loadCollections(CONFIG_PATH);
 
@@ -1341,11 +1340,8 @@ function walletsOfActiveJob(): Set<string> | null {
     return new Set(job.wallets.map((w) => w.toLowerCase()));
   }
   try {
-    const cfg = loadConfig(CONFIG_PATH);
     return new Set(
-      loadKeyEntries(CONFIG_PATH, cfg.keysFile).map((e) =>
-        privateKeyToAccount(e.key).address.toLowerCase(),
-      ),
+      walletBook().map((w) => w.address.toLowerCase()),
     );
   } catch {
     // Unreachable from the funding route, which loads the same config first and
@@ -1611,9 +1607,7 @@ function policyContext(): PolicyContext {
   }
   return {
     ownWallets: new Set(
-      loadKeyEntries(CONFIG_PATH, cfg.keysFile).map((e) =>
-        privateKeyToAccount(e.key).address.toLowerCase(),
-      ),
+      walletBook().map((w) => w.address.toLowerCase()),
     ),
     withdrawTo,
     mintContract: (info?.seaDrop ?? "").toLowerCase(),
@@ -1639,6 +1633,25 @@ function policyContext(): PolicyContext {
  * The policy is enforced on the signer's side either way; passing it to the
  * in-process signer keeps that true when there is no socket.
  */
+/**
+ * The wallets, by address and label, without needing a key.
+ *
+ * The address book when there is one — the case that lets this process run
+ * with no passphrase at all. Otherwise derived from the key file, which needs
+ * the passphrase but is exactly the single-process case where this process
+ * has it. Either way the rest of the server asks here and never decrypts a key
+ * just to learn an address.
+ */
+function walletBook(): WalletRef[] {
+  const cfg = loadConfig(CONFIG_PATH);
+  const book = loadAddressBook(CONFIG_PATH, cfg.keysFile);
+  if (book) return book;
+  return loadKeyEntries(CONFIG_PATH, cfg.keysFile).map((e) => ({
+    address: privateKeyToAccount(e.key).address,
+    label: e.label,
+  }));
+}
+
 const SIGNER_SOCKET = process.env.SNIPE_SIGNER_SOCKET?.trim() || "";
 function getSigner(): Signer {
   if (SIGNER_SOCKET) return connectSigner(SIGNER_SOCKET);
@@ -1685,6 +1698,11 @@ function writeKeys(entries: KeyEntry[]) {
   // through a temporary file and a rename so a crash mid-write cannot leave
   // half a wallet list. 0600 either way.
   writeKeysText(abs, serialiseKeys(entries), keystorePassphrase());
+  // Keep the public address book in step, so a keyless API sees the change.
+  writeAddressBook(CONFIG_PATH, cfg.keysFile, entries.map((e) => ({
+    address: privateKeyToAccount(e.key).address,
+    label: e.label,
+  })));
 }
 
 /**
@@ -1698,12 +1716,9 @@ let balanceCache: { at: number; values: Map<string, string> } | null = null;
 /** Addresses, labels and balances — never keys. */
 async function walletsView() {
   const cfg = loadConfig(CONFIG_PATH);
-  const entries = loadKeyEntries(CONFIG_PATH, cfg.keysFile);
   const info = getChainInfo(cfg.chainId);
-  const addresses = entries.map((e) => ({
-    address: privateKeyToAccount(e.key).address,
-    label: e.label,
-  }));
+  // Addresses and labels come from the book, so listing wallets needs no key.
+  const addresses = walletBook().map((w) => ({ address: w.address, label: w.label }));
 
   let balances = new Map<string, string>();
   const fresh = balanceCache && Date.now() - balanceCache.at < BALANCE_TTL_MS;
@@ -2187,6 +2202,18 @@ const server = createServer(async (req, res) => {
 
     // Add wallets. Keys are accepted, stored, and never handed back.
     if (url.pathname === "/api/wallets" && req.method === "POST") {
+      // Managing wallets writes the encrypted key file, which needs the
+      // passphrase this process deliberately does not have when the signer
+      // runs elsewhere. So in that mode it is refused here rather than
+      // half-done: add or remove wallets where the keys live.
+      if (SIGNER_SOCKET) {
+        json(res, 409, {
+          error:
+            "wallet management runs on the signer process — this API holds no key. " +
+            "Add or remove wallets there.",
+        });
+        return;
+      }
       const body = await readBody(req);
       const raw = typeof body.keys === "string" ? body.keys : "";
       if (!raw.trim()) throw new Error("no keys supplied");
@@ -2226,6 +2253,18 @@ const server = createServer(async (req, res) => {
     // Removes one wallet (?address=) or a batch (JSON body {addresses:[…]}),
     // so clearing out a set doesn't mean one request per wallet.
     if (url.pathname === "/api/wallets" && req.method === "DELETE") {
+      // Managing wallets writes the encrypted key file, which needs the
+      // passphrase this process deliberately does not have when the signer
+      // runs elsewhere. So in that mode it is refused here rather than
+      // half-done: add or remove wallets where the keys live.
+      if (SIGNER_SOCKET) {
+        json(res, 409, {
+          error:
+            "wallet management runs on the signer process — this API holds no key. " +
+            "Add or remove wallets there.",
+        });
+        return;
+      }
       if (activeJobId) {
         json(res, 409, { error: "a job is running — wait for it or abort first" });
         return;
@@ -2614,9 +2653,7 @@ const server = createServer(async (req, res) => {
       const only =
         onlyRaw && /^0x[0-9a-fA-F]{40}$/.test(onlyRaw) ? (onlyRaw as `0x${string}`) : undefined;
 
-      const addresses = loadKeyEntries(CONFIG_PATH, cfg.keysFile).map(
-        (e) => privateKeyToAccount(e.key).address,
-      );
+      const addresses = walletBook().map((w) => w.address);
       const started = Date.now();
       const client = makeReadClient(info.chain, readRpcs(cfg));
 
@@ -2683,15 +2720,15 @@ const server = createServer(async (req, res) => {
       const cfg = loadConfig(CONFIG_PATH);
       const info = getChainInfo(cfg.chainId);
       if (!info) throw new Error(`chain ${cfg.chainId} isn't in the registry`);
-      const allEntries = loadKeyEntries(CONFIG_PATH, cfg.keysFile);
+      const allEntries = walletBook();
       // Which wallets to gather from. Sweeping every wallet is the common case
       // and stays the default, but gathering a few onto one address and a few
       // onto another is a real thing to want, and doing it by sweeping the lot
       // and sending half back is both slower and more gas.
-      const entries = chooseWallets(body, "from", allEntries, (e) =>
-        privateKeyToAccount(e.key).address,
+      const entries = chooseWallets(body, "from", allEntries, (w) =>
+        w.address,
       );
-      const addresses = entries.map((e) => privateKeyToAccount(e.key).address);
+      const addresses = entries.map((w) => w.address);
 
       // One scan for every chosen wallet and every collection, so a sweep
       // can't move what it happened to see and silently leave the rest.
@@ -2713,7 +2750,7 @@ const server = createServer(async (req, res) => {
       }
 
       const perWallet = entries.map((e) => {
-        const address = privateKeyToAccount(e.key).address;
+        const address = e.address;
         const held = byWallet.get(address.toLowerCase()) ?? [];
         return {
           wallet: address,
@@ -2768,7 +2805,7 @@ const server = createServer(async (req, res) => {
       // this mint is about to fire from.
       const body = await readBody(req);
       const cfg = loadConfig(CONFIG_PATH);
-      const entries = loadKeyEntries(CONFIG_PATH, cfg.keysFile);
+      const entries = walletBook();
       if (entries.length === 0) throw new Error("no wallets on the server to fund");
 
       // The payer is either one of the stored wallets — signed by the shared
@@ -2784,9 +2821,9 @@ const server = createServer(async (req, res) => {
         disperseSigner = makeInProcessSigner({ loadKeys: () => [{ key: oneOff }], policy: policyContext });
       } else if (typeof body.fromAddress === "string") {
         const want = body.fromAddress.toLowerCase();
-        const hit = entries.find((e) => privateKeyToAccount(e.key).address.toLowerCase() === want);
+        const hit = entries.find((w) => w.address.toLowerCase() === want);
         if (!hit) throw new Error("that source wallet isn't on the server");
-        fromAddress = privateKeyToAccount(hit.key).address;
+        fromAddress = hit.address;
         disperseSigner = getSigner();
       } else {
         throw new Error("supply either fromKey (a one-off payer) or fromAddress (a stored wallet)");
@@ -2824,7 +2861,7 @@ const server = createServer(async (req, res) => {
       }
       // A caller may name the wallets to fund — the queue does, so funding a
       // job pays exactly the wallets that job fires from and no others.
-      const stored = entries.map((e) => privateKeyToAccount(e.key).address);
+      const stored = entries.map((w) => w.address);
       // Never send a wallet its own money.
       const targets = chooseWallets(body, "targets", stored, (a) => a).filter(
         (a) => a.toLowerCase() !== payer,
@@ -2877,14 +2914,14 @@ const server = createServer(async (req, res) => {
       if (!/^0x[0-9a-fA-F]{40}$/.test(to)) throw new Error("to must be a 0x address");
 
       const cfg = loadConfig(CONFIG_PATH);
-      const stored = loadKeyEntries(CONFIG_PATH, cfg.keysFile);
+      const stored = walletBook();
       if (stored.length === 0) throw new Error("no wallets on the server to sweep");
       // Which wallets to empty. All of them by default; a named subset when
       // the panel says so, so ETH can be gathered from part of the set without
       // draining the rest.
-      const entries = chooseWallets(body, "from", stored, (e) =>
-        privateKeyToAccount(e.key).address,
-      ).filter((e) => privateKeyToAccount(e.key).address.toLowerCase() !== to.toLowerCase());
+      const entries = chooseWallets(body, "from", stored, (w) =>
+        w.address,
+      ).filter((w) => w.address.toLowerCase() !== to.toLowerCase());
       if (entries.length === 0) {
         throw new Error("nothing to sweep — the only wallet chosen is the destination");
       }
@@ -2898,7 +2935,7 @@ const server = createServer(async (req, res) => {
           chainId: cfg.chainId,
           extraRpcs: readRpcs(cfg),
           gas: { maxFeeGwei: cfg.gas.maxFeeGwei, tipGwei: cfg.gas.tipGwei },
-          wallets: entries.map((e) => privateKeyToAccount(e.key).address),
+          wallets: entries.map((w) => w.address),
           signer: getSigner(),
           to: to as `0x${string}`,
           dryRun: body.dryRun !== false,
@@ -2922,11 +2959,8 @@ const server = createServer(async (req, res) => {
       if (wallets) {
         // Catch a stale selection now, while someone is watching, rather than
         // at fire time hours later when nobody is.
-        const cfg = loadConfig(CONFIG_PATH);
         const have = new Set(
-          loadKeyEntries(CONFIG_PATH, cfg.keysFile).map((e) =>
-            privateKeyToAccount(e.key).address.toLowerCase(),
-          ),
+          walletBook().map((w) => w.address.toLowerCase()),
         );
         const missing = wallets.filter((a) => !have.has(a));
         if (missing.length === wallets.length) {
@@ -3013,11 +3047,8 @@ const server = createServer(async (req, res) => {
       if (wallets) {
         // Catch a stale selection now, while someone is watching, rather than
         // at fire time hours later when nobody is.
-        const cfg = loadConfig(CONFIG_PATH);
         const have = new Set(
-          loadKeyEntries(CONFIG_PATH, cfg.keysFile).map((e) =>
-            privateKeyToAccount(e.key).address.toLowerCase(),
-          ),
+          walletBook().map((w) => w.address.toLowerCase()),
         );
         const missing = wallets.filter((a) => !have.has(a));
         if (missing.length === wallets.length) {
