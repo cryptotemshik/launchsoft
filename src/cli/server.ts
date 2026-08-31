@@ -395,16 +395,17 @@ interface Acting {
   address: `0x${string}` | null;
   admin: boolean;
 }
-/** True when the request carries an admin's session. */
+/** True when the request carries admin power: the operator token, or an admin session. */
 function isAdminReq(req: IncomingMessage): boolean {
+  if (tokenOk(req.headers.authorization)) return true;
   const s = requestSession(req);
   return Boolean(s && isAdmin(s.address));
 }
-/** True when the request may use Pro features: an admin, or a Pro account. */
+/** True when the request may use Pro features: admin/operator, or a Pro account. */
 function isProReq(req: IncomingMessage): boolean {
+  if (isAdminReq(req)) return true;
   const s = requestSession(req);
   if (!s) return false;
-  if (isAdmin(s.address)) return true;
   const acct = getAccount(ACCOUNTS_ROOT, s.address);
   return Boolean(acct && isPro(acct));
 }
