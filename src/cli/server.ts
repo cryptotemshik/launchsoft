@@ -105,6 +105,15 @@ import {
   verifyLogin,
   type Session,
 } from "./auth";
+import {
+  accountsRoot,
+  ensureAccount,
+  getAccount,
+  listAccounts,
+  tierOf,
+  updateAccount,
+  type AccountProfile,
+} from "./accounts";
 
 import {
   MATURE_MS,
@@ -142,6 +151,8 @@ const TOKEN = process.env.SNIPE_TOKEN ?? "";
 /** Comma-separated list; "*" allows any origin (only sane behind a tunnel + token). */
 const ORIGINS = (process.env.SNIPE_ORIGINS ?? "*").split(",").map((s) => s.trim());
 const CONFIG_PATH = process.env.SNIPE_CONFIG ?? "snipe.config.json";
+/** Where each wallet's own isolated world lives (accounts.ts). */
+const ACCOUNTS_ROOT = accountsRoot();
 /** How far ahead of a stage a job is armed (read nonces, pre-sign, warm). */
 const ARM_LEAD_MS = envNumber(process.env.SNIPE_ARM_LEAD_MS, 120_000);
 /** Set to 0 to stop the server pulling its own updates. */
@@ -2215,6 +2226,13 @@ const server = createServer(async (req, res) => {
         signature: (typeof body.signature === "string" ? body.signature : "0x") as `0x${string}`,
       });
       saveSessions();
+      // First login provisions this wallet's own world; later logins are a
+      // no-op. Never let a provisioning hiccup block a proven login.
+      try {
+        ensureAccount(ACCOUNTS_ROOT, session.address);
+      } catch (e) {
+        console.warn(`could not provision account ${session.address}:`, e);
+      }
       audit("auth.login", { address: session.address });
       json(res, 200, { token, address: session.address, admin: isAdmin(session.address), expiresAt: session.expiresAt });
     } catch (e) {
@@ -2228,7 +2246,60 @@ const server = createServer(async (req, res) => {
       json(res, 401, { error: "no session" });
       return;
     }
-    json(res, 200, { address: s.address, admin: isAdmin(s.address), expiresAt: s.expiresAt });
+    const acct = getAccount(ACCOUNTS_ROOT, s.address) ?? ensureAccount(ACCOUNTS_ROOT, s.address);
+    json(res, 200, {
+      address: s.address,
+      admin: isAdmin(s.address),
+      expiresAt: s.expiresAt,
+      tier: tierOf(acct),
+      proUntil: acct.proUntil ?? null,
+      profile: acct.profile,
+    });
+    return;
+  }
+  // A wallet edits its own profile — nickname, avatar, twitter. Self-served, so
+  // it needs a session (any session), not the operator token.
+  if (url.pathname === "/api/profile" && (req.method === "GET" || req.method === "PUT")) {
+    const s = requestSession(req);
+    if (!s) {
+      json(res, 401, { error: "sign in with your wallet first" });
+      return;
+    }
+    if (req.method === "GET") {
+      const acct = getAccount(ACCOUNTS_ROOT, s.address) ?? ensureAccount(ACCOUNTS_ROOT, s.address);
+      json(res, 200, { profile: acct.profile });
+      return;
+    }
+    try {
+      const body = await readBody(req);
+      const profile: AccountProfile = {};
+      if ("nickname" in body) profile.nickname = String(body.nickname ?? "").slice(0, 40);
+      if ("avatarUrl" in body) profile.avatarUrl = String(body.avatarUrl ?? "").slice(0, 2048);
+      if ("twitter" in body) profile.twitter = String(body.twitter ?? "").slice(0, 40);
+      const acct = updateAccount(ACCOUNTS_ROOT, s.address, { profile });
+      json(res, 200, { profile: acct.profile });
+    } catch (e) {
+      json(res, 400, { error: e instanceof Error ? e.message : String(e) });
+    }
+    return;
+  }
+  // The admin dashboard's roster of accounts. Admin session only.
+  if (url.pathname === "/api/admin/accounts" && req.method === "GET") {
+    const s = requestSession(req);
+    if (!s || !isAdmin(s.address)) {
+      json(res, 403, { error: "admins only" });
+      return;
+    }
+    const now = Date.now();
+    json(res, 200, {
+      accounts: listAccounts(ACCOUNTS_ROOT).map((a) => ({
+        address: a.address,
+        createdAt: a.createdAt,
+        tier: tierOf(a, now),
+        proUntil: a.proUntil ?? null,
+        nickname: a.profile.nickname ?? null,
+      })),
+    });
     return;
   }
   if (url.pathname === "/api/auth/logout" && req.method === "POST") {
