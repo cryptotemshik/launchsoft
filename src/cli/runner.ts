@@ -22,9 +22,9 @@ import {
   type Hex,
   type PublicClient,
 } from "viem";
-import { privateKeyToAccount, type PrivateKeyAccount } from "viem/accounts";
 import { getChainInfo, type ChainInfo } from "../chains";
 import { seaDropAbi, tokenAbi } from "../contracts/seadrop";
+import type { Signer, UnsignedTx } from "./signer";
 import { pickFeeRecipient } from "../lib/collectionData";
 import { readMintedCount } from "../lib/collectionData";
 import { checkEligibility, type Eligibility } from "../lib/allowlist";
@@ -65,7 +65,15 @@ export interface RunOptions {
    * useful setting for a queue, where each drop has its own per-wallet cap.
    */
   quantity: number | "max";
-  keys: `0x${string}`[];
+  /**
+   * The wallets to fire from, by address. Never keys: signing happens through
+   * `signer`, which may be in this process or across a socket in the one that
+   * holds the keys. The runner plans (balances, nonces, eligibility) from the
+   * addresses alone and never sees a key.
+   */
+  wallets: `0x${string}`[];
+  /** What turns an unsigned transaction into a raw signed one. See signer.ts. */
+  signer: Signer;
   extraRpcs: string[];
   gas: { maxFeeGwei: string; tipGwei: string; limit: number };
   timing: "now" | "wait";
@@ -366,7 +374,10 @@ export async function readDrop(
 
 export async function runSnipe(opts: RunOptions, hooks: RunHooks): Promise<RunResult> {
   const log = hooks.onLog;
-  const accounts: PrivateKeyAccount[] = opts.keys.map((k) => privateKeyToAccount(k));
+  // Addresses only — the keys are the signer's, on whichever side of the
+  // socket it lives. Everything the runner does to plan a mint needs the
+  // address; only the signature needs the key, and that goes through `signer`.
+  const accounts = opts.wallets.map((address) => ({ address }));
   if (accounts.length === 0) throw new Error("no wallets loaded");
 
   const info = getChainInfo(opts.chainId);
@@ -556,62 +567,70 @@ export async function runSnipe(opts: RunOptions, hooks: RunHooks): Promise<RunRe
    * burns its nonce, and the next one is already queued behind it.
    */
   const mintCap = opts.maxMintValueWei !== undefined ? BigInt(opts.maxMintValueWei) : null;
-  const signAll = async (atPrice: bigint, atQuantity: number) =>
-    Promise.all(
-      firing.map(async (a, i) => {
-        let data: Hex;
-        let value: bigint;
-        if (opts.stage === "allowlist") {
-          const el = elig.get(a.address.toLowerCase())!;
-          const qty = Math.min(atQuantity, Number(el.params!.maxTotalMintableByWallet) || atQuantity);
-          data = encodeFunctionData({
-            abi: seaDropAbi,
-            functionName: "mintAllowList",
-            args: [opts.collection, feeRecipient, zeroAddress, BigInt(qty), el.params!, el.proof!],
-          });
-          value = el.params!.mintPrice * BigInt(qty);
-          if (mintCap !== null && value > mintCap) {
-            throw new Error(
-              `this stage wants ${value} wei per wallet, over the ${mintCap} wei policy cap — ` +
-                `raise SNIPE_POLICY_MAX_MINT_ETH if the price is genuine`,
-            );
-          }
-        } else {
-          data = encodeFunctionData({
-            abi: seaDropAbi,
-            functionName: "mintPublic",
-            args: [opts.collection, feeRecipient, zeroAddress, BigInt(atQuantity)],
-          });
-          value = atPrice * BigInt(atQuantity);
-          // Checked where the price is first known: the stage can be updated
-          // right up to the boundary — Chill Guys was repriced three seconds
-          // before open — so a check at queue time would check a stale number.
-          if (mintCap !== null && value > mintCap) {
-            throw new Error(
-              `this stage wants ${value} wei per wallet, over the ${mintCap} wei policy cap — ` +
-                `raise SNIPE_POLICY_MAX_MINT_ETH if the price is genuine`,
-            );
-          }
-        }
-        const shots = await Promise.all(
-          shotPlan.offsets.map(async (_, shot) => {
-            const rawTx = await a.signTransaction({
-              chainId: info.id,
-              to: info.seaDrop,
-              data,
-              value,
-              nonce: nonces[i] + shot,
-              maxFeePerGas,
-              maxPriorityFeePerGas,
-              gas: gasLimit,
-              type: "eip1559",
-            });
-            return prepareBlast(rawTx);
-          }),
+  const signAll = async (atPrice: bigint, atQuantity: number) => {
+    // Build every wallet's mint calldata and value once…
+    const perWallet = firing.map((a, i) => {
+      let data: Hex;
+      let value: bigint;
+      if (opts.stage === "allowlist") {
+        const el = elig.get(a.address.toLowerCase())!;
+        const qty = Math.min(atQuantity, Number(el.params!.maxTotalMintableByWallet) || atQuantity);
+        data = encodeFunctionData({
+          abi: seaDropAbi,
+          functionName: "mintAllowList",
+          args: [opts.collection, feeRecipient, zeroAddress, BigInt(qty), el.params!, el.proof!],
+        });
+        value = el.params!.mintPrice * BigInt(qty);
+      } else {
+        data = encodeFunctionData({
+          abi: seaDropAbi,
+          functionName: "mintPublic",
+          args: [opts.collection, feeRecipient, zeroAddress, BigInt(atQuantity)],
+        });
+        value = atPrice * BigInt(atQuantity);
+      }
+      // Checked where the price is first known: the stage can be updated right
+      // up to the boundary — Chill Guys was repriced three seconds before
+      // open — so a check at queue time would check a stale number. (The
+      // signer's policy caps this again; belt and braces, and a clearer error
+      // here.)
+      if (mintCap !== null && value > mintCap) {
+        throw new Error(
+          `this stage wants ${value} wei per wallet, over the ${mintCap} wei policy cap — ` +
+            `raise SNIPE_POLICY_MAX_MINT_ETH if the price is genuine`,
         );
-        return { address: a.address, shots };
-      }),
-    );
+      }
+      return { address: a.address, data, value, baseNonce: nonces[i] };
+    });
+
+    // …then flatten wallet × shot into one batch and sign it in a single call.
+    // One round trip to the signer for the whole arm, not one per shot: shot k
+    // takes nonce+k so the chain runs a wallet's shots in order.
+    const unsigned: UnsignedTx[] = [];
+    for (const w of perWallet) {
+      for (let shot = 0; shot < shotPlan.offsets.length; shot++) {
+        unsigned.push({
+          from: w.address,
+          chainId: info.id,
+          to: info.seaDrop,
+          data: w.data,
+          value: w.value.toString(),
+          nonce: w.baseNonce + shot,
+          maxFeePerGas: maxFeePerGas.toString(),
+          maxPriorityFeePerGas: maxPriorityFeePerGas.toString(),
+          gas: gasLimit.toString(),
+        });
+      }
+    }
+    const raw = await opts.signer.sign(unsigned);
+    // Hand the raw transactions back out into per-wallet shots, in the same
+    // order they were flattened.
+    const shotCount = shotPlan.offsets.length;
+    return perWallet.map((w, i) => ({
+      address: w.address,
+      shots: raw.slice(i * shotCount, (i + 1) * shotCount).map((r) => prepareBlast(r)),
+    }));
+  };
 
   let prepared = await signAll(price, quantity);
   log(`signed     ${prepared.length} transaction(s) — nothing left to compute at fire time`);

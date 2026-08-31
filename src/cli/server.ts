@@ -81,7 +81,6 @@ import {
   keysPath,
   loadConfig,
   loadKeyEntries,
-  loadKeys,
   serialiseKeys,
   type KeyEntry,
   type SnipeConfig,
@@ -93,6 +92,7 @@ import { addUpcoming, annotateUpcoming, loadUpcoming, removeUpcoming } from "./u
 import { loadJobs, restoreStatus, saveJobs, type StoredJob, type StoredStatus } from "./jobStore";
 import { audit as auditLine, type AuditEvent } from "./audit";
 import { judgeTransaction, type PolicyContext } from "./signPolicy";
+import { connectSigner, makeInProcessSigner, type Signer } from "./signer";
 import {
   MATURE_MS,
   maturedAddresses,
@@ -229,7 +229,7 @@ interface Job {
   addedAt: number;
   status: JobStatus;
   /** Everything runSnipe needs except the keys, which are read at arm time. */
-  request: Omit<RunOptions, "keys">;
+  request: Omit<RunOptions, "signer" | "wallets">;
   /** Stage start, once known — filled in by a dry run or by the job itself. */
   startTime?: number;
   logs: string[];
@@ -1075,7 +1075,7 @@ const PROFIT_TTL_MS = envNumber(process.env.SNIPE_PROFIT_TTL_MS, 60_000);
 const PROFIT_WAIT_MS = envNumber(process.env.SNIPE_PROFIT_WAIT_MS, 8_000);
 
 /** Merge the on-disk defaults with whatever the panel supplied. */
-function buildRequest(body: Record<string, unknown>): Omit<RunOptions, "keys"> {
+function buildRequest(body: Record<string, unknown>): Omit<RunOptions, "signer" | "wallets"> {
   const cfg = loadConfig(CONFIG_PATH);
 
   const collection = typeof body.collection === "string" ? body.collection : cfg.collection;
@@ -1627,6 +1627,27 @@ function policyContext(): PolicyContext {
  * The refusal goes to the audit log as well as the response: the trail of
  * refused attempts is exactly what tells a break-in from a typo later.
  */
+/**
+ * The signer this process talks to.
+ *
+ * With SNIPE_SIGNER_SOCKET set, the keys live in a separate process (signerd)
+ * reached over that socket, and this process holds none — a break-in here can
+ * ask for a signature the policy allows but cannot read or carry off a wallet.
+ * Without it, signing is in-process exactly as before, so a single box is
+ * unchanged and every test runs the real path.
+ *
+ * The policy is enforced on the signer's side either way; passing it to the
+ * in-process signer keeps that true when there is no socket.
+ */
+const SIGNER_SOCKET = process.env.SNIPE_SIGNER_SOCKET?.trim() || "";
+function getSigner(): Signer {
+  if (SIGNER_SOCKET) return connectSigner(SIGNER_SOCKET);
+  return makeInProcessSigner({
+    loadKeys: () => loadKeyEntries(CONFIG_PATH, loadConfig(CONFIG_PATH).keysFile),
+    policy: policyContext,
+  });
+}
+
 function enforcePolicy(tx: { to?: string; value: bigint; data?: string }, what: string): void {
   const verdict = judgeTransaction(tx, policyContext());
   if (!verdict.ok) {
@@ -1764,11 +1785,24 @@ async function execute(job: Job) {
   job.abort = abort;
   job.status = "armed";
   persistJobs();
-  let keys = loadKeys(CONFIG_PATH, loadConfig(CONFIG_PATH).keysFile);
+  // Ask the signer which wallets it holds — addresses only, never keys. When a
+  // socket signer is configured this is the one process that has the keys
+  // answering; this process never decrypts anything.
+  const signer = getSigner();
+  let wallets: `0x${string}`[];
+  try {
+    wallets = await signer.addresses();
+  } catch (e) {
+    job.status = "error";
+    job.error = `could not reach the signer: ${e instanceof Error ? e.message : String(e)}`;
+    activeJobId = null;
+    persistJobs();
+    return;
+  }
   if (job.wallets && job.wallets.length > 0) {
     const want = new Set(job.wallets);
-    keys = keys.filter((k) => want.has(privateKeyToAccount(k).address.toLowerCase()));
-    if (keys.length === 0) {
+    wallets = wallets.filter((a) => want.has(a.toLowerCase()));
+    if (wallets.length === 0) {
       job.status = "error";
       job.error = "none of the wallets chosen for this job are on the server any more";
       activeJobId = null;
@@ -1781,14 +1815,14 @@ async function execute(job: Job) {
     job: job.id,
     label: job.label,
     collection: job.request.collection,
-    wallets: keys.length,
+    wallets: wallets.length,
     quantity: job.request.quantity,
     dryRun: job.request.dryRun === true,
   });
 
   try {
     const result = await runSnipe(
-      { ...job.request, keys },
+      { ...job.request, wallets, signer },
       {
         signal: abort.signal,
         onLog: (line) => {

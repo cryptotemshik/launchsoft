@@ -81,6 +81,21 @@ describe("signing in-process", () => {
     await expect(inProc().sign([ownTransfer(ADDR_A, STRANGER)])).rejects.toThrow(/policy refused/);
   });
 
+  it("returns signatures in the order it was given them", async () => {
+    // The runner flattens wallet × shot into one batch and slices the result
+    // back out by position. If order were not preserved, wallet A's shots
+    // would be signed by wallet B — a silent, catastrophic mix-up. So this is
+    // the invariant the mint path leans on, guarded directly.
+    const txs = [
+      ownTransfer(ADDR_B, ADDR_A),
+      ownTransfer(ADDR_A, ADDR_B),
+      ownTransfer(ADDR_B, ADDR_A),
+      ownTransfer(ADDR_A, ADDR_B),
+    ];
+    const raw = await inProc().sign(txs);
+    for (let i = 0; i < txs.length; i++) await expectSignedBy(raw[i], txs[i].from);
+  });
+
   it("signs nothing when one in the batch is refused", async () => {
     // All-or-nothing: the good transfer must not come back signed while the
     // bad one is rejected.

@@ -29,7 +29,7 @@ export interface StoredJob {
   label: string;
   addedAt: number;
   status: StoredStatus;
-  request: Omit<RunOptions, "keys">;
+  request: Omit<RunOptions, "signer" | "wallets">;
   startTime?: number;
   wallets?: string[];
 }

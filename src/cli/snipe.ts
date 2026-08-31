@@ -12,7 +12,11 @@
  *   npm run snipe -- --config snipe.config.json          # dry run: plan only
  *   npm run snipe -- --config snipe.config.json --yes    # actually fire
  */
-import { loadConfig, loadKeys, type SnipeConfig } from "./config";
+import { loadConfig, loadKeyEntries, type SnipeConfig } from "./config";
+import { privateKeyToAccount } from "viem/accounts";
+import { parseEther } from "viem";
+import { getChainInfo } from "../chains";
+import { makeInProcessSigner } from "./signer";
 import { runSnipe } from "./runner";
 
 const stamp = () => new Date().toISOString().slice(11, 23);
@@ -48,7 +52,22 @@ function parseArgs(argv: string[]) {
 async function main() {
   const { config: configPath, yes } = parseArgs(process.argv.slice(2));
   const cfg: SnipeConfig = loadConfig(configPath);
-  const keys = loadKeys(configPath, cfg.keysFile);
+  // The standalone CLI holds its own keys, so it signs in-process. Same seam
+  // as the server, just without a socket — the runner does not know the
+  // difference.
+  const entries = loadKeyEntries(configPath, cfg.keysFile);
+  if (entries.length === 0) fail("no wallets in the key file — add one first");
+  const wallets = entries.map((e) => privateKeyToAccount(e.key).address);
+  const info = getChainInfo(cfg.chainId);
+  const signer = makeInProcessSigner({
+    loadKeys: () => entries,
+    policy: () => ({
+      ownWallets: new Set(wallets.map((a) => a.toLowerCase())),
+      withdrawTo: new Set(),
+      mintContract: (info?.seaDrop ?? "").toLowerCase(),
+      maxMintWei: parseEther(process.env.SNIPE_POLICY_MAX_MINT_ETH?.trim() || "0.05"),
+    }),
+  });
 
   // Ctrl-C during the hold cancels cleanly instead of killing mid-broadcast.
   const abort = new AbortController();
@@ -63,7 +82,8 @@ async function main() {
       collection: cfg.collection,
       stage: cfg.stage,
       quantity: cfg.quantity,
-      keys,
+      wallets,
+      signer,
       extraRpcs: cfg.extraRpcs,
       gas: cfg.gas,
       timing: cfg.timing,
