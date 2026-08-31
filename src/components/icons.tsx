@@ -138,3 +138,10 @@ export const UserIcon = (p: SVGProps<SVGSVGElement>) => (
     <path d="M4 21a8 8 0 0 1 16 0" />
   </svg>
 );
+
+export const ShieldIcon = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...base(p)}>
+    <path d="M12 3l7 3v6c0 4-3 7-7 9-4-2-7-5-7-9V6l7-3z" />
+    <path d="M9 12l2 2 4-4" />
+  </svg>
+);

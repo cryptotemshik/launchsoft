@@ -52,7 +52,13 @@ export type AuditEvent =
   /** A withdrawal address was struck off. */
   | "withdraw.removed"
   /** A wallet signed in. */
-  | "auth.login";
+  | "auth.login"
+  /** An admin granted Pro time to an account. */
+  | "admin.grantPro"
+  /** An admin handed out free snipes. */
+  | "admin.grantSnipes"
+  /** An admin adjusted an account's balance by hand. */
+  | "admin.adjust";
 
 export interface AuditLine {
   /** ISO 8601, in UTC. Local time in an audit trail is an argument waiting. */

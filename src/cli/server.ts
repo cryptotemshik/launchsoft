@@ -116,6 +116,11 @@ import {
   updateAccount,
   type AccountProfile,
 } from "./accounts";
+import {
+  adminAdjust,
+  grantFreeSnipes,
+  loadBilling,
+} from "./billing";
 
 import {
   MATURE_MS,
@@ -382,6 +387,11 @@ interface Acting {
   /** The signed-in address, or null when the operator token was used. */
   address: `0x${string}` | null;
   admin: boolean;
+}
+/** True when the request carries an admin's session. */
+function isAdminReq(req: IncomingMessage): boolean {
+  const s = requestSession(req);
+  return Boolean(s && isAdmin(s.address));
 }
 function acting(req: IncomingMessage): Acting | null {
   if (tokenOk(req.headers.authorization)) {
@@ -2351,20 +2361,121 @@ const server = createServer(async (req, res) => {
   }
   // The admin dashboard's roster of accounts. Admin session only.
   if (url.pathname === "/api/admin/accounts" && req.method === "GET") {
-    const s = requestSession(req);
-    if (!s || !isAdmin(s.address)) {
+    if (!isAdminReq(req)) {
       json(res, 403, { error: "admins only" });
       return;
     }
     const now = Date.now();
-    json(res, 200, {
-      accounts: listAccounts(ACCOUNTS_ROOT).map((a) => ({
+    const accounts = listAccounts(ACCOUNTS_ROOT).map((a) => {
+      const cfgPath = accountConfigPath(ACCOUNTS_ROOT, a.address);
+      const bill = loadBilling(cfgPath);
+      return {
         address: a.address,
         createdAt: a.createdAt,
         tier: tierOf(a, now),
         proUntil: a.proUntil ?? null,
         nickname: a.profile.nickname ?? null,
-      })),
+        twitter: a.profile.twitter ?? null,
+        telegram: a.profile.telegram ?? null,
+        balanceWei: bill.balanceWei,
+        balanceEth: formatEther(BigInt(bill.balanceWei)),
+        freeSnipes: bill.freeSnipes,
+        snipes: bill.entries.filter((e) => e.kind === "snipe").length,
+      };
+    });
+    // A little roll-up for the top of the dashboard.
+    const totalBalanceWei = accounts.reduce((s2, a) => s2 + BigInt(a.balanceWei), 0n);
+    json(res, 200, {
+      accounts,
+      summary: {
+        accounts: accounts.length,
+        pro: accounts.filter((a) => a.tier === "pro").length,
+        totalBalanceWei: totalBalanceWei.toString(),
+        totalBalanceEth: formatEther(totalBalanceWei),
+        totalSnipes: accounts.reduce((s2, a) => s2 + a.snipes, 0),
+      },
+    });
+    return;
+  }
+  // Admin management: grant Pro time, hand out free snipes, adjust a balance.
+  if (url.pathname === "/api/admin/grant-pro" && req.method === "POST") {
+    if (!isAdminReq(req)) {
+      json(res, 403, { error: "admins only" });
+      return;
+    }
+    try {
+      const body = await readBody(req);
+      const address = String(body.address ?? "");
+      const days = Number(body.days ?? 0);
+      if (!/^0x[0-9a-fA-F]{40}$/.test(address)) throw new Error("address must be a 0x address");
+      if (!Number.isFinite(days) || days === 0) throw new Error("days must be a non-zero number");
+      const now = Date.now();
+      const current = getAccount(ACCOUNTS_ROOT, address)?.proUntil ?? now;
+      const base = Math.max(current, now);
+      const proUntil = Math.max(now, base + days * 86_400_000);
+      const rec = updateAccount(ACCOUNTS_ROOT, address, { proUntil });
+      audit("admin.grantPro", { address: address.toLowerCase(), days, proUntil });
+      json(res, 200, { address: rec.address, proUntil: rec.proUntil ?? null, tier: tierOf(rec, now) });
+    } catch (e) {
+      json(res, 400, { error: e instanceof Error ? e.message : String(e) });
+    }
+    return;
+  }
+  if (url.pathname === "/api/admin/grant-snipes" && req.method === "POST") {
+    if (!isAdminReq(req)) {
+      json(res, 403, { error: "admins only" });
+      return;
+    }
+    try {
+      const body = await readBody(req);
+      const address = String(body.address ?? "");
+      const count = Number(body.count ?? 0);
+      if (!/^0x[0-9a-fA-F]{40}$/.test(address)) throw new Error("address must be a 0x address");
+      ensureAccount(ACCOUNTS_ROOT, address);
+      const state = grantFreeSnipes(accountConfigPath(ACCOUNTS_ROOT, address), count);
+      audit("admin.grantSnipes", { address: address.toLowerCase(), count });
+      json(res, 200, { address: address.toLowerCase(), freeSnipes: state.freeSnipes });
+    } catch (e) {
+      json(res, 400, { error: e instanceof Error ? e.message : String(e) });
+    }
+    return;
+  }
+  if (url.pathname === "/api/admin/adjust" && req.method === "POST") {
+    if (!isAdminReq(req)) {
+      json(res, 403, { error: "admins only" });
+      return;
+    }
+    try {
+      const body = await readBody(req);
+      const address = String(body.address ?? "");
+      const wei = BigInt(String(body.wei ?? "0"));
+      const note = String(body.note ?? "admin adjustment").slice(0, 200);
+      if (!/^0x[0-9a-fA-F]{40}$/.test(address)) throw new Error("address must be a 0x address");
+      ensureAccount(ACCOUNTS_ROOT, address);
+      const state = adminAdjust(accountConfigPath(ACCOUNTS_ROOT, address), wei, note);
+      audit("admin.adjust", { address: address.toLowerCase(), wei: wei.toString(), note });
+      json(res, 200, { address: address.toLowerCase(), balanceWei: state.balanceWei, balanceEth: formatEther(BigInt(state.balanceWei)) });
+    } catch (e) {
+      json(res, 400, { error: e instanceof Error ? e.message : String(e) });
+    }
+    return;
+  }
+  // An account's own balance and recent ledger.
+  if (url.pathname === "/api/billing" && req.method === "GET") {
+    const a = acting(req);
+    if (!a) {
+      json(res, 401, { error: "sign in with your wallet first" });
+      return;
+    }
+    const bill = loadBilling(a.cfgPath);
+    const acct = a.address ? getAccount(ACCOUNTS_ROOT, a.address) : null;
+    json(res, 200, {
+      balanceWei: bill.balanceWei,
+      balanceEth: formatEther(BigInt(bill.balanceWei)),
+      freeSnipes: bill.freeSnipes,
+      tier: acct ? tierOf(acct) : "pro",
+      proUntil: acct?.proUntil ?? null,
+      entries: bill.entries.slice(-50).reverse(),
     });
     return;
   }

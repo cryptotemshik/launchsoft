@@ -14,7 +14,9 @@ import SnipeTab from "./components/SnipeTab";
 import StatusTab from "./components/StatusTab";
 import WalletsTab from "./components/WalletsTab";
 import ProfileTab from "./components/ProfileTab";
+import AdminTab from "./components/AdminTab";
 import { installClickSound } from "./lib/sound";
+import { useRunnerApi } from "./lib/runnerClient";
 import { useActiveChain } from "./signer";
 import { CHAINS_BY_ID, DEFAULT_CHAIN_ID } from "./chains";
 import {
@@ -32,6 +34,7 @@ import {
   RocketIcon,
   WalletIcon,
   UserIcon,
+  ShieldIcon,
 } from "./components/icons";
 
 type Tab =
@@ -48,6 +51,7 @@ type Tab =
   | "live"
   | "calendar"
   | "profile"
+  | "admin"
 ;
 
 const TAB_ICON = {
@@ -64,6 +68,7 @@ const TAB_ICON = {
   live: ActivityIcon,
   calendar: CalendarGridIcon,
   profile: UserIcon,
+  admin: ShieldIcon,
 } as const;
 
 export default function App() {
@@ -72,6 +77,33 @@ export default function App() {
     () => localStorage.getItem("launchpad.entered") === "1",
   );
   const info = useActiveChain() ?? CHAINS_BY_ID.get(DEFAULT_CHAIN_ID)!;
+
+  // Is the signed-in wallet an admin? Decides whether the admin tab exists at
+  // all. Checked against the server, which is the only authority — the tab is
+  // gated on its own routes too, so this only hides a button, never trusts one.
+  const { base, token, call } = useRunnerApi();
+  const [isAdmin, setIsAdmin] = useState(false);
+  useEffect(() => {
+    let live = true;
+    if (!base || !token) {
+      setIsAdmin(false);
+      return;
+    }
+    void call("/api/auth/me")
+      .then((m) => {
+        if (live) setIsAdmin(Boolean((m as { admin?: boolean }).admin));
+      })
+      .catch(() => {
+        if (live) setIsAdmin(false);
+      });
+    return () => {
+      live = false;
+    };
+  }, [base, token, call]);
+  // Never leave a non-admin parked on the admin tab (e.g. after signing out).
+  useEffect(() => {
+    if (tab === "admin" && !isAdmin) setTab("dashboard");
+  }, [tab, isAdmin]);
 
   // One capture-phase listener gives every button its click tick — and the
   // first of those clicks is the user gesture that unlocks the AudioContext.
@@ -163,7 +195,7 @@ export default function App() {
         <div className="tab-group snipe-group">
           <button
             className={`tab-mint ${
-              tab === "snipe" ? "active" : tab === "serverwallets" || tab === "funding" || tab === "profile" ? "group-active" : ""
+              tab === "snipe" ? "active" : tab === "serverwallets" || tab === "funding" || tab === "profile" || tab === "admin" ? "group-active" : ""
             }`}
             onClick={() => setTab("snipe")}
           >
@@ -200,6 +232,15 @@ export default function App() {
               <UserIcon />
               PROFILE
             </button>
+            {isAdmin ? (
+              <button
+                className={tab === "admin" ? "active" : ""}
+                onClick={() => setTab("admin")}
+              >
+                <ShieldIcon />
+                ADMIN
+              </button>
+            ) : null}
           </div>
         </div>
       </div>
@@ -222,6 +263,7 @@ export default function App() {
       {tab === "calendar" ? <CalendarTab /> : null}
       {tab === "live" ? <LiveTab /> : null}
       {tab === "profile" ? <ProfileTab /> : null}
+      {tab === "admin" && isAdmin ? <AdminTab /> : null}
       <div className="footer">
         {info.label} · explorer:{" "}
         <a href={info.explorerUrl} target="_blank" rel="noreferrer">
