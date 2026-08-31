@@ -106,8 +106,11 @@ export async function signInWithWallet(
 }
 
 export interface Me {
-  address: string;
+  /** Null for the operator token, which is not a wallet account. */
+  address: string | null;
   admin: boolean;
+  /** True when authenticated by the operator token rather than a wallet. */
+  operator?: boolean;
   tier: "free" | "pro";
   proUntil: number | null;
   profile: { nickname?: string; avatarUrl?: string; twitter?: string; telegram?: string };

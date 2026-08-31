@@ -18,6 +18,7 @@
  * typed wins where the two disagree.
  */
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import RunnerConnect from "./RunnerConnect";
 import { formatEther } from "viem";
 import { useRunnerApi } from "../lib/runnerClient";
 import { createTabStore } from "../lib/tabStore";
@@ -378,26 +379,7 @@ export default function CalendarTab() {
           Discovery lives in the scanner.
         </p>
 
-        <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
-          <div className="field" style={{ flex: 2, minWidth: 200 }}>
-            <label>server URL</label>
-            <input
-              value={url}
-              onChange={(e) => setUrl(e.target.value)}
-              placeholder="https://your-tunnel.trycloudflare.com"
-            />
-          </div>
-          <div className="field" style={{ flex: 1, minWidth: 160 }}>
-            <label>token</label>
-            <input
-              type="password"
-              value={token}
-              onChange={(e) => setToken(e.target.value)}
-              placeholder="SNIPE_TOKEN"
-              autoComplete="off"
-            />
-          </div>
-        </div>
+        <RunnerConnect url={url} setUrl={setUrl} token={token} setToken={setToken} />
 
         <div className="scan-bar">
           <span className="bar-label">VIEW</span>

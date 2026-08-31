@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import RunnerConnect from "./RunnerConnect";
 import { useRunnerApi } from "../lib/runnerClient";
 import StaleServer from "./StaleServer";
 import { AddrLink } from "./Bits";
@@ -160,26 +161,7 @@ export default function ServerWalletsTab() {
 
       <div className="panel">
         <h2>Connection</h2>
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          <div className="field" style={{ flex: 2, minWidth: 240 }}>
-            <label>server URL</label>
-            <input
-              value={url}
-              onChange={(e) => setUrl(e.target.value)}
-              placeholder="https://your-tunnel.trycloudflare.com"
-            />
-          </div>
-          <div className="field" style={{ flex: 1, minWidth: 180 }}>
-            <label>token</label>
-            <input
-              type="password"
-              value={token}
-              onChange={(e) => setToken(e.target.value)}
-              placeholder="SNIPE_TOKEN"
-              autoComplete="off"
-            />
-          </div>
-        </div>
+        <RunnerConnect url={url} setUrl={setUrl} token={token} setToken={setToken} />
         <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap", marginTop: 8 }}>
           <button className="secondary" onClick={() => void connect()} disabled={busy || !base || !token}>
             {busy ? <span className="spin">BUSY</span> : connected ? "refresh" : "connect"}

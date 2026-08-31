@@ -12,6 +12,7 @@
  * nothing to key and nothing to break when one changes.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import RunnerConnect from "./RunnerConnect";
 import { useRunnerApi } from "../lib/runnerClient";
 import { formatEthShort } from "../lib/profit";
 import StaleServer from "./StaleServer";
@@ -359,26 +360,7 @@ export default function MintProfitPanel() {
         balance rises in the same block; no OpenSea account or API key involved.
       </p>
 
-      <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
-        <div className="field" style={{ flex: 2, minWidth: 200 }}>
-          <label>server URL</label>
-          <input
-            value={url}
-            onChange={(e) => setUrl(e.target.value)}
-            placeholder="https://your-tunnel.trycloudflare.com"
-          />
-        </div>
-        <div className="field" style={{ flex: 1, minWidth: 160 }}>
-          <label>token</label>
-          <input
-            type="password"
-            value={token}
-            onChange={(e) => setToken(e.target.value)}
-            placeholder="SNIPE_TOKEN"
-            autoComplete="off"
-          />
-        </div>
-      </div>
+      <RunnerConnect url={url} setUrl={setUrl} token={token} setToken={setToken} />
       <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap", marginTop: 8 }}>
         <button className="secondary" onClick={() => void load()} disabled={busy || !base || !token}>
           {waiting ? <span className="spin">READING CHAIN</span> : busy ? <span className="spin">BUSY</span> : view ? "refresh" : "load"}

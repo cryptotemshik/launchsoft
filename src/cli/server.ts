@@ -2332,6 +2332,21 @@ const server = createServer(async (req, res) => {
     return;
   }
   if (url.pathname === "/api/auth/me" && req.method === "GET") {
+    // The operator token is the owner: answer as an admin on the Pro tier even
+    // without a wallet session, so the operator's own UI (which keys off this)
+    // unlocks whether they signed in with a wallet or pasted the token.
+    if (!requestSession(req) && tokenOk(req.headers.authorization)) {
+      json(res, 200, {
+        address: null,
+        admin: true,
+        operator: true,
+        expiresAt: null,
+        tier: "pro",
+        proUntil: null,
+        profile: {},
+      });
+      return;
+    }
     const s = requestSession(req);
     if (!s) {
       json(res, 401, { error: "no session" });

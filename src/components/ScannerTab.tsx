@@ -11,6 +11,7 @@
  * uses. Nothing here talks to a chain directly.
  */
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import RunnerConnect from "./RunnerConnect";
 import { parseEther } from "viem";
 import { useRunnerApi } from "../lib/runnerClient";
 import { useCustomRpcs } from "../lib/customRpc";
@@ -491,26 +492,7 @@ export default function ScannerTab() {
           the ones still ahead get their name and supply filled in.
         </p>
 
-        <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
-          <div className="field" style={{ flex: 2, minWidth: 200 }}>
-            <label>server URL</label>
-            <input
-              value={url}
-              onChange={(e) => setUrl(e.target.value)}
-              placeholder="https://your-tunnel.trycloudflare.com"
-            />
-          </div>
-          <div className="field" style={{ flex: 1, minWidth: 160 }}>
-            <label>token</label>
-            <input
-              type="password"
-              value={token}
-              onChange={(e) => setToken(e.target.value)}
-              placeholder="SNIPE_TOKEN"
-              autoComplete="off"
-            />
-          </div>
-        </div>
+        <RunnerConnect url={url} setUrl={setUrl} token={token} setToken={setToken} />
 
         {/* How much chain to read. Nothing here changes what is shown — only
             what has been fetched — which is why it sits apart from the filters
