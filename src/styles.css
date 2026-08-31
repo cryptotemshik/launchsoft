@@ -186,7 +186,21 @@ h1 .cursor {
   border-color: rgba(255, 82, 82, 0.45);
   background: rgba(255, 82, 82, 0.1);
 }
-.pill.warn {
+.pill.notice {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+/* A withdraw nudge after a mint — worth noticing, not an error. The amber
+   left edge reads as "act on this soon", which is exactly what it is. */
+.notice-withdraw {
+  color: var(--warn);
+  border-left: 2px solid var(--warn);
+  padding: 8px 12px;
+  margin: 8px 0;
+  background: rgba(255, 176, 32, 0.06);
+  border-radius: var(--radius-sm);
+}
+.warn {
   color: var(--warn);
   border-color: rgba(255, 176, 32, 0.45);
   background: rgba(255, 176, 32, 0.1);
@@ -603,6 +617,20 @@ button.addr:hover {
   color: var(--err);
   white-space: pre-wrap;
   word-break: break-word;
+}
+.notice {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+/* A withdraw nudge after a mint — worth noticing, not an error. The amber
+   left edge reads as "act on this soon", which is exactly what it is. */
+.notice-withdraw {
+  color: var(--warn);
+  border-left: 2px solid var(--warn);
+  padding: 8px 12px;
+  margin: 8px 0;
+  background: rgba(255, 176, 32, 0.06);
+  border-radius: var(--radius-sm);
 }
 .warn {
   color: var(--warn);
@@ -1829,7 +1857,21 @@ tr.row-selected td {
   font-family: var(--mono);
   letter-spacing: 0.06em;
 }
-.ledger-table .cell-sub.warn {
+.ledger-table .cell-sub.notice {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+/* A withdraw nudge after a mint — worth noticing, not an error. The amber
+   left edge reads as "act on this soon", which is exactly what it is. */
+.notice-withdraw {
+  color: var(--warn);
+  border-left: 2px solid var(--warn);
+  padding: 8px 12px;
+  margin: 8px 0;
+  background: rgba(255, 176, 32, 0.06);
+  border-radius: var(--radius-sm);
+}
+.warn {
   color: var(--warn);
 }
 

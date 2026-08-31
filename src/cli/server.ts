@@ -247,6 +247,12 @@ interface Job {
   consolidated?: { to: string; moved: number; total: number };
   /** What the contract said about the drop when the job was queued. */
   drop?: JobDrop;
+  /**
+   * A nudge shown after a successful live mint: the NFTs (and any ETH) are
+   * sitting on the sniping wallets, and holding them there is the risk the
+   * whole security effort is about. Sent to Telegram and shown on the job.
+   */
+  reminder?: string;
 }
 
 /** Where the box is reachable, once the tunnel log has been read. */
@@ -395,6 +401,7 @@ function jobView(j: Job) {
     outcomes: j.result?.outcomes,
     consolidated: j.consolidated,
     drop: j.drop,
+    reminder: j.reminder,
     error: j.error,
   };
 }
@@ -1747,6 +1754,46 @@ async function walletsView() {
 }
 
 /** Send the run summary to Telegram, if configured. Never throws. */
+/**
+ * After a live mint, tell the owner to get what they won off the sniping
+ * wallets.
+ *
+ * This is the whole of "layer 4" as it was chosen: not a hard balance cap that
+ * refuses to hold value, but a standing nudge to move it once the drop is
+ * done. Value left on a sniping wallet is value exposed to every risk the
+ * split is guarding against; the reminder is the cheap habit that keeps the
+ * amount at risk small.
+ *
+ * Nothing to say for a dry run or a mint that took nothing. When the run
+ * already consolidated the NFTs to a safe address, the nudge is only about the
+ * ETH the gas reservations left behind; otherwise it is about the NFTs too.
+ */
+function withdrawReminder(job: Job): void {
+  if (job.request.dryRun) return;
+  const outcomes = job.result?.outcomes ?? [];
+  const tokens = outcomes.reduce((n, o) => n + (o.tokenIds?.length ?? 0), 0);
+  const walletsWithTokens = outcomes.filter((o) => (o.tokenIds?.length ?? 0) > 0).length;
+  if (tokens === 0) return;
+
+  const consolidated = job.consolidated && job.consolidated.moved > 0;
+  const msg = consolidated
+    ? `Reminder — ${job.consolidated!.moved} NFT(s) from ${job.label} are on ${job.consolidated!.to}. ` +
+        `The sniping wallets may still hold ETH from their gas reservations; sweep it back when convenient ` +
+        `(funding tab → collect ETH).`
+    : `Reminder — ${tokens} NFT(s) from ${job.label} are sitting on ${walletsWithTokens} sniping wallet(s). ` +
+        `Move them to your own wallet while you think of it (funding tab → sweep NFTs), and collect the ` +
+        `leftover ETH too. Holding them on the bot's wallets is the one risk worth not sitting on.`;
+  job.reminder = msg;
+
+  let cfg;
+  try {
+    cfg = loadConfig(CONFIG_PATH);
+  } catch {
+    return;
+  }
+  if (cfg.telegram) void sendTelegram(cfg.telegram, msg).catch(() => {});
+}
+
 async function notify(job: Job) {
   let cfg;
   try {
@@ -1901,6 +1948,7 @@ async function execute(job: Job) {
   }
   await consolidate(job);
   await notify(job);
+  withdrawReminder(job);
 }
 
 /**

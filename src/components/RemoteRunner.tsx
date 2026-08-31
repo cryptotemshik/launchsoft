@@ -97,6 +97,8 @@ interface Job {
   gas?: { maxFeeGwei: string; tipGwei: string; limit: number };
   /** Transactions per wallet — 1 for a single burst, more for a spread. */
   shots?: number;
+  /** A nudge to withdraw after a successful mint. Absent on older servers. */
+  reminder?: string;
   error?: string;
 }
 
@@ -831,6 +833,7 @@ function JobDetail({ job, chain }: { job?: Job; chain: ChainInfo }) {
   return (
     <div>
       {job.error ? <p className="error">{job.error}</p> : null}
+      {job.reminder ? <p className="notice notice-withdraw">{job.reminder}</p> : null}
 
       {d ? (
         <dl className="kv">
