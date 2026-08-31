@@ -74,6 +74,25 @@ export function parseAcquisitions(logs: readonly RawLog[], whales: ReadonlySet<s
   return out;
 }
 
+/**
+ * Every distinct recipient of an ERC-721 Transfer in these logs, lower-cased.
+ *
+ * Used by the index-wide sweep: read a collection's recent transfers and this
+ * gives the wallets that acquired from it — the candidate pool the balance
+ * filter then narrows to whales. Same ERC-721 test (four topics) as above.
+ */
+export function collectRecipients(logs: readonly RawLog[]): `0x${string}`[] {
+  const out = new Set<string>();
+  for (const log of logs) {
+    const topics = log.topics ?? [];
+    if (topics.length !== 4) continue;
+    if (topics[0]?.toLowerCase() !== TRANSFER_TOPIC) continue;
+    const to = topicToAddress(topics[2] ?? "");
+    if (/^0x[0-9a-f]{40}$/.test(to) && to !== `0x${"0".repeat(40)}`) out.add(to);
+  }
+  return [...out] as `0x${string}`[];
+}
+
 /** Split a whale set into topic-filter batches, so one getLogs stays small. */
 export function whaleTopicBatches(whales: readonly string[], batchSize = 100): string[][] {
   const batches: string[][] = [];

@@ -46,6 +46,7 @@ export default function AdminTab() {
   const [discBusy, setDiscBusy] = useState(false);
   const [minEth, setMinEth] = useState("6");
   const [candidates, setCandidates] = useState<Holder[]>([]);
+  const [sweep, setSweep] = useState<{ running: boolean; scanned: number; total: number; candidates: number; added: number; note: string } | null>(null);
 
   const load = useCallback(async () => {
     if (!base || !token) return;
@@ -132,6 +133,33 @@ export default function AdminTab() {
     const label = prompt("Label (optional)")?.trim() || "";
     void curatedAction("/api/admin/whales", { method: "POST", body: JSON.stringify({ address, label }) }, "whale added");
   }
+  // Kick off the server-side sweep of every indexed collection, then poll its
+  // progress until it finishes.
+  async function startIndexSweep() {
+    const n = Number(minEth);
+    if (!Number.isFinite(n) || n <= 0) {
+      setError("set a positive min ETH first");
+      return;
+    }
+    setError(null);
+    setNote(null);
+    try {
+      await call("/api/admin/discover-whales", { method: "POST", body: JSON.stringify({ minEth: n }) });
+      const tick = async () => {
+        const r = (await call("/api/admin/discover-whales")) as unknown as { job: typeof sweep };
+        setSweep(r.job);
+        if (r.job?.running) {
+          setTimeout(() => void tick(), 2000);
+        } else {
+          await load(); // refresh the whale count
+        }
+      };
+      void tick();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
   async function discoverWhales() {
     const api = chainInfo?.blockscoutApi;
     if (!api) {
@@ -290,11 +318,39 @@ export default function AdminTab() {
         </table>
       </div>
 
-      {/* Discover whales from a collection's holders (runs in your browser, so
-          it clears the chain explorer's bot check). Ranks by holdings, with an
-          ETH balance for size — there is no USD floor feed for these NFTs. */}
+      {/* Server-side sweep of every collection the drop index knows — reads
+          holders over the box's own RPC (no explorer, no bot check), so it runs
+          without a browser. One click seeds the whole whale list. */}
       <div style={{ marginTop: 24 }}>
-        <h3 style={{ marginBottom: 8 }}>Discover whales from collections</h3>
+        <h3 style={{ marginBottom: 8 }}>Auto-discover whales from the drop index</h3>
+        <p className="dim" style={{ marginTop: 0, fontSize: 12 }}>
+          The server walks every collection it has indexed, reads who recently
+          acquired from each, and adds everyone holding ≥ your minimum ETH. Runs
+          on the box (not your browser); may take a few minutes. Re-run anytime.
+        </p>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <label className="dim" style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
+            min
+            <input value={minEth} onChange={(e) => setMinEth(e.target.value)} style={{ width: 56 }} />
+            ETH
+          </label>
+          <button className="primary" disabled={Boolean(sweep?.running)} onClick={() => void startIndexSweep()}>
+            {sweep?.running ? <span className="spin">SWEEPING</span> : "scan all indexed collections"}
+          </button>
+        </div>
+        {sweep ? (
+          <p className={sweep.running ? "dim" : "ok"} style={{ fontSize: 12, marginBottom: 0 }}>
+            {sweep.running
+              ? `${sweep.note} · ${sweep.added} added so far`
+              : sweep.note}
+          </p>
+        ) : null}
+      </div>
+
+      {/* Manual: discover whales from specific collections, in your browser
+          (clears the explorer's bot check). Ranks by ETH balance. */}
+      <div style={{ marginTop: 24 }}>
+        <h3 style={{ marginBottom: 8 }}>Discover whales from specific collections</h3>
         <p className="dim" style={{ marginTop: 0, fontSize: 12 }}>
           Paste collection contracts — one per line. Their holders (who by
           definition trade NFTs on this chain) are pooled, priced by ETH balance,

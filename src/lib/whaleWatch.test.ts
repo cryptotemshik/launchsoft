@@ -52,3 +52,20 @@ describe("topic batching", () => {
     expect(batches[0][0]).toHaveLength(66);
   });
 });
+
+import { collectRecipients } from "./whaleWatch";
+
+describe("collecting recipients for the index sweep", () => {
+  it("returns distinct NFT recipients, minus the zero address and ERC-20s", () => {
+    const A = `0x${"aa".repeat(20)}`;
+    const B = `0x${"bb".repeat(20)}`;
+    const logs = [
+      { address: COLL, topics: [TRANSFER_TOPIC, addressTopic(STRANGER), addressTopic(A), "0x1"] },
+      { address: COLL, topics: [TRANSFER_TOPIC, addressTopic(STRANGER), addressTopic(A), "0x2"] }, // dup A
+      { address: COLL, topics: [TRANSFER_TOPIC, addressTopic(STRANGER), addressTopic(B), "0x3"] },
+      { address: COLL, topics: [TRANSFER_TOPIC, addressTopic(A), addressTopic(B)] }, // ERC-20 (3 topics)
+      { address: COLL, topics: [TRANSFER_TOPIC, addressTopic(STRANGER), `0x${"0".repeat(64)}`, "0x4"] }, // to zero
+    ];
+    expect(collectRecipients(logs).sort()).toEqual([A, B].sort());
+  });
+});

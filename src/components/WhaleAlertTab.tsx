@@ -18,7 +18,6 @@ const POLL_MS = 30_000;
 interface Alert {
   contract: string;
   name: string | null;
-  whales: string[];
   count: number;
   firstAt: number;
   lastAt: number;
@@ -125,9 +124,6 @@ export default function WhaleAlertTab() {
                   {a.minted > 0 ? <span className="dim" style={{ fontWeight: 400 }}> · {a.minted} minted</span> : null}
                 </div>
                 <div className="dim" style={{ fontSize: 12 }}>last {timeAgo(Math.floor(a.lastAt / 1000))}</div>
-              </div>
-              <div className="dim mono-break" style={{ fontSize: 11, marginTop: 4 }}>
-                {a.whales.map((w) => shortAddress(w)).join(" · ")}
               </div>
               {chainInfo && a.contract.startsWith("0x") ? (
                 <a

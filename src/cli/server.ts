@@ -127,6 +127,7 @@ import {
   removeWhale,
 } from "./curated";
 import {
+  collectRecipients,
   parseAcquisitions,
   whaleTopicBatches,
   TRANSFER_TOPIC,
@@ -1088,6 +1089,93 @@ async function whaleTick(): Promise<void> {
     log(`whale alert: pass failed (${why})`);
   } finally {
     if (WHALE_ON) setTimeout(() => void whaleTick(), WHALE_POLL_MS);
+  }
+}
+
+// ── Sweep the drop index for whales, on demand (admin) ──────────────────────
+interface SweepJob {
+  running: boolean;
+  scanned: number;
+  total: number;
+  candidates: number;
+  added: number;
+  note: string;
+  at: number;
+}
+let sweepJob: SweepJob | null = null;
+
+/**
+ * Walk every collection the drop index knows, read who recently acquired from
+ * each (over the operator's RPC), pool those wallets, and add the ones holding
+ * at least `minWei` of ETH to the whale list. It reaches the holders the
+ * Cloudflare-gated explorer would not let the server see, by reading Transfer
+ * logs directly. One-shot and admin-triggered; it reports progress as it goes.
+ */
+async function sweepIndexForWhales(minWei: bigint, windowBlocks: bigint, maxCollections: number): Promise<void> {
+  if (sweepJob?.running) return;
+  sweepJob = { running: true, scanned: 0, total: 0, candidates: 0, added: 0, note: "starting", at: Date.now() };
+  try {
+    const cfg = loadConfig(CONFIG_PATH);
+    const info = getChainInfo(cfg.chainId);
+    if (!info) throw new Error(`chain ${cfg.chainId} isn't in the registry`);
+    if (!dropIndex) throw new Error("the drop index is off — nothing to sweep");
+    const client = makeReadClient(info.chain, scanRpcs(cfg));
+    const tip = await client.getBlockNumber();
+    const from = tip > windowBlocks ? tip - windowBlocks : 0n;
+
+    const contracts = [
+      ...new Set(dropIndex.sinceBlock(0, maxCollections).map((d) => d.contract.toLowerCase())),
+    ];
+    sweepJob.total = contracts.length;
+
+    const CANDIDATE_CAP = 6000;
+    const candidates = new Set<string>();
+    for (const contract of contracts) {
+      for (let lo = from + 1n; lo <= tip && candidates.size < CANDIDATE_CAP; lo += WHALE_STEP_BLOCKS) {
+        const hi = lo + WHALE_STEP_BLOCKS - 1n > tip ? tip : lo + WHALE_STEP_BLOCKS - 1n;
+        try {
+          const logs = (await client.request({
+            method: "eth_getLogs",
+            params: [{ address: contract, fromBlock: `0x${lo.toString(16)}`, toBlock: `0x${hi.toString(16)}`, topics: [TRANSFER_TOPIC] }],
+          } as never)) as unknown as { topics?: string[] }[];
+          for (const r of collectRecipients((logs ?? []) as never)) candidates.add(r);
+        } catch {
+          /* a collection or range that won't serve — skip it, keep sweeping */
+        }
+      }
+      sweepJob.scanned += 1;
+      sweepJob.candidates = candidates.size;
+      sweepJob.note = `scanned ${sweepJob.scanned}/${contracts.length} collections · ${candidates.size} candidate wallets`;
+    }
+
+    const list = [...candidates];
+    sweepJob.note = `pricing ${list.length} wallets…`;
+    const balances = await mapWithLimit<string, bigint>(
+      list,
+      (addr) => client.getBalance({ address: addr as `0x${string}` }).catch(() => 0n),
+      { limit: readConcurrency() },
+    );
+    let added = 0;
+    for (let i = 0; i < list.length; i++) {
+      if (balances[i] >= minWei) {
+        addWhale(CONFIG_PATH, list[i], `${Number(formatEther(balances[i])).toFixed(2)} ETH`);
+        added += 1;
+      }
+    }
+    sweepJob = {
+      running: false,
+      scanned: contracts.length,
+      total: contracts.length,
+      candidates: list.length,
+      added,
+      note: `done — added ${added} whale(s) ≥ ${formatEther(minWei)} ETH from ${contracts.length} collections`,
+      at: Date.now(),
+    };
+    log(`whale sweep: ${sweepJob.note}`);
+  } catch (e) {
+    const why = e instanceof Error ? e.message.split("\n")[0] : String(e);
+    sweepJob = { ...(sweepJob as SweepJob), running: false, note: `failed: ${why}`, at: Date.now() };
+    log(`whale sweep: failed (${why})`);
   }
 }
 
@@ -2607,13 +2695,10 @@ const server = createServer(async (req, res) => {
   // Reading it is a Pro feature; the site's Whale Alert tab
   // fetch the addresses here and then read their on-chain activity directly.
   if (url.pathname === "/api/curated" && req.method === "GET") {
-    const a = acting(req);
-    if (!a) {
-      json(res, 401, { error: "sign in with your wallet first" });
-      return;
-    }
-    if (!isProReq(req)) {
-      json(res, 402, { error: "Whale Alert is a Pro feature", tier: "free" });
+    // The whale list itself is the owner's — only the admin panel reads it.
+    // Everyone else sees alerts (counts, collections), never the wallets.
+    if (!isAdminReq(req)) {
+      json(res, 403, { error: "admins only" });
       return;
     }
     json(res, 200, loadCurated(CONFIG_PATH));
@@ -2633,9 +2718,16 @@ const server = createServer(async (req, res) => {
       return;
     }
     const info = getChainInfo(loadConfig(CONFIG_PATH).chainId);
+    // Never reveal which wallets are whales — that list is the product's edge
+    // and the owner's alone. A viewer gets the collection, the count, and when;
+    // the whale addresses stay on the server.
     const alerts = currentAlerts(CONFIG_PATH, { windowMs: WHALE_WINDOW_MS }).map((al) => ({
-      ...al,
+      contract: al.contract,
       name: creators.nameFor(al.contract) ?? null,
+      count: al.count,
+      minted: al.minted,
+      firstAt: al.firstAt,
+      lastAt: al.lastAt,
     }));
     json(res, 200, {
       alerts,
@@ -2644,6 +2736,37 @@ const server = createServer(async (req, res) => {
       openSeaSlug: info?.openSeaSlug,
       status: whaleLast?.note ?? (WHALE_ON ? "starting…" : "off"),
     });
+    return;
+  }
+  // Admin: sweep every indexed collection for whales, over the server's RPC.
+  if (url.pathname === "/api/admin/discover-whales" && req.method === "POST") {
+    if (!isAdminReq(req)) {
+      json(res, 403, { error: "admins only" });
+      return;
+    }
+    if (sweepJob?.running) {
+      json(res, 409, { error: "a sweep is already running", job: sweepJob });
+      return;
+    }
+    const body = await readBody(req).catch(() => ({}) as Record<string, unknown>);
+    const minEth = Number(body.minEth ?? 6);
+    const windowBlocks = BigInt(Math.max(1000, Math.floor(Number(body.windowBlocks ?? 120_000))));
+    const maxCollections = Math.max(1, Math.min(1000, Math.floor(Number(body.maxCollections ?? 200))));
+    if (!Number.isFinite(minEth) || minEth <= 0) {
+      json(res, 400, { error: "minEth must be a positive number" });
+      return;
+    }
+    const minWei = parseEther(String(minEth));
+    void sweepIndexForWhales(minWei, windowBlocks, maxCollections);
+    json(res, 200, { started: true });
+    return;
+  }
+  if (url.pathname === "/api/admin/discover-whales" && req.method === "GET") {
+    if (!isAdminReq(req)) {
+      json(res, 403, { error: "admins only" });
+      return;
+    }
+    json(res, 200, { job: sweepJob });
     return;
   }
   // Admin curates those lists.
