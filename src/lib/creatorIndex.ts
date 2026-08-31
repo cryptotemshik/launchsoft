@@ -77,6 +77,11 @@ export class CreatorIndex {
     else index.set(k, new Set([contract]));
   }
 
+  /** A collection's name if we have seen it, else undefined. */
+  nameFor(contract: string): string | undefined {
+    return this.byContract.get(contract.toLowerCase())?.name;
+  }
+
   /** Everything this address has launched, newest start first. */
   byOwner(owner: string): IndexedCollection[] {
     return this.resolve(this.owners.get(owner.toLowerCase()));

@@ -126,6 +126,20 @@ import {
   loadCurated,
   removeWhale,
 } from "./curated";
+import {
+  parseAcquisitions,
+  whaleTopicBatches,
+  TRANSFER_TOPIC,
+} from "../lib/whaleWatch";
+import {
+  currentAlerts,
+  getLastBlock,
+  prune as pruneWhaleAlerts,
+  recordAcquisitions,
+  setLastBlock,
+  takeNewAlerts,
+  DEFAULT_WINDOW_MS as WHALE_WINDOW_MS,
+} from "./whaleAlerts";
 
 import {
   MATURE_MS,
@@ -994,6 +1008,86 @@ async function indexTick(): Promise<void> {
     log(`index: pass failed (${why})`);
   } finally {
     setTimeout(() => void indexTick(), INDEX_POLL_MS);
+  }
+}
+
+// ── Whale Alert: watch the curated whales enter collections, 24/7 ───────────
+const WHALE_ON = process.env.SNIPE_WHALE_ALERT !== "0";
+const WHALE_POLL_MS = envNumber(process.env.SNIPE_WHALE_POLL_MS, 60_000, 5_000);
+/** Blocks per getLogs call — kept modest so a rate-capped endpoint still serves it. */
+const WHALE_STEP_BLOCKS = BigInt(envNumber(process.env.SNIPE_WHALE_STEP_BLOCKS, 2_000, 100));
+/** Never read more than this in one tick — a long downtime skips ahead, it does not stall. */
+const WHALE_MAX_CATCHUP = BigInt(envNumber(process.env.SNIPE_WHALE_MAX_CATCHUP, 40_000, 1_000));
+let whaleLast: { at: number; note: string } | null = null;
+
+/**
+ * One pass of Whale Alert.
+ *
+ * Reads the Transfer logs whose recipient is a curated whale since the last
+ * block we looked at, tallies which collections now have three-plus distinct
+ * whales, and — for any that just crossed — logs it and pings Telegram. Reads
+ * over the operator's RPC (not the Cloudflare-gated explorer), so it works with
+ * no browser open. Goes forward only: on first run it starts at the tip, and a
+ * long gap skips ahead rather than trying to backfill the whole window.
+ */
+async function whaleTick(): Promise<void> {
+  try {
+    const cfg = loadConfig(CONFIG_PATH);
+    const info = getChainInfo(cfg.chainId);
+    const whales = loadCurated(CONFIG_PATH).whales.map((w) => w.address);
+    if (!info || whales.length === 0) return;
+    const client = makeReadClient(info.chain, scanRpcs(cfg));
+    const tip = await client.getBlockNumber();
+    let from = BigInt(getLastBlock(CONFIG_PATH) || 0);
+    if (from === 0n || from >= tip) {
+      // First run (or nothing new): anchor at the tip and accumulate forward.
+      setLastBlock(CONFIG_PATH, Number(tip));
+      if (from === 0n) whaleLast = { at: Date.now(), note: `watching ${whales.length} whales from block ${tip}` };
+      return;
+    }
+    if (tip - from > WHALE_MAX_CATCHUP) from = tip - WHALE_MAX_CATCHUP; // skip ahead after downtime
+    const batches = whaleTopicBatches(whales, 100);
+    let found = 0;
+    for (let lo = from + 1n; lo <= tip; lo += WHALE_STEP_BLOCKS) {
+      const hi = lo + WHALE_STEP_BLOCKS - 1n > tip ? tip : lo + WHALE_STEP_BLOCKS - 1n;
+      for (const batch of batches) {
+        const logs = (await client.request({
+          method: "eth_getLogs",
+          params: [
+            {
+              fromBlock: `0x${lo.toString(16)}`,
+              toBlock: `0x${hi.toString(16)}`,
+              topics: [TRANSFER_TOPIC, null, batch],
+            },
+          ],
+        } as never)) as unknown as { address?: string; topics?: string[]; blockNumber?: string }[];
+        const acqs = parseAcquisitions(logs ?? [], new Set(whales.map((w) => w.toLowerCase())));
+        if (acqs.length > 0) {
+          recordAcquisitions(CONFIG_PATH, acqs);
+          found += acqs.length;
+        }
+      }
+      setLastBlock(CONFIG_PATH, Number(hi));
+    }
+    pruneWhaleAlerts(CONFIG_PATH, WHALE_WINDOW_MS);
+    const fresh = takeNewAlerts(CONFIG_PATH, { windowMs: WHALE_WINDOW_MS });
+    for (const a of fresh) {
+      const name = creators.nameFor(a.contract) ?? a.contract;
+      log(`whale alert: ${a.count} whales in ${name}`);
+      if (cfg.telegram) {
+        void sendTelegram(
+          cfg.telegram,
+          `🐋 Whale Alert — ${a.count} whales have entered ${name}\n${a.contract}`,
+        ).catch(() => {});
+      }
+    }
+    whaleLast = { at: Date.now(), note: `${whales.length} whales · ${found} new entries this pass` };
+  } catch (e) {
+    const why = e instanceof Error ? e.message.split("\n")[0] : String(e);
+    whaleLast = { at: Date.now(), note: `pass failed: ${why}` };
+    log(`whale alert: pass failed (${why})`);
+  } finally {
+    if (WHALE_ON) setTimeout(() => void whaleTick(), WHALE_POLL_MS);
   }
 }
 
@@ -2525,6 +2619,33 @@ const server = createServer(async (req, res) => {
     json(res, 200, loadCurated(CONFIG_PATH));
     return;
   }
+  // The live Whale Alert feed: collections three-plus curated whales have
+  // entered inside the window. Computed on the server around the clock, so it
+  // is the same for everyone and needs no browser open to keep watching.
+  if (url.pathname === "/api/whale-alerts" && req.method === "GET") {
+    const a = acting(req);
+    if (!a) {
+      json(res, 401, { error: "sign in with your wallet first" });
+      return;
+    }
+    if (!isProReq(req)) {
+      json(res, 402, { error: "Whale Alert is a Pro feature", tier: "free" });
+      return;
+    }
+    const info = getChainInfo(loadConfig(CONFIG_PATH).chainId);
+    const alerts = currentAlerts(CONFIG_PATH, { windowMs: WHALE_WINDOW_MS }).map((al) => ({
+      ...al,
+      name: creators.nameFor(al.contract) ?? null,
+    }));
+    json(res, 200, {
+      alerts,
+      windowHours: Math.round(WHALE_WINDOW_MS / 3_600_000),
+      watching: loadCurated(CONFIG_PATH).whales.length,
+      openSeaSlug: info?.openSeaSlug,
+      status: whaleLast?.note ?? (WHALE_ON ? "starting…" : "off"),
+    });
+    return;
+  }
   // Admin curates those lists.
   if (url.pathname === "/api/admin/whales" && (req.method === "POST" || req.method === "DELETE")) {
     if (!isAdminReq(req)) {
@@ -3704,6 +3825,10 @@ server.listen(PORT, HOST, () => {
     // The same bot, now also listening: /add collects a drop that exists
     // nowhere but Twitter yet, and the site reads the list back.
     if (cfg.telegram) startTelegramBot(cfg.telegram, CONFIG_PATH, log);
+    if (WHALE_ON) {
+      log("whale alert  watching curated whales for 3+ entering one collection (SNIPE_WHALE_ALERT=0 to disable)");
+      setTimeout(() => void whaleTick(), 6_000);
+    }
   } catch {
     log("config not readable yet — queue requests will report the error");
   }

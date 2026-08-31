@@ -138,9 +138,15 @@ export default function AdminTab() {
       setError("this chain has no Blockscout API to read holders from");
       return;
     }
-    const contract = discContract.trim();
-    if (!/^0x[0-9a-fA-F]{40}$/.test(contract)) {
-      setError("paste a 0x collection contract to scan its holders");
+    // One or many contracts, one per line — paste the whole set and it walks
+    // them all, pooling holders so a whale in three collections is looked up
+    // once.
+    const contracts = discContract
+      .split(/[\s,]+/)
+      .map((c) => c.trim().toLowerCase())
+      .filter((c) => /^0x[0-9a-f]{40}$/.test(c));
+    if (contracts.length === 0) {
+      setError("paste one or more 0x collection contracts (one per line)");
       return;
     }
     setDiscBusy(true);
@@ -148,17 +154,25 @@ export default function AdminTab() {
     setNote(null);
     setCandidates([]);
     try {
-      const holders = await fetchTopHolders(api, contract, 60);
-      // Look up each holder's ETH balance — the one figure we can price — so
-      // the list can be ranked and filtered by real wealth, not just how many
-      // of this one collection they hold. Sequential to stay under rate limits.
+      // Pool distinct holders across every collection first.
+      const seen = new Map<string, number>(); // address → max holdings seen
+      for (const contract of contracts) {
+        const holders = await fetchTopHolders(api, contract, 100).catch(() => []);
+        for (const h of holders) {
+          seen.set(h.address, Math.max(seen.get(h.address) ?? 0, h.count));
+        }
+        setNote(`scanned ${contracts.indexOf(contract) + 1}/${contracts.length} collections · ${seen.size} wallets so far`);
+      }
+      // Then price each once by ETH balance.
       const withBal: Holder[] = [];
-      for (const h of holders) {
-        withBal.push({ ...h, balanceWei: await fetchEthBalance(api, h.address) });
+      let i = 0;
+      for (const [address, count] of seen) {
+        withBal.push({ address: address as `0x${string}`, count, balanceWei: await fetchEthBalance(api, address) });
+        if (++i % 25 === 0) setNote(`priced ${i}/${seen.size} wallets…`);
       }
       withBal.sort((a, b) => (BigInt(b.balanceWei ?? "0") > BigInt(a.balanceWei ?? "0") ? 1 : -1));
       setCandidates(withBal);
-      if (holders.length === 0) setNote("no holders came back for that contract");
+      setNote(seen.size === 0 ? "no holders came back for those contracts" : `found ${withBal.length} wallets across ${contracts.length} collection(s)`);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -280,27 +294,25 @@ export default function AdminTab() {
           it clears the chain explorer's bot check). Ranks by holdings, with an
           ETH balance for size — there is no USD floor feed for these NFTs. */}
       <div style={{ marginTop: 24 }}>
-        <h3 style={{ marginBottom: 8 }}>Discover whales from a collection</h3>
+        <h3 style={{ marginBottom: 8 }}>Discover whales from collections</h3>
         <p className="dim" style={{ marginTop: 0, fontSize: 12 }}>
-          Paste a collection contract — its holders (who by definition trade NFTs
-          on this chain) are looked up and ranked by ETH balance. Set a minimum
-          and add everyone above it in one click. There is no USD floor feed for
-          these NFTs, so wealth is measured in ETH (~$2.5k/ETH → 6 ETH ≈ $15k).
+          Paste collection contracts — one per line. Their holders (who by
+          definition trade NFTs on this chain) are pooled, priced by ETH balance,
+          and you add everyone above the minimum in one click. There is no USD
+          floor feed for these NFTs, so wealth is measured in ETH (~$2.5k/ETH →
+          6 ETH ≈ $15k). Grab a collection&apos;s contract from the explorer/OpenSea.
         </p>
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-          <input
-            value={discContract}
-            onChange={(e) => setDiscContract(e.target.value)}
-            placeholder="0x… collection contract"
-            style={{ flex: 1, minWidth: 220, fontFamily: "var(--mono)" }}
-          />
+        <textarea
+          value={discContract}
+          onChange={(e) => setDiscContract(e.target.value)}
+          placeholder={"0x… collection contract\n0x… another\n0x… another"}
+          rows={4}
+          style={{ width: "100%", fontFamily: "var(--mono)", fontSize: 12 }}
+        />
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginTop: 6 }}>
           <label className="dim" style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
             min
-            <input
-              value={minEth}
-              onChange={(e) => setMinEth(e.target.value)}
-              style={{ width: 56 }}
-            />
+            <input value={minEth} onChange={(e) => setMinEth(e.target.value)} style={{ width: 56 }} />
             ETH
           </label>
           <button className="primary" disabled={discBusy} onClick={() => void discoverWhales()}>
