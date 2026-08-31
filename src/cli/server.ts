@@ -107,6 +107,7 @@ import {
 } from "./auth";
 import {
   accountConfigPath,
+  accountDirs,
   accountsRoot,
   ensureAccount,
   getAccount,
@@ -118,9 +119,18 @@ import {
 } from "./accounts";
 import {
   adminAdjust,
+  chargeSubscription,
+  deposit as creditDeposit,
   grantFreeSnipes,
+  InsufficientBalance,
   loadBilling,
 } from "./billing";
+import {
+  depositAddress,
+  ensureDeposit,
+  seenWei,
+  setSeenWei,
+} from "./depositWallet";
 import {
   addWhale,
   loadCurated,
@@ -182,6 +192,45 @@ const CONFIG_PATH = process.env.SNIPE_CONFIG ?? "snipe.config.json";
 const ACCOUNTS_ROOT = accountsRoot();
 /** Free-plan ceilings. Pro (and the owner) are unlimited. */
 const FREE_WATCHLIST_MAX = 3;
+/** Pro subscription: a fixed dollar price, one month at a time, paid in ETH. */
+const PRO_PRICE_CENTS = envNumber(process.env.SNIPE_PRO_CENTS, 2999, 1);
+const PRO_DAYS = envNumber(process.env.SNIPE_PRO_DAYS, 30, 1);
+
+/**
+ * ETH/USD, for turning a dollar price into the wei to debit.
+ *
+ * From Coinbase's public spot endpoint rather than the chain's explorer — the
+ * explorer sits behind a bot check a server request cannot pass, and a price
+ * is not worth a browser. Cached an hour; a charge reads it fresh enough and a
+ * blip in the rate must never block a payment for long.
+ */
+let ethUsdCache: { at: number; usd: number | null } | null = null;
+async function usdPerEth(): Promise<number | null> {
+  if (ethUsdCache && Date.now() - ethUsdCache.at < 3600_000) return ethUsdCache.usd;
+  let usd: number | null = null;
+  try {
+    const r = await fetch("https://api.coinbase.com/v2/prices/ETH-USD/spot", {
+      signal: AbortSignal.timeout(8000),
+    });
+    if (r.ok) {
+      const v = Number(((await r.json()) as { data?: { amount?: string } }).data?.amount);
+      usd = Number.isFinite(v) && v > 0 ? v : null;
+    }
+  } catch {
+    /* leave null — the caller reports "price unavailable" rather than mischarging */
+  }
+  ethUsdCache = { at: Date.now(), usd };
+  return usd;
+}
+
+/** Wei for a US-cent amount at the current rate, or null if the rate is unknown. */
+async function centsToWei(cents: number): Promise<bigint | null> {
+  const usd = await usdPerEth();
+  if (!usd) return null;
+  // cents/100 dollars ÷ (usd per eth) = eth; ×1e18 = wei. Done in integer wei
+  // by scaling: wei = cents * 1e16 / usd (since 1e18/100 = 1e16).
+  return BigInt(Math.round((cents * 1e16) / usd));
+}
 /** How far ahead of a stage a job is armed (read nonces, pre-sign, warm). */
 const ARM_LEAD_MS = envNumber(process.env.SNIPE_ARM_LEAD_MS, 120_000);
 /** Set to 0 to stop the server pulling its own updates. */
@@ -1089,6 +1138,50 @@ async function whaleTick(): Promise<void> {
     log(`whale alert: pass failed (${why})`);
   } finally {
     if (WHALE_ON) setTimeout(() => void whaleTick(), WHALE_POLL_MS);
+  }
+}
+
+// ── Credit deposits: watch each account's deposit address, 24/7 ─────────────
+const DEPOSITS_ON = process.env.SNIPE_DEPOSITS !== "0";
+const DEPOSIT_POLL_MS = envNumber(process.env.SNIPE_DEPOSIT_POLL_MS, 60_000, 10_000);
+
+/**
+ * One pass of deposit crediting.
+ *
+ * For every account that has a deposit address, read its on-chain balance and
+ * credit the account the amount it has risen by since last seen — so a top-up
+ * is caught once, never twice. A drop (funds we swept or refunded) just resets
+ * the watermark down, so it is not mistaken for a withdrawal from the balance.
+ */
+async function depositTick(): Promise<void> {
+  try {
+    const cfg = loadConfig(CONFIG_PATH);
+    const info = getChainInfo(cfg.chainId);
+    if (!info) return;
+    const client = makeReadClient(info.chain, readRpcs(cfg));
+    for (const addr of accountDirs(ACCOUNTS_ROOT)) {
+      const cfgPath = accountConfigPath(ACCOUNTS_ROOT, addr);
+      const dep = depositAddress(cfgPath);
+      if (!dep) continue;
+      let bal: bigint;
+      try {
+        bal = await client.getBalance({ address: dep });
+      } catch {
+        continue;
+      }
+      const seen = seenWei(cfgPath);
+      if (bal > seen) {
+        creditDeposit(cfgPath, bal - seen, `deposit seen at ${dep}`);
+        setSeenWei(cfgPath, bal);
+        log(`deposit: credited ${formatEther(bal - seen)} ETH to ${addr}`);
+      } else if (bal < seen) {
+        setSeenWei(cfgPath, bal);
+      }
+    }
+  } catch (e) {
+    log(`deposit: pass failed (${e instanceof Error ? e.message.split("\n")[0] : String(e)})`);
+  } finally {
+    if (DEPOSITS_ON) setTimeout(() => void depositTick(), DEPOSIT_POLL_MS);
   }
 }
 
@@ -2680,6 +2773,18 @@ const server = createServer(async (req, res) => {
     }
     const bill = loadBilling(a.cfgPath);
     const acct = a.address ? getAccount(ACCOUNTS_ROOT, a.address) : null;
+    // A real account gets a deposit address; the operator token (no address)
+    // does not need one. Generated on first view and never moved after.
+    let deposit: string | null = null;
+    if (a.address) {
+      try {
+        deposit = ensureDeposit(a.cfgPath, keystorePassphrase());
+      } catch (e) {
+        log(`deposit address for ${a.address}: ${e instanceof Error ? e.message : e}`);
+      }
+    }
+    const usd = await usdPerEth();
+    const proWei = await centsToWei(PRO_PRICE_CENTS);
     json(res, 200, {
       balanceWei: bill.balanceWei,
       balanceEth: formatEther(BigInt(bill.balanceWei)),
@@ -2687,7 +2792,51 @@ const server = createServer(async (req, res) => {
       tier: acct ? tierOf(acct) : "pro",
       proUntil: acct?.proUntil ?? null,
       entries: bill.entries.slice(-50).reverse(),
+      depositAddress: deposit,
+      ethUsd: usd,
+      pro: {
+        priceCents: PRO_PRICE_CENTS,
+        days: PRO_DAYS,
+        priceWei: proWei ? proWei.toString() : null,
+        priceEth: proWei ? formatEther(proWei) : null,
+      },
     });
+    return;
+  }
+  // Pay for a month of Pro from the balance, priced in dollars, debited in ETH.
+  if (url.pathname === "/api/subscribe" && req.method === "POST") {
+    const a = acting(req);
+    if (!a || !a.address) {
+      json(res, 401, { error: "sign in with your wallet first" });
+      return;
+    }
+    try {
+      const wei = await centsToWei(PRO_PRICE_CENTS);
+      if (!wei) {
+        json(res, 503, { error: "the ETH price is unavailable right now — try again in a moment" });
+        return;
+      }
+      chargeSubscription(a.cfgPath, wei, {
+        usdCents: PRO_PRICE_CENTS,
+        note: `Pro — ${PRO_DAYS} days`,
+      });
+      const now = Date.now();
+      const current = getAccount(ACCOUNTS_ROOT, a.address)?.proUntil ?? now;
+      const proUntil = Math.max(now, current) + PRO_DAYS * 86_400_000;
+      const rec = updateAccount(ACCOUNTS_ROOT, a.address, { proUntil });
+      audit("admin.grantPro", { address: a.address, days: PRO_DAYS, proUntil, paid: true });
+      json(res, 200, { ok: true, proUntil: rec.proUntil ?? null, tier: tierOf(rec) });
+    } catch (e) {
+      if (e instanceof InsufficientBalance) {
+        json(res, 402, {
+          error: "not enough balance — top up first",
+          needWei: e.needWei.toString(),
+          haveWei: e.haveWei.toString(),
+        });
+        return;
+      }
+      json(res, 400, { error: e instanceof Error ? e.message : String(e) });
+    }
     return;
   }
 
@@ -3954,6 +4103,10 @@ server.listen(PORT, HOST, () => {
     if (WHALE_ON) {
       log("whale alert  watching curated whales for 3+ entering one collection (SNIPE_WHALE_ALERT=0 to disable)");
       setTimeout(() => void whaleTick(), 6_000);
+    }
+    if (DEPOSITS_ON) {
+      log("deposits    crediting per-account deposit addresses (SNIPE_DEPOSITS=0 to disable)");
+      setTimeout(() => void depositTick(), 8_000);
     }
   } catch {
     log("config not readable yet — queue requests will report the error");
