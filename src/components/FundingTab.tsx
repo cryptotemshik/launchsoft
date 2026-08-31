@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { parseEther } from "viem";
 import AdminOnly from "./AdminOnly";
 import RunnerConnect from "./RunnerConnect";
-import { useRunnerApi } from "../lib/runnerClient";
+import { useMe, useRunnerApi } from "../lib/runnerClient";
+import { useChainSwitcher, useSigner } from "../signer";
 import {
+  CHAINS_BY_ID,
   openSeaCollectionUrlBySlug,
   openSeaItemUrlBySlug,
   openSeaProfileUrl,
@@ -37,6 +40,7 @@ interface ServerWallet {
 
 interface WalletsView {
   chain?: string;
+  chainId?: number;
   wallets: ServerWallet[];
 }
 
@@ -95,19 +99,47 @@ const eth = (wei?: string) => (wei ? Number(wei) / 1e18 : 0);
 export default function FundingTab() {
   const { url, setUrl, token, setToken, remember, setRemember, base, call, save, serverVersion } =
     useRunnerApi();
+  const { me } = useMe();
+  const admin = Boolean(me?.admin);
+  const signer = useSigner();
+  const { select: switchChain } = useChainSwitcher();
 
   const [connected, setConnected] = useState(false);
   const [view, setView] = useState<WalletsView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  // Disperse
-  const [payerMode, setPayerMode] = useState<"stored" | "key">("key");
+  // Disperse. Source of the money: a wallet connected in the browser (it signs
+  // each transfer itself — the key never leaves the browser), a private key
+  // pasted for this call alone, or, for the operator, one of the wallets
+  // already on the server.
+  const [payerMode, setPayerMode] = useState<"connected" | "stored" | "key">("connected");
+  const [modeTouched, setModeTouched] = useState(false);
   const [payerAddress, setPayerAddress] = useState("");
   const [payerKey, setPayerKey] = useState("");
   const [amount, setAmount] = useState("0.001");
   const [skipFunded, setSkipFunded] = useState(true);
   const [dResult, setDResult] = useState<DisperseResult | null>(null);
+
+  // The operator funds a hundred wallets at once — a connected wallet would ask
+  // to approve each one — so default them to pasting a payer key. A normal user
+  // funds a handful and wants their own connected wallet, which never trusts
+  // the server with a key. Only until they pick a source themselves.
+  useEffect(() => {
+    if (!modeTouched) setPayerMode(admin ? "key" : "connected");
+  }, [admin, modeTouched]);
+  function pickMode(m: "connected" | "stored" | "key") {
+    setModeTouched(true);
+    setPayerMode(m);
+  }
+
+  // The chain the server's wallets live on, so a browser-signed transfer can't
+  // go out on whatever network the wallet happens to be pointed at.
+  const targetChainId = view?.chainId;
+  const targetChain = targetChainId ? CHAINS_BY_ID.get(targetChainId) : undefined;
+  const walletOnRightChain =
+    payerMode !== "connected" ||
+    (signer.isConnected && targetChainId != null && signer.chainId === targetChainId);
 
   // Collect
   const [dest, setDest] = useState("");
@@ -172,6 +204,10 @@ export default function FundingTab() {
     }
   }
 
+  function doDisperse(dryRun: boolean) {
+    return payerMode === "connected" ? runConnectedDisperse(dryRun) : runDisperse(dryRun);
+  }
+
   async function runDisperse(dryRun: boolean) {
     setBusy(true);
     setError(null);
@@ -198,6 +234,82 @@ export default function FundingTab() {
         setPayerKey("");
         await refresh();
       }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /**
+   * Fund from the wallet connected in the browser.
+   *
+   * The server never signs this and never sees a key: the connected wallet
+   * signs one transfer per chosen wallet itself. That is the whole appeal — the
+   * money leaves your own wallet under your own signature — at the cost of one
+   * approval per wallet, which is why it suits funding a handful rather than a
+   * hundred. A flat amount goes to each wallet still short of it; the ones
+   * already holding enough are skipped, same rule as the server path.
+   */
+  async function runConnectedDisperse(dryRun: boolean) {
+    setBusy(true);
+    setError(null);
+    setDResult(null);
+    try {
+      if (!signer.isConnected || !signer.walletClient || !signer.txAccount) {
+        throw new Error("connect your wallet first");
+      }
+      if (targetChainId != null && signer.chainId !== targetChainId) {
+        throw new Error(
+          `switch your wallet to ${targetChain?.label ?? `chain ${targetChainId}`} to fund these wallets`,
+        );
+      }
+      const want = Number(amount);
+      if (!(want > 0)) throw new Error("amount must be greater than zero");
+      const amountWei = parseEther(amount.trim());
+      const chosen = wallets.filter((w) => fundTo.has(w.address));
+      const outcomes: TransferOutcome[] = [];
+      let funded = 0;
+      let skipped = 0;
+      for (const w of chosen) {
+        if (skipFunded && Number(w.balance ?? 0) >= want) {
+          outcomes.push({ address: w.address, status: "skipped", detail: "already funded" });
+          skipped += 1;
+          continue;
+        }
+        if (dryRun) {
+          outcomes.push({
+            address: w.address,
+            status: "sent",
+            amountWei: amountWei.toString(),
+            detail: "would send",
+          });
+          funded += 1;
+          continue;
+        }
+        try {
+          const hash = await signer.walletClient.sendTransaction({
+            account: signer.txAccount,
+            chain: signer.chainInfo?.chain,
+            to: w.address,
+            value: amountWei,
+          });
+          outcomes.push({ address: w.address, status: "sent", amountWei: amountWei.toString(), txHash: hash });
+          funded += 1;
+        } catch (e) {
+          const msg = e instanceof Error ? e.message.split("\n")[0] : String(e);
+          outcomes.push({ address: w.address, status: "rejected", detail: msg });
+        }
+      }
+      setDResult({
+        from: signer.address ?? "",
+        fromBalanceWei: "0",
+        requiredWei: (amountWei * BigInt(funded)).toString(),
+        funded,
+        skipped,
+        outcomes,
+      });
+      if (!dryRun) await refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -411,26 +523,61 @@ export default function FundingTab() {
       ) : (
         <>
           <div className="panel">
-            <h2>Send out — one wallet → {fundTo.size} of {wallets.length}</h2>
+            <h2>Send out — one source → {fundTo.size} of {wallets.length}</h2>
             <p className="dim" style={{ marginTop: 0 }}>
-              Where the money comes from: the server has to sign one transaction
-              per wallet, so it needs a key it can sign with — a browser wallet
-              would ask you to approve {wallets.length || "N"} times.
-              The simplest route is to send one ordinary transfer from
-              MetaMask into any wallet already on the server, then pick that one
-              below as the payer. Pasting a payer key works too and is never
-              stored.
+              Where the money comes from. <b>Connected wallet</b> is the safest:
+              the wallet in your browser signs each transfer itself, so no key
+              ever reaches the server — at the cost of one approval per wallet,
+              which suits a handful. <b>Paste a payer key</b> hands the server a
+              key for this one call, used and forgotten, and funds any number of
+              wallets in a single round-trip.
+              {admin ? (
+                <> <b>Stored wallet</b> pays from one already on the server.</>
+              ) : null}
             </p>
             <div className="mode-toggle" style={{ marginBottom: 12 }}>
-              <button className={payerMode === "key" ? "active" : ""} onClick={() => setPayerMode("key")}>
+              <button className={payerMode === "connected" ? "active" : ""} onClick={() => pickMode("connected")}>
+                connected wallet
+              </button>
+              <button className={payerMode === "key" ? "active" : ""} onClick={() => pickMode("key")}>
                 paste a payer key
               </button>
-              <button className={payerMode === "stored" ? "active" : ""} onClick={() => setPayerMode("stored")}>
-                use a stored wallet
-              </button>
+              {admin ? (
+                <button className={payerMode === "stored" ? "active" : ""} onClick={() => pickMode("stored")}>
+                  use a stored wallet
+                </button>
+              ) : null}
             </div>
 
-            {payerMode === "key" ? (
+            {payerMode === "connected" ? (
+              <div className="field">
+                {signer.isConnected && signer.address ? (
+                  walletOnRightChain ? (
+                    <p className="dim" style={{ margin: 0 }}>
+                      paying from <AddrLink address={signer.address} /> — you approve one
+                      transfer per wallet in your wallet app.
+                    </p>
+                  ) : (
+                    <p className="warn" style={{ margin: 0 }}>
+                      your wallet is on the wrong network.{" "}
+                      {targetChainId != null ? (
+                        <button
+                          className="secondary"
+                          style={{ padding: "2px 8px", fontSize: 11 }}
+                          onClick={() => switchChain(targetChainId)}
+                        >
+                          switch to {targetChain?.label ?? `chain ${targetChainId}`}
+                        </button>
+                      ) : null}
+                    </p>
+                  )
+                ) : (
+                  <p className="warn" style={{ margin: 0 }}>
+                    connect your wallet (top bar) to pay from it.
+                  </p>
+                )}
+              </div>
+            ) : payerMode === "key" ? (
               <div className="field">
                 <label>payer private key — used for this transfer, never stored</label>
                 <input
@@ -479,7 +626,7 @@ export default function FundingTab() {
               <button
                 className="secondary"
                 disabled={busy || fundTo.size === 0}
-                onClick={() => void runDisperse(true)}
+                onClick={() => void doDisperse(true)}
               >
                 DRY RUN
               </button>
@@ -488,9 +635,13 @@ export default function FundingTab() {
                 disabled={
                   busy ||
                   fundTo.size === 0 ||
-                  (payerMode === "key" ? !payerKey.trim() : !payerAddress)
+                  (payerMode === "connected"
+                    ? !signer.isConnected || !walletOnRightChain
+                    : payerMode === "key"
+                      ? !payerKey.trim()
+                      : !payerAddress)
                 }
-                onClick={() => void runDisperse(false)}
+                onClick={() => void doDisperse(false)}
               >
                 {fundTo.size === wallets.length
                   ? `SEND TO ALL ${wallets.length} WALLETS`
@@ -523,6 +674,8 @@ export default function FundingTab() {
             ) : null}
           </div>
 
+          {admin ? (
+          <>
           <div className="panel">
             <h2>Collect back — {collectFrom.size} of {wallets.length} → one address</h2>
             <p className="dim" style={{ marginTop: 0 }}>
@@ -787,6 +940,8 @@ export default function FundingTab() {
               minted and nothing else.
             </p>
           </div>
+          </>
+          ) : null}
         </>
       )}
     </div>

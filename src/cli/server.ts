@@ -3413,6 +3413,101 @@ const server = createServer(async (req, res) => {
           json(res, 200, jobView(job));
           return;
         }
+
+        // ── Fund your own snipe wallets ──────────────────────────────────────
+        // The public counterpart to the operator's disperse below the gate,
+        // scoped to your world. The source is a private key you paste for this
+        // call alone (never stored, never sent to the daemon) — the browser can
+        // also fund from a connected wallet without touching the server at all,
+        // signing each transfer itself. Funding a wallet is always allowed: it
+        // is your money going to your own wallets, and receiving consumes no
+        // nonce, so it is safe even while a job of yours is armed. The one case
+        // refused is paying out of a wallet a mint is about to fire from.
+        if (url.pathname === "/api/disperse" && req.method === "POST") {
+          const body = await readBody(req);
+          const cfg = loadConfig(a.cfgPath);
+          const entries = walletBook(a.cfgPath);
+          if (entries.length === 0) throw new Error("no wallets on your account to fund");
+
+          let fromAddress: `0x${string}`;
+          let disperseSigner: Signer;
+          if (typeof body.fromKey === "string" && body.fromKey.trim()) {
+            const oneOff = normalizePrivateKey(body.fromKey);
+            fromAddress = privateKeyToAccount(oneOff).address;
+            disperseSigner = makeInProcessSigner({
+              loadKeys: () => [{ key: oneOff }],
+              policy: () => policyContext(a.cfgPath, a.address),
+            });
+          } else if (typeof body.fromAddress === "string") {
+            const want = body.fromAddress.toLowerCase();
+            const hit = entries.find((w) => w.address.toLowerCase() === want);
+            if (!hit) throw new Error("that source wallet isn't on your account");
+            fromAddress = hit.address;
+            disperseSigner = getSigner(a.cfgPath, a.address);
+          } else {
+            throw new Error("supply either fromKey (a one-off payer) or fromAddress (a wallet of yours)");
+          }
+
+          const num = (v: unknown): string => (typeof v === "string" ? v.trim() : "");
+          const topUpTo = num(body.topUpToEth);
+          const amount = num(body.amountEth);
+          let amountWei = 0n;
+          let topUpToWei: bigint | undefined;
+          if (topUpTo) {
+            if (!/^\d+(\.\d+)?$/.test(topUpTo)) throw new Error("topUpToEth must be a plain number");
+            topUpToWei = parseEther(topUpTo);
+            if (topUpToWei <= 0n) throw new Error("topUpToEth must be greater than zero");
+          } else {
+            if (!/^\d+(\.\d+)?$/.test(amount)) throw new Error("amountEth must be a plain number");
+            amountWei = parseEther(amount);
+            if (amountWei <= 0n) throw new Error("amountEth must be greater than zero");
+          }
+
+          const payer = fromAddress.toLowerCase();
+          const firing = walletsOfActiveJob();
+          if (firing?.has(payer)) {
+            json(res, 409, {
+              error:
+                "that payer is one of the wallets a mint is firing from — " +
+                "sending from it now would spend the nonce its mint is signed against. " +
+                "Fund from another wallet, or abort the job first.",
+            });
+            return;
+          }
+          const stored = entries.map((w) => w.address);
+          const targets = chooseWallets(body, "targets", stored, (x) => x).filter(
+            (x) => x.toLowerCase() !== payer,
+          );
+          if (targets.length === 0) throw new Error("no targets — the only wallet is the payer");
+
+          const lines: string[] = [];
+          const result = await disperse(
+            {
+              chainId: cfg.chainId,
+              extraRpcs: readRpcs(cfg),
+              gas: { maxFeeGwei: cfg.gas.maxFeeGwei, tipGwei: cfg.gas.tipGwei },
+              from: fromAddress,
+              signer: disperseSigner,
+              targets,
+              amountWei,
+              topUpToWei,
+              skipIfAtLeastWei:
+                typeof body.skipIfAtLeastEth === "string" && body.skipIfAtLeastEth
+                  ? parseEther(body.skipIfAtLeastEth)
+                  : undefined,
+              dryRun: body.dryRun !== false,
+            },
+            (line) => {
+              lines.push(line);
+              log(`disperse[${a.address}]: ${line}`);
+            },
+          );
+          if (body.dryRun === false) {
+            audit("funds.dispersed", { from: fromAddress, targets: targets.length, account: a.address });
+          }
+          json(res, 200, { ...result, logs: lines });
+          return;
+        }
       } catch (e) {
         json(res, 400, { error: e instanceof Error ? e.message : String(e) });
         return;
