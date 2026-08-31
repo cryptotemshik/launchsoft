@@ -119,11 +119,13 @@ import {
 } from "./accounts";
 import {
   adminAdjust,
+  chargeSnipe,
   chargeSubscription,
   deposit as creditDeposit,
   grantFreeSnipes,
   InsufficientBalance,
   loadBilling,
+  refund as refundBalance,
 } from "./billing";
 import {
   addCredited,
@@ -197,6 +199,8 @@ const FREE_WATCHLIST_MAX = 3;
 /** Pro subscription: a fixed dollar price, one month at a time, paid in ETH. */
 const PRO_PRICE_CENTS = envNumber(process.env.SNIPE_PRO_CENTS, 2999, 1);
 const PRO_DAYS = envNumber(process.env.SNIPE_PRO_DAYS, 30, 1);
+/** Per-snipe fee in US cents. Charged to a user's balance; the owner pays none. */
+const SNIPE_PRICE_CENTS = envNumber(process.env.SNIPE_FEE_CENTS, 200, 0);
 
 /**
  * ETH/USD, for turning a dollar price into the wei to debit.
@@ -1558,8 +1562,8 @@ const PROFIT_TTL_MS = envNumber(process.env.SNIPE_PROFIT_TTL_MS, 60_000);
 const PROFIT_WAIT_MS = envNumber(process.env.SNIPE_PROFIT_WAIT_MS, 8_000);
 
 /** Merge the on-disk defaults with whatever the panel supplied. */
-function buildRequest(body: Record<string, unknown>): Omit<RunOptions, "signer" | "wallets"> {
-  const cfg = loadConfig(CONFIG_PATH);
+function buildRequest(body: Record<string, unknown>, cfgPath = CONFIG_PATH): Omit<RunOptions, "signer" | "wallets"> {
+  const cfg = loadConfig(cfgPath);
 
   const collection = typeof body.collection === "string" ? body.collection : cfg.collection;
   if (!/^0x[0-9a-fA-F]{40}$/.test(collection)) throw new Error("collection must be a 0x address");
@@ -2447,6 +2451,22 @@ async function execute(job: Job) {
       dryRun: job.request.dryRun === true,
       ...(job.error ? { failure: job.error } : {}),
     });
+    // The snipe fee is refunded when the run did not actually mint — a revert,
+    // an error, or an abort. Only a charged user's job carries a fee; the
+    // operator's own jobs never do.
+    if (job.chargedWei && BigInt(job.chargedWei) > 0n) {
+      const minted = (job.result?.outcomes ?? []).some((o) => o.status === "mined");
+      if (!(job.status === "done" && minted)) {
+        try {
+          refundBalance(job.cfgPath, BigInt(job.chargedWei), `snipe ${job.id} — no mint, fee refunded`);
+          log(`billing: refunded snipe fee for ${job.id} (no mint)`);
+        } catch (e) {
+          log(`billing: refund failed for ${job.id}: ${e instanceof Error ? e.message : e}`);
+        }
+        job.chargedWei = undefined;
+        persistJobs();
+      }
+    }
   }
   await consolidate(job);
   await notify(job);
@@ -2462,7 +2482,7 @@ async function consolidate(job: Job) {
   if (job.request.dryRun) return;
   let cfg;
   try {
-    cfg = loadConfig(CONFIG_PATH);
+    cfg = loadConfig(job.cfgPath);
   } catch {
     return;
   }
@@ -2488,7 +2508,7 @@ async function consolidate(job: Job) {
         extraRpcs: job.request.extraRpcs,
         gas: { maxFeeGwei: job.request.gas.maxFeeGwei, tipGwei: job.request.gas.tipGwei },
         holdings,
-        signer: getSigner(),
+        signer: getSigner(job.cfgPath, job.account),
         to,
         dryRun: false,
       },
@@ -3191,6 +3211,213 @@ const server = createServer(async (req, res) => {
       json(res, 500, { error: e instanceof Error ? e.message : String(e) });
     }
     return;
+  }
+
+  // ── A user's own snipe world ────────────────────────────────────────────
+  // A non-admin wallet session drives its own wallets and queue here, scoped
+  // to its config path and charged per snipe. The operator token and admin
+  // session are NOT handled here — they fall through to the gate and the
+  // existing main-world routes below, byte-for-byte unchanged.
+  {
+    const a = acting(req);
+    if (a && !a.admin && a.address) {
+      try {
+        if (url.pathname === "/api/status" && req.method === "GET") {
+          const mine = jobs.filter((j) => j.cfgPath === a.cfgPath);
+          const activeMine = mine.some((j) => j.id === activeJobId);
+          json(res, 200, {
+            apiVersion: API_VERSION,
+            running: activeMine,
+            activeJobId: activeMine ? activeJobId : null,
+            armLeadMs: ARM_LEAD_MS,
+            jobs: mine.map(jobView),
+          });
+          return;
+        }
+
+        if (url.pathname === "/api/wallets" && req.method === "POST") {
+          if (SIGNER_SOCKET) {
+            json(res, 409, { error: "wallet management runs on the signer process" });
+            return;
+          }
+          const body = await readBody(req);
+          const raw = typeof body.keys === "string" ? body.keys : "";
+          if (!raw.trim()) throw new Error("no keys supplied");
+          const cfg = loadConfig(a.cfgPath);
+          const existing = loadKeyEntries(a.cfgPath, cfg.keysFile);
+          const have = new Set(existing.map((e) => e.key));
+          const label = typeof body.label === "string" ? body.label.slice(0, 60) : undefined;
+          let added = 0;
+          const rejected: string[] = [];
+          for (const line of raw.split(/[\s,]+/)) {
+            const t = line.trim();
+            if (!t) continue;
+            let key: `0x${string}`;
+            try {
+              key = normalizePrivateKey(t);
+            } catch {
+              rejected.push("not a valid 64-hex private key");
+              continue;
+            }
+            if (have.has(key)) continue;
+            have.add(key);
+            existing.push({ key, label });
+            added += 1;
+          }
+          if (added > 0) {
+            writeKeys(existing, a.cfgPath);
+            audit("wallets.added", { count: added, total: existing.length, account: a.address });
+          }
+          json(res, 200, { added, rejected: rejected.length, ...(await walletsView(a.cfgPath)) });
+          return;
+        }
+
+        if (url.pathname === "/api/wallets" && req.method === "DELETE") {
+          if (SIGNER_SOCKET) {
+            json(res, 409, { error: "wallet management runs on the signer process" });
+            return;
+          }
+          if (jobs.some((j) => j.cfgPath === a.cfgPath && j.id === activeJobId)) {
+            json(res, 409, { error: "a job is running — wait for it or abort first" });
+            return;
+          }
+          const body = await readBody(req).catch(() => ({}) as Record<string, unknown>);
+          const requested = Array.isArray(body.addresses)
+            ? (body.addresses as unknown[]).filter((x): x is string => typeof x === "string")
+            : [url.searchParams.get("address") ?? ""];
+          const wanted = new Set<string>();
+          for (const x of requested) {
+            const lower = x.trim().toLowerCase();
+            if (!/^0x[0-9a-f]{40}$/.test(lower)) throw new Error(`"${x}" is not a 0x address`);
+            wanted.add(lower);
+          }
+          if (wanted.size === 0) throw new Error("no addresses given");
+          const cfg = loadConfig(a.cfgPath);
+          const entries = loadKeyEntries(a.cfgPath, cfg.keysFile);
+          const kept = entries.filter((e) => !wanted.has(privateKeyToAccount(e.key).address.toLowerCase()));
+          const removed = entries.length - kept.length;
+          if (removed === 0) {
+            json(res, 404, { error: "none of those addresses are on your account" });
+            return;
+          }
+          writeKeys(kept, a.cfgPath);
+          audit("wallets.removed", { count: removed, addresses: [...wanted], account: a.address });
+          json(res, 200, { removed, ...(await walletsView(a.cfgPath)) });
+          return;
+        }
+
+        if (
+          (url.pathname === "/api/queue" || url.pathname === "/api/snipe") &&
+          req.method === "POST"
+        ) {
+          const body = await readBody(req);
+          const request = buildRequest(body, a.cfgPath);
+          const wallets = parseWalletFilter(body);
+          if (wallets) {
+            const have = new Set(walletBook(a.cfgPath).map((w) => w.address.toLowerCase()));
+            if (wallets.filter((x) => have.has(x)).length === 0) {
+              throw new Error("none of the chosen wallets are on your account");
+            }
+          }
+          // Charge the snipe fee for a live run before it is queued: a free
+          // snipe first, else the balance, else refuse (never queue unpaid).
+          let chargedWei: string | undefined;
+          if (request.dryRun === false && SNIPE_PRICE_CENTS > 0) {
+            const feeWei = await centsToWei(SNIPE_PRICE_CENTS);
+            if (!feeWei) {
+              json(res, 503, { error: "the ETH price is unavailable — try again in a moment" });
+              return;
+            }
+            try {
+              const r = chargeSnipe(a.cfgPath, feeWei, {
+                usdCents: SNIPE_PRICE_CENTS,
+                note: `snipe ${request.collection.slice(0, 10)}`,
+              });
+              chargedWei = r.charged === "balance" ? feeWei.toString() : undefined;
+            } catch (e) {
+              if (e instanceof InsufficientBalance) {
+                json(res, 402, {
+                  error: `not enough balance for the $${(SNIPE_PRICE_CENTS / 100).toFixed(2)} snipe fee — top up first`,
+                  needWei: e.needWei.toString(),
+                  haveWei: e.haveWei.toString(),
+                });
+                return;
+              }
+              throw e;
+            }
+          }
+          const drop = await peekDrop(request.collection as `0x${string}`, request.extraRpcs ?? []);
+          const job: Job = {
+            id: randomUUID().slice(0, 8),
+            label:
+              typeof body.label === "string" && body.label
+                ? body.label
+                : (drop?.name ?? request.collection.slice(0, 10)),
+            addedAt: Date.now(),
+            status: "queued",
+            request,
+            wallets,
+            startTime:
+              typeof body.startTime === "number"
+                ? body.startTime
+                : request.stage === "public" && drop && drop.startTime > 0
+                  ? drop.startTime
+                  : undefined,
+            drop,
+            cfgPath: a.cfgPath,
+            account: a.address,
+            chargedWei,
+            logs: [],
+          };
+          jobs.push(job);
+          persistJobs();
+          log(`queued job ${job.id} for ${a.address} (${request.collection})`);
+          json(res, url.pathname === "/api/snipe" ? 202 : 201, jobView(job));
+          return;
+        }
+
+        if (url.pathname === "/api/queue" && req.method === "DELETE") {
+          const id = url.searchParams.get("id");
+          const i = jobs.findIndex((j) => j.id === id && j.cfgPath === a.cfgPath);
+          if (i === -1) {
+            json(res, 404, { error: "no such job" });
+            return;
+          }
+          if (jobs[i].id === activeJobId) {
+            json(res, 409, { error: "job is running — abort it first" });
+            return;
+          }
+          const [removed] = jobs.splice(i, 1);
+          // A queued job that was charged and never ran gets its fee back.
+          if (removed.chargedWei && BigInt(removed.chargedWei) > 0n) {
+            try {
+              refundBalance(removed.cfgPath, BigInt(removed.chargedWei), `snipe ${removed.id} cancelled`);
+            } catch {
+              /* leave it; the ledger note is enough */
+            }
+          }
+          persistJobs();
+          json(res, 200, { removed: removed.id });
+          return;
+        }
+
+        if (url.pathname === "/api/abort" && req.method === "POST") {
+          const job = jobs.find((j) => j.id === activeJobId && j.cfgPath === a.cfgPath);
+          if (!job) {
+            json(res, 409, { error: "no run of yours in progress" });
+            return;
+          }
+          job.abort?.abort();
+          job.status = "aborted";
+          persistJobs();
+          json(res, 200, jobView(job));
+          return;
+        }
+      } catch (e) {
+        json(res, 400, { error: e instanceof Error ? e.message : String(e) });
+        return;
+      }
+    }
   }
 
   // Access to the shared server: the operator token, or an admin's session.
