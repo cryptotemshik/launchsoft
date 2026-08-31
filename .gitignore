@@ -21,3 +21,8 @@ snipe.env
 # name from `keysFile`, so nothing stops someone calling it keys.txt.
 keys.txt
 *.privatekeys
+
+# Per-account worlds (accounts.ts): every account's config, keys, billing,
+# watchlist and the registry of who exists. Runtime state, never committed.
+data/
+registry.json
