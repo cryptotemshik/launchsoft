@@ -2239,7 +2239,12 @@ const server = createServer(async (req, res) => {
     return;
   }
 
-  if (!tokenOk(req.headers.authorization)) {
+  // Access to the shared server: the operator token, or an admin's session.
+  // A non-admin session is a valid identity but has no power over the shared
+  // box yet — that waits for per-user isolation, at which point a session will
+  // scope to its own data rather than open everything.
+  const sess = requestSession(req);
+  if (!tokenOk(req.headers.authorization) && !(sess && isAdmin(sess.address))) {
     json(res, 401, { error: "bad or missing token" });
     return;
   }

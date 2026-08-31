@@ -6,7 +6,7 @@ import {
   openSeaCollectionUrl,
   type ChainInfo,
 } from "../chains";
-import { useActiveChain } from "../signer";
+import { useActiveChain, useSigner } from "../signer";
 import { formatEthShort } from "../lib/profit";
 import {
   DEFAULT_AFTER,
@@ -15,7 +15,7 @@ import {
   spreadLabel,
   type MintStyle,
 } from "../lib/spread";
-import { useRunnerApi } from "../lib/runnerClient";
+import { saveRunnerCreds, signInWithWallet, useRunnerApi } from "../lib/runnerClient";
 import StaleServer from "./StaleServer";
 import Addr from "./Addr";
 import FundJobPanel from "./FundJobPanel";
@@ -164,8 +164,14 @@ export default function RemoteRunner(props: RemoteRunnerProps) {
     save,
     serverVersion,
   } = api;
+  const signer = useSigner();
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [signingIn, setSigningIn] = useState(false);
+  const [loginNote, setLoginNote] = useState<string | null>(null);
+  // Connect right after a wallet sign-in, once the new token is in state so the
+  // request carries it. A one-shot flag the effect below consumes.
+  const [connectAfterLogin, setConnectAfterLogin] = useState(false);
   const [rpcError, setRpcError] = useState<string | null>(null);
   const [updateNote, setUpdateNote] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -257,6 +263,56 @@ export default function RemoteRunner(props: RemoteRunnerProps) {
       setBusy(false);
     }
   }
+
+  /**
+   * Sign in with the connected wallet instead of pasting SNIPE_TOKEN. The
+   * server hands back a session token, which becomes the bearer for every
+   * later call — same field, same storage, just obtained by a signature the
+   * user already holds rather than a secret they had to be given.
+   */
+  async function signIn() {
+    if (!base) {
+      setError("enter the server URL first");
+      return;
+    }
+    if (!signer.address || !signer.walletClient) {
+      setError("connect a wallet first (top bar)");
+      return;
+    }
+    const address = signer.address;
+    const account = signer.txAccount ?? address;
+    setSigningIn(true);
+    setError(null);
+    setLoginNote(null);
+    try {
+      const result = await signInWithWallet(base, address, (message) =>
+        signer.walletClient!.signMessage({ account, message }),
+      );
+      setToken(result.token);
+      setRememberToken(true);
+      saveRunnerCreds(base, result.token, true);
+      setLoginNote(
+        result.admin
+          ? `signed in as ${address.slice(0, 6)}…${address.slice(-4)} (admin)`
+          : `signed in as ${address.slice(0, 6)}…${address.slice(-4)} — this account has no access to the shared runner yet`,
+      );
+      // Only an admin session can drive this server today; connecting a plain
+      // session would just 401. Wire the auto-connect for the admin case.
+      if (result.admin) setConnectAfterLogin(true);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSigningIn(false);
+    }
+  }
+
+  // The token state now holds the session; connect with it.
+  useEffect(() => {
+    if (!connectAfterLogin || !token) return;
+    setConnectAfterLogin(false);
+    void connect();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connectAfterLogin, token]);
 
   /**
    * Hand the server the endpoints typed into this page. Without it the box
@@ -475,6 +531,18 @@ export default function RemoteRunner(props: RemoteRunnerProps) {
         <button className="secondary" onClick={() => void connect()} disabled={busy || !base || !token}>
           {busy ? <span className="spin">BUSY</span> : connected ? "refresh" : "connect"}
         </button>
+        <button
+          className="secondary"
+          onClick={() => void signIn()}
+          disabled={signingIn || !base || !signer.isConnected}
+          title={
+            signer.isConnected
+              ? "prove your wallet and get a session token — no SNIPE_TOKEN needed"
+              : "connect a wallet in the top bar first"
+          }
+        >
+          {signingIn ? <span className="spin">SIGNING</span> : "sign in with wallet"}
+        </button>
         <label className="dim" style={{ display: "flex", alignItems: "center", gap: 6 }}>
           <input
             type="checkbox"
@@ -500,6 +568,11 @@ export default function RemoteRunner(props: RemoteRunnerProps) {
         ) : null}
       </div>
       {error ? <p className="error">{error}</p> : null}
+      {loginNote ? (
+        <p className="ok" style={{ marginBottom: 0 }}>
+          {loginNote}
+        </p>
+      ) : null}
       {updateNote ? (
         <p className="ok" style={{ marginBottom: 0 }}>
           {updateNote}

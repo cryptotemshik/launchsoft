@@ -58,6 +58,44 @@ export interface RunnerApi {
   serverVersion: number | null;
 }
 
+/**
+ * Sign in to a runner with a wallet, returning a session token to use as the
+ * bearer in place of the operator's SNIPE_TOKEN.
+ *
+ * The three-step handshake: ask the server for a challenge, have the wallet
+ * sign the exact message it returns, and post the signature back. The signer
+ * is passed in — the caller has the wallet, this file does not — so this stays
+ * free of wagmi and testable on its own.
+ */
+export async function signInWithWallet(
+  base: string,
+  address: string,
+  sign: (message: string) => Promise<string>,
+): Promise<{ token: string; address: string; admin: boolean }> {
+  const root = base.trim().replace(/\/+$/, "");
+  const ch = await fetch(`${root}/api/auth/challenge`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ address }),
+  });
+  if (!ch.ok) throw new Error((await ch.json().catch(() => ({}))).error ?? `challenge failed (${ch.status})`);
+  const { nonce, message } = (await ch.json()) as { nonce: string; message: string };
+  const signature = await sign(message);
+  const v = await fetch(`${root}/api/auth/verify`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ address, nonce, signature }),
+  });
+  const body = (await v.json().catch(() => ({}))) as {
+    token?: string;
+    address?: string;
+    admin?: boolean;
+    error?: string;
+  };
+  if (!v.ok || !body.token) throw new Error(body.error ?? `sign-in failed (${v.status})`);
+  return { token: body.token, address: body.address ?? address, admin: Boolean(body.admin) };
+}
+
 export function useRunnerApi(): RunnerApi {
   const [url, setUrl] = useState(loadRunnerUrl);
   const [token, setToken] = useState(loadRunnerToken);
