@@ -25,7 +25,8 @@ import { loadConfig, loadKeyEntries, keysPath } from "./config";
 import { keystorePassphrase, isEncrypted, PASSPHRASE_ENV, resolveKeystorePassphrase } from "./keystore";
 import { getChainInfo } from "../chains";
 import { maturedAddresses } from "./withdrawRegistry";
-import { makeInProcessSigner, serveSigner } from "./signer";
+import { makeInProcessSigner, serveSignerMux } from "./signer";
+import { accountConfigPath, accountsRoot } from "./accounts";
 import { writeAddressBook } from "./addressBook";
 import type { PolicyContext } from "./signPolicy";
 import { parseEther } from "viem";
@@ -37,6 +38,8 @@ function fail(msg: string): never {
 }
 
 const configPath = process.argv[2] ?? "snipe.config.json";
+/** Where per-account worlds live — the daemon signs for these too. */
+const ACCOUNTS_ROOT = accountsRoot();
 const socketPath = process.env.SNIPE_SIGNER_SOCKET?.trim();
 if (!socketPath) fail(`set SNIPE_SIGNER_SOCKET to the socket path both processes share`);
 
@@ -67,48 +70,69 @@ try {
 }
 if (count === 0) fail(`no wallets in the key file at ${abs}`);
 
-const info = getChainInfo(cfg.chainId);
-
-/**
- * The policy, rebuilt per decision so a matured withdrawal address and a
- * newly added wallet are both seen at once. Same shape the API used, moved to
- * where the keys are.
- */
-function policy(): PolicyContext {
-  const withdrawTo = maturedAddresses(configPath, Date.now());
-  if (cfg.consolidateTo) withdrawTo.add(cfg.consolidateTo.toLowerCase());
-  for (const a of (process.env.SNIPE_WITHDRAW_TO ?? "").split(",")) {
-    const t = a.trim().toLowerCase();
-    if (/^0x[0-9a-f]{40}$/.test(t)) withdrawTo.add(t);
-  }
-  return {
-    ownWallets: new Set(
-      loadKeyEntries(configPath, cfg.keysFile).map((e) =>
-        // Lazy import avoided: privateKeyToAccount is already pulled in by the
-        // signer, but resolving the address here keeps the set self-contained.
-        addressOf(e.key),
-      ),
-    ),
-    withdrawTo,
-    mintContract: (info?.seaDrop ?? "").toLowerCase(),
-    maxMintWei: parseEther(process.env.SNIPE_POLICY_MAX_MINT_ETH?.trim() || "0.05"),
-  };
-}
-
 function addressOf(key: `0x${string}`): string {
   return privateKeyToAccount(key).address.toLowerCase();
 }
 
-const signer = makeInProcessSigner({
-  loadKeys: () => loadKeyEntries(configPath, cfg.keysFile),
-  policy,
-});
+/**
+ * The config path for a world: the main one for null, an account's own for an
+ * address. The daemon is the single process that holds every world's keys, so
+ * it is the one place this mapping is trusted.
+ */
+function cfgPathFor(account: string | null): string {
+  return account ? accountConfigPath(ACCOUNTS_ROOT, account) : configPath;
+}
 
-// Publish the public address book so the keyless API can list wallets without
-// a passphrase. The daemon is the one process that can, so it is the one that
-// keeps this current — at startup, and it is refreshed here whenever wallets
-// change (there is no wallet-change path in the daemon yet, so startup is
-// enough for now; it is rewritten every boot).
+/**
+ * The policy for a world, rebuilt per decision so a matured withdrawal address
+ * and a newly added wallet are both seen at once.
+ *
+ * An account may always withdraw instantly to the address it signed in with —
+ * that address IS the account, and a session thief provably does not hold its
+ * key — plus any address it registered an hour ago. The main world keeps its
+ * operator-configured targets (SNIPE_WITHDRAW_TO); an account never inherits
+ * those, so one account can never be told to send to another's address.
+ */
+function policyFor(account: string | null): PolicyContext {
+  const cfgPath = cfgPathFor(account);
+  const worldCfg = loadConfig(cfgPath);
+  const withdrawTo = maturedAddresses(cfgPath, Date.now());
+  if (account) withdrawTo.add(account.toLowerCase());
+  if (worldCfg.consolidateTo) withdrawTo.add(worldCfg.consolidateTo.toLowerCase());
+  if (!account) {
+    for (const a of (process.env.SNIPE_WITHDRAW_TO ?? "").split(",")) {
+      const t = a.trim().toLowerCase();
+      if (/^0x[0-9a-f]{40}$/.test(t)) withdrawTo.add(t);
+    }
+  }
+  const worldInfo = getChainInfo(worldCfg.chainId);
+  return {
+    ownWallets: new Set(
+      loadKeyEntries(cfgPath, worldCfg.keysFile).map((e) => addressOf(e.key)),
+    ),
+    withdrawTo,
+    mintContract: (worldInfo?.seaDrop ?? "").toLowerCase(),
+    maxMintWei: parseEther(process.env.SNIPE_POLICY_MAX_MINT_ETH?.trim() || "0.05"),
+  };
+}
+
+/**
+ * A signer scoped to one world. Config and keys are read fresh each time so a
+ * wallet added or a drop chosen mid-session is picked up without a restart.
+ * Every keystore on this box is sealed under the one passphrase this daemon
+ * holds, so it can open any account's wallets — and no other process can.
+ */
+function signerForAccount(account: string | null) {
+  const cfgPath = cfgPathFor(account);
+  return makeInProcessSigner({
+    loadKeys: () => loadKeyEntries(cfgPath, loadConfig(cfgPath).keysFile),
+    policy: () => policyFor(account),
+  });
+}
+
+// Publish the main world's public address book so the keyless API can list
+// wallets without a passphrase. Per-account books are written by the API when
+// wallets change; the main one rarely does, so startup is enough.
 writeAddressBook(
   configPath,
   cfg.keysFile,
@@ -122,7 +146,7 @@ writeAddressBook(
 // so clearing it on start is safe and is the difference between a clean
 // restart and a daemon that will not come back up.
 if (existsSync(socketPath)) unlinkSync(socketPath);
-const server = serveSigner(signer, socketPath);
+const server = serveSignerMux((account) => signerForAccount(account), socketPath);
 
 server.on("listening", () => {
   console.log(

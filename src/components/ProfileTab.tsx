@@ -17,7 +17,7 @@ interface Me {
   admin: boolean;
   tier: "free" | "pro";
   proUntil: number | null;
-  profile: { nickname?: string; avatarUrl?: string; twitter?: string };
+  profile: { nickname?: string; avatarUrl?: string; twitter?: string; telegram?: string };
 }
 
 export default function ProfileTab() {
@@ -31,6 +31,7 @@ export default function ProfileTab() {
   const [nickname, setNickname] = useState("");
   const [avatarUrl, setAvatarUrl] = useState("");
   const [twitter, setTwitter] = useState("");
+  const [telegram, setTelegram] = useState("");
 
   const load = useCallback(async () => {
     if (!base || !token) {
@@ -45,6 +46,7 @@ export default function ProfileTab() {
       setNickname(m.profile.nickname ?? "");
       setAvatarUrl(m.profile.avatarUrl ?? "");
       setTwitter(m.profile.twitter ?? "");
+      setTelegram(m.profile.telegram ?? "");
     } catch (e) {
       setMe(null);
       setError(e instanceof Error ? e.message : String(e));
@@ -64,12 +66,13 @@ export default function ProfileTab() {
     try {
       const r = (await call("/api/profile", {
         method: "PUT",
-        body: JSON.stringify({ nickname, avatarUrl, twitter }),
+        body: JSON.stringify({ nickname, avatarUrl, twitter, telegram }),
       })) as unknown as { profile: Me["profile"] };
       setMe((prev) => (prev ? { ...prev, profile: r.profile } : prev));
       setNickname(r.profile.nickname ?? "");
       setAvatarUrl(r.profile.avatarUrl ?? "");
       setTwitter(r.profile.twitter ?? "");
+      setTelegram(r.profile.telegram ?? "");
       setSavedNote("saved");
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -167,11 +170,20 @@ export default function ProfileTab() {
               />
             </div>
             <div className="field">
-              <label>twitter / X</label>
+              <label>twitter / X (optional)</label>
               <input
                 value={twitter}
                 maxLength={40}
                 onChange={(e) => setTwitter(e.target.value.replace(/^@+/, ""))}
+                placeholder="handle (without @)"
+              />
+            </div>
+            <div className="field">
+              <label>telegram (optional — for tracker &amp; alerts)</label>
+              <input
+                value={telegram}
+                maxLength={40}
+                onChange={(e) => setTelegram(e.target.value.replace(/^@+/, ""))}
                 placeholder="handle (without @)"
               />
             </div>

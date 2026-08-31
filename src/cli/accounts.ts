@@ -38,6 +38,12 @@ export interface AccountProfile {
   avatarUrl?: string;
   /** A Twitter/X handle, without the @. */
   twitter?: string;
+  /**
+   * A Telegram handle, without the @. Optional, like everything here — it is
+   * where tracker and (later) whale alerts can reach the account, when the
+   * account wants them there rather than only on the site.
+   */
+  telegram?: string;
 }
 
 export interface AccountRecord {
@@ -120,6 +126,9 @@ function sanitiseProfile(p: unknown): AccountProfile {
   if (typeof q.avatarUrl === "string" && q.avatarUrl.trim()) out.avatarUrl = q.avatarUrl.trim();
   if (typeof q.twitter === "string" && q.twitter.trim()) {
     out.twitter = q.twitter.trim().replace(/^@+/, "");
+  }
+  if (typeof q.telegram === "string" && q.telegram.trim()) {
+    out.telegram = q.telegram.trim().replace(/^@+/, "").replace(/^https?:\/\/t\.me\//i, "");
   }
   return out;
 }

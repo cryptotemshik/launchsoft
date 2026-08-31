@@ -135,6 +135,13 @@ export function makeInProcessSigner(opts: InProcessSignerOptions): Signer {
 interface Request {
   id: number;
   method: "addresses" | "sign";
+  /**
+   * Whose world to sign in. An account address routes to that account's own
+   * keystore and policy; null or absent means the main world (the box's own
+   * config), which is exactly the single-tenant behaviour — so an old caller
+   * that never sends this field is unchanged.
+   */
+  account?: string | null;
   txs?: UnsignedTx[];
 }
 interface Response {
@@ -154,6 +161,28 @@ interface Response {
  * socket path first, since a stale file from a crash refuses to bind.
  */
 export function serveSigner(signer: Signer, socketPath: string): Server {
+  // A single-tenant daemon serves one signer for every request, ignoring the
+  // account field — the main world and nothing else.
+  return serveSignerMux(() => signer, socketPath);
+}
+
+/**
+ * A signer resolves a request to whichever world it names. Given an account
+ * address it returns that account's signer; given null, the main world's.
+ * The daemon holds every keystore and hands out a scoped signer per request,
+ * so the API process stays keyless while still isolating accounts.
+ */
+export type SignerResolver = (account: string | null) => Signer | Promise<Signer>;
+
+/**
+ * Serve one or many worlds on a unix socket, routed by the request's account.
+ *
+ * Same wire as {@link serveSigner}; the only addition is that each request is
+ * resolved to its own account's signer before it is asked to sign, so policy
+ * and keys are always that account's — a request can never sign for a world it
+ * did not name.
+ */
+export function serveSignerMux(resolve: SignerResolver, socketPath: string): Server {
   const server = createServer((sock: Socket) => {
     let buffer = "";
     sock.on("data", (chunk) => {
@@ -162,7 +191,7 @@ export function serveSigner(signer: Signer, socketPath: string): Server {
       while ((nl = buffer.indexOf("\n")) !== -1) {
         const line = buffer.slice(0, nl);
         buffer = buffer.slice(nl + 1);
-        if (line.trim()) void handle(line, sock, signer);
+        if (line.trim()) void handle(line, sock, resolve);
       }
     });
   });
@@ -170,7 +199,7 @@ export function serveSigner(signer: Signer, socketPath: string): Server {
   return server;
 }
 
-async function handle(line: string, sock: Socket, signer: Signer): Promise<void> {
+async function handle(line: string, sock: Socket, resolve: SignerResolver): Promise<void> {
   let req: Request;
   try {
     req = JSON.parse(line) as Request;
@@ -180,6 +209,7 @@ async function handle(line: string, sock: Socket, signer: Signer): Promise<void>
   }
   const reply = (r: Omit<Response, "id">) => sock.write(`${JSON.stringify({ id: req.id, ...r })}\n`);
   try {
+    const signer = await resolve(req.account ?? null);
     if (req.method === "addresses") {
       reply({ ok: true, result: await signer.addresses() });
     } else if (req.method === "sign") {
@@ -203,13 +233,13 @@ async function handle(line: string, sock: Socket, signer: Signer): Promise<void>
  * and closed each time cannot rot between a stage moving and the shot. The
  * cost is a local connect, microseconds, and never on the fire path.
  */
-export function connectSigner(socketPath: string): Signer {
+export function connectSigner(socketPath: string, account: string | null = null): Signer {
   const call = <T,>(method: "addresses" | "sign", txs?: UnsignedTx[]): Promise<T> =>
     new Promise<T>((resolve, reject) => {
       const sock = createConnection(socketPath);
       let buffer = "";
       const id = Math.floor(Math.random() * 1e9);
-      sock.on("connect", () => sock.write(`${JSON.stringify({ id, method, txs })}\n`));
+      sock.on("connect", () => sock.write(`${JSON.stringify({ id, method, account, txs })}\n`));
       sock.on("data", (chunk) => {
         buffer += chunk.toString("utf8");
         const nl = buffer.indexOf("\n");

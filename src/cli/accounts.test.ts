@@ -96,12 +96,18 @@ describe("the registry", () => {
 });
 
 describe("profile and tier", () => {
-  it("merges profile fields and strips a leading @ from twitter", () => {
+  it("merges profile fields and strips handles for twitter and telegram", () => {
     ensureAccount(root, A);
     updateAccount(root, A, { profile: { nickname: "  ace  ", twitter: "@ace_x" } });
     updateAccount(root, A, { profile: { avatarUrl: "https://x/y.png" } });
+    updateAccount(root, A, { profile: { telegram: "https://t.me/ace_tg" } });
     const rec = getAccount(root, A)!;
-    expect(rec.profile).toEqual({ nickname: "ace", twitter: "ace_x", avatarUrl: "https://x/y.png" });
+    expect(rec.profile).toEqual({
+      nickname: "ace",
+      twitter: "ace_x",
+      avatarUrl: "https://x/y.png",
+      telegram: "ace_tg",
+    });
   });
 
   it("is free by default and pro only while the subscription is in force", () => {

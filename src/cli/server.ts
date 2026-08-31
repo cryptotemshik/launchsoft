@@ -2317,6 +2317,7 @@ const server = createServer(async (req, res) => {
       if ("nickname" in body) profile.nickname = String(body.nickname ?? "").slice(0, 40);
       if ("avatarUrl" in body) profile.avatarUrl = String(body.avatarUrl ?? "").slice(0, 2048);
       if ("twitter" in body) profile.twitter = String(body.twitter ?? "").slice(0, 40);
+      if ("telegram" in body) profile.telegram = String(body.telegram ?? "").slice(0, 40);
       const acct = updateAccount(ACCOUNTS_ROOT, s.address, { profile });
       json(res, 200, { profile: acct.profile });
     } catch (e) {

@@ -8,6 +8,7 @@ import {
   connectSigner,
   makeInProcessSigner,
   serveSigner,
+  serveSignerMux,
   type Signer,
   type UnsignedTx,
 } from "./signer";
@@ -154,5 +155,67 @@ describe("signing over a socket", () => {
     const [rb] = await client.sign([ownTransfer(ADDR_B, ADDR_A)]);
     await expectSignedBy(ra, ADDR_A);
     await expectSignedBy(rb, ADDR_B);
+  });
+});
+
+describe("routing accounts over one socket", () => {
+  // The daemon holds every world's keys and hands out a scoped signer per
+  // request. The main world (account = null) holds one wallet; account X holds
+  // a different one, and the two must never bleed into each other.
+  const ACC = `0x${"ac".repeat(20)}` as `0x${string}`;
+
+  const signerOwning = (keys: KeyEntry[]): Signer =>
+    makeInProcessSigner({
+      loadKeys: () => keys,
+      policy: () => ({
+        ownWallets: new Set(keys.map((k) => privateKeyToAccount(k.key).address.toLowerCase())),
+        withdrawTo: new Set(),
+        mintContract: SEADROP.toLowerCase(),
+        maxMintWei: parseEther("0.05"),
+      }),
+    });
+
+  let path: string;
+  let server: ReturnType<typeof serveSignerMux> | null = null;
+
+  const main = signerOwning([{ key: KEY_A, label: "a" }]);
+  const accX = signerOwning([{ key: KEY_B, label: "b" }]);
+
+  const start = () => {
+    path = join(mkdtempSync(join(tmpdir(), "signer-mux-")), "sock");
+    server = serveSignerMux((account) => (account === ACC ? accX : main), path);
+  };
+
+  afterEach(() => {
+    server?.close();
+    server = null;
+    try {
+      rmSync(path);
+    } catch {
+      /* already gone */
+    }
+  });
+
+  it("routes each connection to its own account's wallets", async () => {
+    start();
+    expect(await connectSigner(path, null).addresses()).toEqual([ADDR_A]);
+    expect(await connectSigner(path, ACC).addresses()).toEqual([ADDR_B]);
+  });
+
+  it("signs only with the named account's keys", async () => {
+    start();
+    // Account X can sign for its own wallet…
+    const [rb] = await connectSigner(path, ACC).sign([ownTransfer(ADDR_B, ADDR_B)]);
+    await expectSignedBy(rb, ADDR_B);
+    // …but not for a wallet that lives only in the main world.
+    await expect(
+      connectSigner(path, ACC).sign([ownTransfer(ADDR_A, ADDR_B)]),
+    ).rejects.toThrow(/no key for/);
+  });
+
+  it("treats an omitted account as the main world", async () => {
+    start();
+    // connectSigner defaults account to null, which the resolver maps to main.
+    expect(await connectSigner(path).addresses()).toEqual([ADDR_A]);
   });
 });
