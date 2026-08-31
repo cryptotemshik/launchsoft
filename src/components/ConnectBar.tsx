@@ -1,5 +1,6 @@
 import { useState } from "react";
 import GasBlock from "./GasBlock";
+import AccountBadge from "./AccountBadge";
 import { setSoundEnabled, soundEnabled } from "../lib/sound";
 import { useAccount, useConnect, useDisconnect } from "wagmi";
 import { CHAINS } from "../chains";
@@ -54,6 +55,7 @@ export default function ConnectBar({ onHome }: { onHome?: () => void }) {
         </h1>
         <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
           <GasBlock />
+          <AccountBadge />
           <button
             type="button"
             className="snd-toggle"

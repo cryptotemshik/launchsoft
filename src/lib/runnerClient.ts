@@ -35,6 +35,12 @@ export function tokenIsRemembered(): boolean {
   return localStorage.getItem(TOKEN_KEY) !== null;
 }
 
+/** Forget the session token (a sign-out). The URL is left as-is. */
+export function clearRunnerToken() {
+  localStorage.removeItem(TOKEN_KEY);
+  sessionStorage.removeItem(TOKEN_KEY);
+}
+
 export function saveRunnerCreds(url: string, token: string, remember: boolean) {
   localStorage.setItem(URL_KEY, url);
   if (remember) {
