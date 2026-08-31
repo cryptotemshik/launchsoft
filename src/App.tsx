@@ -13,6 +13,7 @@ import ServerWalletsTab from "./components/ServerWalletsTab";
 import SnipeTab from "./components/SnipeTab";
 import StatusTab from "./components/StatusTab";
 import WalletsTab from "./components/WalletsTab";
+import ProfileTab from "./components/ProfileTab";
 import { installClickSound } from "./lib/sound";
 import { useActiveChain } from "./signer";
 import { CHAINS_BY_ID, DEFAULT_CHAIN_ID } from "./chains";
@@ -30,6 +31,7 @@ import {
   PulseIcon,
   RocketIcon,
   WalletIcon,
+  UserIcon,
 } from "./components/icons";
 
 type Tab =
@@ -45,6 +47,7 @@ type Tab =
   | "scanner"
   | "live"
   | "calendar"
+  | "profile"
 ;
 
 const TAB_ICON = {
@@ -60,6 +63,7 @@ const TAB_ICON = {
   scanner: RadarIcon,
   live: ActivityIcon,
   calendar: CalendarGridIcon,
+  profile: UserIcon,
 } as const;
 
 export default function App() {
@@ -159,7 +163,7 @@ export default function App() {
         <div className="tab-group snipe-group">
           <button
             className={`tab-mint ${
-              tab === "snipe" ? "active" : tab === "serverwallets" || tab === "funding" ? "group-active" : ""
+              tab === "snipe" ? "active" : tab === "serverwallets" || tab === "funding" || tab === "profile" ? "group-active" : ""
             }`}
             onClick={() => setTab("snipe")}
           >
@@ -189,6 +193,13 @@ export default function App() {
               <CoinsIcon />
               FUNDING
             </button>
+            <button
+              className={tab === "profile" ? "active" : ""}
+              onClick={() => setTab("profile")}
+            >
+              <UserIcon />
+              PROFILE
+            </button>
           </div>
         </div>
       </div>
@@ -210,6 +221,7 @@ export default function App() {
       {tab === "scanner" ? <ScannerTab /> : null}
       {tab === "calendar" ? <CalendarTab /> : null}
       {tab === "live" ? <LiveTab /> : null}
+      {tab === "profile" ? <ProfileTab /> : null}
       <div className="footer">
         {info.label} · explorer:{" "}
         <a href={info.explorerUrl} target="_blank" rel="noreferrer">
