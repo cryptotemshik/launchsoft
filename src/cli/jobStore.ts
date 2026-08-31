@@ -32,6 +32,10 @@ export interface StoredJob {
   request: Omit<RunOptions, "signer" | "wallets">;
   startTime?: number;
   wallets?: string[];
+  /** The account this job belongs to (lower-case), or null for the main world. */
+  account?: string | null;
+  /** The config path whose wallets/signer this job runs on. */
+  cfgPath?: string;
 }
 
 export function jobsPath(configPath: string): string {

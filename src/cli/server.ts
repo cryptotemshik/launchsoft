@@ -333,6 +333,15 @@ interface Job {
   label: string;
   addedAt: number;
   status: JobStatus;
+  /**
+   * Whose world this job runs in: the config path whose wallets and signer it
+   * uses, and the account address (null = the operator's main world). Set from
+   * acting() when queued; defaults to the main world for the operator.
+   */
+  cfgPath: string;
+  account: string | null;
+  /** What was charged for this snipe, in wei, so a revert can be refunded. */
+  chargedWei?: string;
   /** Everything runSnipe needs except the keys, which are read at arm time. */
   request: Omit<RunOptions, "signer" | "wallets">;
   /** Stage start, once known — filled in by a dry run or by the job itself. */
@@ -386,6 +395,8 @@ function persistJobs(): void {
           request: j.request,
           startTime: j.startTime,
           wallets: j.wallets,
+          account: j.account,
+          cfgPath: j.cfgPath,
         })),
     );
   } catch (e) {
@@ -2337,10 +2348,11 @@ async function execute(job: Job) {
   job.abort = abort;
   job.status = "armed";
   persistJobs();
-  // Ask the signer which wallets it holds — addresses only, never keys. When a
-  // socket signer is configured this is the one process that has the keys
-  // answering; this process never decrypts anything.
-  const signer = getSigner();
+  // Ask the signer which wallets it holds — addresses only, never keys. Scoped
+  // to the job's world, so a user's job fires from the user's wallets and the
+  // operator's from the main ones. When a socket signer is configured this is
+  // the one process that has the keys answering; this process never decrypts.
+  const signer = getSigner(job.cfgPath, job.account);
   let wallets: `0x${string}`[];
   try {
     wallets = await signer.addresses();
@@ -2390,13 +2402,13 @@ async function execute(job: Job) {
     // Remember what was minted, so a later "what do my wallets hold" needs no
     // index: reading Transfer logs is fast but has to be told which contract.
     if (!job.request.dryRun) {
-      rememberCollection(CONFIG_PATH, {
+      rememberCollection(job.cfgPath, {
         address: job.request.collection,
         name: result.plan.name,
       });
       // Gas spent is only in a receipt nobody will fetch again; write it down
       // now or the profit figure can never be worked out.
-      recordMint(CONFIG_PATH, {
+      recordMint(job.cfgPath, {
         at: Date.now(),
         collection: job.request.collection,
         collectionName: result.plan.name,
@@ -2536,6 +2548,8 @@ function restoreQueue(): void {
       request: j.request,
       startTime: j.startTime,
       wallets: j.wallets,
+      cfgPath: j.cfgPath ?? CONFIG_PATH,
+      account: j.account ?? null,
       logs: [],
       ...(state.status === "error" ? { error: state.error } : {}),
     });
@@ -3966,6 +3980,8 @@ const server = createServer(async (req, res) => {
               ? drop.startTime
               : undefined,
         drop,
+        cfgPath: CONFIG_PATH,
+        account: null,
         logs: [],
       };
       jobs.push(job);
@@ -4036,6 +4052,8 @@ const server = createServer(async (req, res) => {
         status: "queued",
         request,
         wallets: parseWalletFilter(body),
+        cfgPath: CONFIG_PATH,
+        account: null,
         logs: [],
       };
       jobs.push(job);
