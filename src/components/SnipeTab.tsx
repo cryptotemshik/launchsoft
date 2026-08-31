@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import AdminOnly from "./AdminOnly";
 import { usePublicClient } from "wagmi";
 import { formatGwei, parseGwei } from "viem";
 import {
@@ -625,6 +626,7 @@ export default function SnipeTab() {
         )}
       </div>
 
+      <AdminOnly>
       <div className="panel">
         <h2>Your RPC</h2>
         <p className="dim">
@@ -656,6 +658,7 @@ export default function SnipeTab() {
           only a round-trip.
         </p>
       </div>
+      </AdminOnly>
 
       <div className="panel">
         <h2>Gas &amp; quantity</h2>

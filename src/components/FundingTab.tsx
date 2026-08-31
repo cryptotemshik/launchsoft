@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import AdminOnly from "./AdminOnly";
 import RunnerConnect from "./RunnerConnect";
 import { useRunnerApi } from "../lib/runnerClient";
 import {
@@ -375,6 +376,7 @@ export default function FundingTab() {
         </p>
       </div>
 
+      <AdminOnly>
       <div className="panel">
         <h2>Connection</h2>
         <RunnerConnect url={url} setUrl={setUrl} token={token} setToken={setToken} />
@@ -396,6 +398,7 @@ export default function FundingTab() {
         {error ? <p className="error">{error}</p> : null}
         <StaleServer version={serverVersion} />
       </div>
+      </AdminOnly>
 
       {!connected ? (
         <div className="panel panel-locked">

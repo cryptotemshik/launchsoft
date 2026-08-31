@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import AdminOnly from "./AdminOnly";
 import RunnerConnect from "./RunnerConnect";
 import { useRunnerApi } from "../lib/runnerClient";
 import StaleServer from "./StaleServer";
@@ -159,6 +160,7 @@ export default function ServerWalletsTab() {
         </p>
       </div>
 
+      <AdminOnly>
       <div className="panel">
         <h2>Connection</h2>
         <RunnerConnect url={url} setUrl={setUrl} token={token} setToken={setToken} />
@@ -183,6 +185,7 @@ export default function ServerWalletsTab() {
           are connected.
         </p>
       </div>
+      </AdminOnly>
 
       {/* Shown even before connecting, disabled, so it's obvious this is where
           wallets go rather than leaving the page looking empty. */}

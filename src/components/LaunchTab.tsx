@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import AdminOnly from "./AdminOnly";
 import { usePublicClient } from "wagmi";
 import { useSigner } from "../signer";
 import { parseEventLogs, zeroHash } from "viem";
@@ -760,6 +761,7 @@ export default function LaunchTab() {
         </div>
       ) : null}
 
+      <AdminOnly>
       <div className="panel">
         <h2>Your RPC</h2>
         <p className="dim" style={{ marginTop: 0 }}>
@@ -782,6 +784,7 @@ export default function LaunchTab() {
           MetaMask&apos;s to choose, not this page&apos;s.
         </p>
       </div>
+      </AdminOnly>
 
       <div className="panel">
         <h2>Start from an existing collection (optional)</h2>
