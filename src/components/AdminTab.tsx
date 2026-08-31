@@ -31,6 +31,8 @@ interface Summary {
   pro: number;
   totalBalanceEth: string;
   totalSnipes: number;
+  treasury: string | null;
+  sweeping: boolean;
 }
 
 export default function AdminTab() {
@@ -261,6 +263,18 @@ export default function AdminTab() {
           <Stat label="balances held" value={`${summary.totalBalanceEth} ETH`} />
           <Stat label="snipes billed" value={String(summary.totalSnipes)} />
         </div>
+      ) : null}
+      {summary ? (
+        <p className="dim" style={{ fontSize: 12, marginTop: -8, marginBottom: 16 }}>
+          {summary.sweeping && summary.treasury ? (
+            <>deposits auto-sweep to your treasury <code className="mono-break">{summary.treasury}</code></>
+          ) : (
+            <>
+              ⚠ no treasury set — deposits stay on per-account wallets. Set{" "}
+              <code>SNIPE_TREASURY</code> (or <code>SNIPE_WITHDRAW_TO</code>) on the server to auto-collect.
+            </>
+          )}
+        </p>
       ) : null}
 
       <div style={{ overflowX: "auto" }}>

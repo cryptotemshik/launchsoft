@@ -23,8 +23,15 @@ interface DepositRecord {
   address: `0x${string}`;
   /** The private key — sealed when a passphrase is set, plain otherwise. */
   key: string;
-  /** The on-chain balance last credited, in wei, as a decimal string. */
-  seenWei: string;
+  /** Total wei ever credited to the balance from this address. */
+  creditedWei: string;
+  /** Total wei ever swept out of this address to the treasury. */
+  sweptWei: string;
+}
+
+/** A decimal wei string, or "0". */
+function wei(v: unknown): string {
+  return typeof v === "string" && /^\d+$/.test(v) ? v : "0";
 }
 
 function pathFor(configPath: string): string {
@@ -38,7 +45,9 @@ function read(configPath: string): DepositRecord | null {
       return {
         address: r.address.toLowerCase() as `0x${string}`,
         key: r.key,
-        seenWei: typeof r.seenWei === "string" && /^\d+$/.test(r.seenWei) ? r.seenWei : "0",
+        // Migrate an older file that tracked seenWei: treat it as already-credited.
+        creditedWei: wei(r.creditedWei ?? (r as { seenWei?: string }).seenWei),
+        sweptWei: wei(r.sweptWei),
       };
     }
   } catch {
@@ -70,7 +79,8 @@ export function ensureDeposit(configPath: string, passphrase: string | null): `0
   write(configPath, {
     address,
     key: passphrase ? seal(key, passphrase) : key,
-    seenWei: "0",
+    creditedWei: "0",
+    sweptWei: "0",
   });
   return address;
 }
@@ -80,16 +90,41 @@ export function depositAddress(configPath: string): `0x${string}` | null {
   return read(configPath)?.address ?? null;
 }
 
-/** The wei last credited from this address. */
-export function seenWei(configPath: string): bigint {
-  return BigInt(read(configPath)?.seenWei ?? "0");
+export function creditedWei(configPath: string): bigint {
+  return BigInt(read(configPath)?.creditedWei ?? "0");
+}
+export function sweptWei(configPath: string): bigint {
+  return BigInt(read(configPath)?.sweptWei ?? "0");
 }
 
-/** Record the on-chain balance now credited, so the next rise is the next deposit. */
-export function setSeenWei(configPath: string, wei: bigint): void {
+/**
+ * How much of a new balance has not been credited yet.
+ *
+ * Everything that has ever reached the address is `balance + swept` (its
+ * current holdings plus everything moved out). Subtract what has already been
+ * credited and you have the new deposit — a figure that survives a sweep
+ * untouched, so crediting and sweeping cannot race into a double-count or a
+ * missed top-up.
+ */
+export function uncreditedWei(configPath: string, onchainBalance: bigint): bigint {
+  const received = onchainBalance + sweptWei(configPath);
+  const credited = creditedWei(configPath);
+  return received > credited ? received - credited : 0n;
+}
+
+/** Mark `delta` more wei as credited. */
+export function addCredited(configPath: string, delta: bigint): void {
   const rec = read(configPath);
   if (!rec) return;
-  rec.seenWei = wei.toString();
+  rec.creditedWei = (BigInt(rec.creditedWei) + delta).toString();
+  write(configPath, rec);
+}
+
+/** Mark `value` more wei as swept out to the treasury. */
+export function addSwept(configPath: string, value: bigint): void {
+  const rec = read(configPath);
+  if (!rec) return;
+  rec.sweptWei = (BigInt(rec.sweptWei) + value).toString();
   write(configPath, rec);
 }
 

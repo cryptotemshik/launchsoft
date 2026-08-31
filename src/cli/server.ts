@@ -32,7 +32,7 @@ import { resolve } from "node:path";
 import { execFile } from "node:child_process";
 import * as os from "node:os";
 import { promisify } from "node:util";
-import { formatEther, parseEther } from "viem";
+import { createWalletClient, formatEther, http, parseEther, parseGwei } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { collect, disperse } from "./funding";
 import { scanChain } from "./holdings";
@@ -126,10 +126,12 @@ import {
   loadBilling,
 } from "./billing";
 import {
+  addCredited,
+  addSwept,
   depositAddress,
+  depositKey,
   ensureDeposit,
-  seenWei,
-  setSeenWei,
+  uncreditedWei,
 } from "./depositWallet";
 import {
   addWhale,
@@ -1144,6 +1146,64 @@ async function whaleTick(): Promise<void> {
 // ── Credit deposits: watch each account's deposit address, 24/7 ─────────────
 const DEPOSITS_ON = process.env.SNIPE_DEPOSITS !== "0";
 const DEPOSIT_POLL_MS = envNumber(process.env.SNIPE_DEPOSIT_POLL_MS, 60_000, 10_000);
+/** Below this, a sweep costs more gas than it moves — leave it. */
+const SWEEP_MIN_WEI = parseEther(process.env.SNIPE_SWEEP_MIN_ETH?.trim() || "0.01");
+
+/**
+ * Where swept deposits go — how the owner actually receives the money.
+ *
+ * SNIPE_TREASURY if set, else the withdrawal address, else the first admin
+ * address. With none of those configured, sweeping is off and the funds simply
+ * sit on the per-account deposit wallets (still the operator's, still safe) —
+ * so the owner is never surprised by money moving to an address they did not
+ * name.
+ */
+function treasuryAddress(): `0x${string}` | null {
+  const raw = (process.env.SNIPE_TREASURY || process.env.SNIPE_WITHDRAW_TO || "")
+    .split(",")[0]
+    ?.trim()
+    .toLowerCase();
+  if (raw && /^0x[0-9a-f]{40}$/.test(raw)) return raw as `0x${string}`;
+  const admin = (process.env.SNIPE_ADMIN_ADDRESS || "").split(",")[0]?.trim().toLowerCase();
+  return admin && /^0x[0-9a-f]{40}$/.test(admin) ? (admin as `0x${string}`) : null;
+}
+
+/**
+ * Move a deposit wallet's balance to the treasury.
+ *
+ * Signs with the deposit wallet's own key (which this process holds) and sends
+ * a plain transfer, leaving a small gas margin. The swept value is recorded so
+ * the crediting maths stays exact across the sweep. Best-effort: a failure logs
+ * and the next pass tries again.
+ */
+async function sweepDeposit(
+  cfgPath: string,
+  info: NonNullable<ReturnType<typeof getChainInfo>>,
+  cfg: SnipeConfig,
+  treasury: `0x${string}`,
+  bal: bigint,
+): Promise<bigint> {
+  if (bal < SWEEP_MIN_WEI) return 0n;
+  const key = depositKey(cfgPath, keystorePassphrase());
+  if (!key) return 0n;
+  const account = privateKeyToAccount(key);
+  const wallet = createWalletClient({ account, chain: info.chain, transport: http() });
+  const maxFeePerGas = parseGwei(cfg.gas.maxFeeGwei);
+  const maxPriorityFeePerGas = parseGwei(cfg.gas.tipGwei);
+  const gas = 21_000n;
+  const value = bal - gas * maxFeePerGas * 2n; // 2× margin for base-fee drift
+  if (value <= 0n) return 0n;
+  const hash = await wallet.sendTransaction({
+    to: treasury,
+    value,
+    gas,
+    maxFeePerGas,
+    maxPriorityFeePerGas,
+  });
+  addSwept(cfgPath, value);
+  log(`sweep: ${formatEther(value)} ETH → treasury (${hash})`);
+  return value;
+}
 
 /**
  * One pass of deposit crediting.
@@ -1159,6 +1219,7 @@ async function depositTick(): Promise<void> {
     const info = getChainInfo(cfg.chainId);
     if (!info) return;
     const client = makeReadClient(info.chain, readRpcs(cfg));
+    const treasury = treasuryAddress();
     for (const addr of accountDirs(ACCOUNTS_ROOT)) {
       const cfgPath = accountConfigPath(ACCOUNTS_ROOT, addr);
       const dep = depositAddress(cfgPath);
@@ -1169,13 +1230,21 @@ async function depositTick(): Promise<void> {
       } catch {
         continue;
       }
-      const seen = seenWei(cfgPath);
-      if (bal > seen) {
-        creditDeposit(cfgPath, bal - seen, `deposit seen at ${dep}`);
-        setSeenWei(cfgPath, bal);
-        log(`deposit: credited ${formatEther(bal - seen)} ETH to ${addr}`);
-      } else if (bal < seen) {
-        setSeenWei(cfgPath, bal);
+      // Credit whatever has arrived but not yet been counted — sweep-proof.
+      const owed = uncreditedWei(cfgPath, bal);
+      if (owed > 0n) {
+        creditDeposit(cfgPath, owed, `deposit seen at ${dep}`);
+        addCredited(cfgPath, owed);
+        log(`deposit: credited ${formatEther(owed)} ETH to ${addr}`);
+      }
+      // Then move it to the treasury, if one is configured — this is how the
+      // owner receives the money. Never blocks the crediting above.
+      if (treasury) {
+        try {
+          await sweepDeposit(cfgPath, info, cfg, treasury, bal);
+        } catch (e) {
+          log(`sweep failed for ${addr}: ${e instanceof Error ? e.message.split("\n")[0] : e}`);
+        }
       }
     }
   } catch (e) {
@@ -2697,6 +2766,8 @@ const server = createServer(async (req, res) => {
         totalBalanceWei: totalBalanceWei.toString(),
         totalBalanceEth: formatEther(totalBalanceWei),
         totalSnipes: accounts.reduce((s2, a) => s2 + a.snipes, 0),
+        treasury: treasuryAddress(),
+        sweeping: DEPOSITS_ON && Boolean(treasuryAddress()),
       },
     });
     return;

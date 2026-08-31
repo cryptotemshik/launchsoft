@@ -2,7 +2,14 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import { depositAddress, depositKey, ensureDeposit, seenWei, setSeenWei } from "./depositWallet";
+import {
+  addCredited,
+  addSwept,
+  depositAddress,
+  depositKey,
+  ensureDeposit,
+  uncreditedWei,
+} from "./depositWallet";
 import { privateKeyToAccount } from "viem/accounts";
 
 let dir: string;
@@ -38,10 +45,18 @@ describe("deposit address", () => {
     expect(privateKeyToAccount(depositKey(cfg, null)!).address.toLowerCase()).toBe(a);
   });
 
-  it("tracks the last-seen balance for delta crediting", () => {
+  it("credits deposits once, and a sweep does not cause a double-credit", () => {
     ensureDeposit(cfg, "pass");
-    expect(seenWei(cfg)).toBe(0n);
-    setSeenWei(cfg, 10n ** 18n);
-    expect(seenWei(cfg)).toBe(10n ** 18n);
+    const ETH = 10n ** 18n;
+    // A 1 ETH deposit: balance 1, nothing swept/credited → 1 uncredited.
+    expect(uncreditedWei(cfg, ETH)).toBe(ETH);
+    addCredited(cfg, ETH); // credit it
+    expect(uncreditedWei(cfg, ETH)).toBe(0n); // nothing new
+    // Now we sweep ~all of it out; balance drops to a dust residual.
+    addSwept(cfg, ETH - ETH / 100n);
+    // The residual must NOT be seen as a fresh deposit.
+    expect(uncreditedWei(cfg, ETH / 100n)).toBe(0n);
+    // A second 2 ETH deposit lands on top of the residual → exactly 2 new.
+    expect(uncreditedWei(cfg, ETH / 100n + 2n * ETH)).toBe(2n * ETH);
   });
 });
