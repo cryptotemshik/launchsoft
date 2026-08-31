@@ -86,7 +86,16 @@ import {
   type SnipeConfig,
 } from "./config";
 import { readDrop, runSnipe, waveSize, type RunOptions, type RunResult } from "./runner";
-import { formatMintReport, sendTelegram, type MintedWallet } from "../lib/telegram";
+import { escapeHtml, formatMintReport, sendTelegram, type MintedWallet } from "../lib/telegram";
+import {
+  codeIsValid,
+  getChatId as tgChatId,
+  isLinked as tgIsLinked,
+  issueCode as tgIssueCode,
+  loadLink as tgLoadLink,
+  setChatId as tgSetChatId,
+  unlink as tgUnlink,
+} from "./telegramLink";
 import { startTelegramBot } from "./telegramBot";
 import { addUpcoming, annotateUpcoming, loadUpcoming, removeUpcoming, sameDrop } from "./upcomingStore";
 import { loadJobs, restoreStatus, saveJobs, type StoredJob, type StoredStatus } from "./jobStore";
@@ -1081,6 +1090,111 @@ async function indexTick(): Promise<void> {
   }
 }
 
+// ── Telegram: one bot, each account its own chat, alerts kept separate ───────
+// The operator's bot token doubles as the delivery bot for everyone: a bot can
+// message any chat that has linked to it, and the per-account chat id is what
+// keeps one person's whale alerts and snipe results out of another's Telegram.
+// Linking is a getUpdates poller — no public webhook to stand up — that watches
+// for `/start <code>` and binds the chat to the account that code belongs to.
+let botUsername: string | null = null;
+
+/** The shared bot token — the operator's, or none, in which case this is all off. */
+function telegramBotToken(): string | null {
+  try {
+    return loadConfig(CONFIG_PATH).telegram?.botToken ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Learn the bot's @username, once — it is half of every deep link. */
+async function ensureBotUsername(token: string): Promise<string | null> {
+  if (botUsername) return botUsername;
+  try {
+    const r = (await fetch(`https://api.telegram.org/bot${token}/getMe`).then((x) => x.json())) as {
+      ok?: boolean;
+      result?: { username?: string };
+    };
+    if (r.ok && r.result?.username) botUsername = r.result.username;
+  } catch {
+    /* try again next tick */
+  }
+  return botUsername;
+}
+
+/** Send one message to an account's linked chat, if it has one. Fire-and-forget. */
+function notifyAccount(cfgPath: string, html: string): void {
+  const token = telegramBotToken();
+  const chatId = tgChatId(cfgPath);
+  if (!token || !chatId) return;
+  void sendTelegram({ botToken: token, chatId }, html).catch(() => {});
+}
+
+/** The account whose pending, unexpired code this is — or null. */
+function findAccountByCode(code: string): string | null {
+  for (const addr of accountDirs(ACCOUNTS_ROOT)) {
+    const cfgPath = accountConfigPath(ACCOUNTS_ROOT, addr);
+    if (codeIsValid(tgLoadLink(cfgPath), code)) return cfgPath;
+  }
+  return null;
+}
+
+/** The account a chat id is linked to — or null. */
+function findAccountByChatId(chatId: string): string | null {
+  for (const addr of accountDirs(ACCOUNTS_ROOT)) {
+    const cfgPath = accountConfigPath(ACCOUNTS_ROOT, addr);
+    if (tgChatId(cfgPath) === chatId) return cfgPath;
+  }
+  return null;
+}
+
+/**
+ * Handle a `/start <code>` or `/stop` from any chat — the account-linking
+ * commands. Runs inside the existing bot's single update loop (a second poller
+ * on the same token would 409), before its operator-only gate, so a brand-new
+ * user pressing Start is seen. Returns true when it has taken the message.
+ */
+function handleLinkCommand(u: { message?: { text?: string; chat?: { id?: number | string } } }): boolean {
+  const token = telegramBotToken();
+  const text = typeof u.message?.text === "string" ? u.message.text.trim() : "";
+  const chatId = u.message?.chat?.id;
+  if (!token || !text || chatId == null) return false;
+  const chat = String(chatId);
+  const reply = (html: string) => void sendTelegram({ botToken: token, chatId: chat }, html).catch(() => {});
+
+  const start = /^\/start(?:\s+(\S+))?/.exec(text);
+  if (start) {
+    const code = start[1];
+    if (!code) {
+      // A bare /start from the operator's own chat belongs to the /add bot;
+      // leave it be. From anyone else, point them at where the link lives.
+      if (chat === String(loadConfig(CONFIG_PATH).telegram?.chatId ?? "")) return false;
+      reply("👋 Open the app, go to <b>Profile → Telegram</b> and press Connect — that link is what binds this chat to your account.");
+      return true;
+    }
+    const cfgPath = findAccountByCode(code);
+    if (cfgPath) {
+      tgSetChatId(cfgPath, chat);
+      log(`telegram: linked chat ${chat}`);
+      reply("✅ <b>Linked.</b> Your whale alerts and snipe results will arrive here. Send /stop to disconnect.");
+    } else {
+      reply("⌛ That link has expired. Open the app and press Connect again for a fresh one.");
+    }
+    return true;
+  }
+  if (/^\/stop\b/.test(text)) {
+    const cfgPath = findAccountByChatId(chat);
+    if (cfgPath) {
+      tgUnlink(cfgPath);
+      log(`telegram: unlinked chat ${chat}`);
+      reply("🔇 Disconnected. You won't get alerts here any more.");
+      return true;
+    }
+    return false;
+  }
+  return false;
+}
+
 // ── Whale Alert: watch the curated whales enter collections, 24/7 ───────────
 const WHALE_ON = process.env.SNIPE_WHALE_ALERT !== "0";
 const WHALE_POLL_MS = envNumber(process.env.SNIPE_WHALE_POLL_MS, 60_000, 5_000);
@@ -1144,11 +1258,18 @@ async function whaleTick(): Promise<void> {
     for (const a of fresh) {
       const name = creators.nameFor(a.contract) ?? a.contract;
       log(`whale alert: ${a.count} whales in ${name}`);
-      if (cfg.telegram) {
-        void sendTelegram(
-          cfg.telegram,
-          `🐋 Whale Alert — ${a.count} whales have entered ${name}\n${a.contract}`,
-        ).catch(() => {});
+      const html =
+        `🐋 <b>Whale Alert</b> — ${a.count} whales have entered ${escapeHtml(name)}\n` +
+        `<code>${a.contract}</code>`;
+      if (cfg.telegram) void sendTelegram(cfg.telegram, html).catch(() => {});
+      // Deliver privately to every linked account on Pro — the alert is the same
+      // for all, but each gets it in its own chat, not a shared channel.
+      for (const addr of accountDirs(ACCOUNTS_ROOT)) {
+        const cfgPath = accountConfigPath(ACCOUNTS_ROOT, addr);
+        if (!tgIsLinked(cfgPath)) continue;
+        const acct = getAccount(ACCOUNTS_ROOT, addr);
+        if (!acct || !isPro(acct)) continue;
+        notifyAccount(cfgPath, html);
       }
     }
     whaleLast = { at: Date.now(), note: `${whales.length} whales · ${found} new entries this pass` };
@@ -1311,6 +1432,11 @@ async function depositTick(): Promise<void> {
         creditDeposit(cfgPath, arrived, `deposit seen at ${dep}`);
         addCredited(cfgPath, arrived);
         log(`deposit: credited ${formatEther(arrived)} ETH to ${addr}`);
+        notifyAccount(
+          cfgPath,
+          `💰 <b>Deposit credited</b> — ${escapeHtml(formatEther(arrived))} ETH\n` +
+            `Balance is ready to fund snipes or Pro.`,
+        );
       }
       // Then settle to the treasury only what the owner is actually owed —
       // fees, not the account's spendable funds, which now stay on the deposit
@@ -2540,7 +2666,35 @@ async function execute(job: Job) {
   }
   await consolidate(job);
   await notify(job);
+  notifyAccountJob(job);
   withdrawReminder(job);
+}
+
+/**
+ * Tell the account that owns a job how its snipe went, in its own chat.
+ *
+ * Only a user's job — the operator's own runs are covered by {@link notify},
+ * which posts the full report to the operator's chat. This is the short version
+ * a user wants: did it mint, or not.
+ */
+function notifyAccountJob(job: Job): void {
+  if (!job.account) return;
+  const outcomes = job.result?.outcomes ?? [];
+  const minted = outcomes.filter((o) => o.status === "mined").length;
+  const reverted = outcomes.filter((o) => o.status === "reverted").length;
+  const label = escapeHtml(job.label);
+  let html: string;
+  if (job.status === "done" && minted > 0) {
+    html = `✅ <b>Snipe minted</b> — ${minted} in ${label}` + (reverted ? ` · ${reverted} reverted` : "");
+  } else if (job.status === "aborted") {
+    html = `⏹ <b>Snipe aborted</b> — ${label}`;
+  } else {
+    html =
+      `❌ <b>Snipe didn't mint</b> — ${label}` +
+      (reverted ? ` · ${reverted} reverted` : "") +
+      `\nAny snipe fee for a run that didn't mint is refunded to your balance.`;
+  }
+  notifyAccount(job.cfgPath, html);
 }
 
 /**
@@ -2978,6 +3132,55 @@ const server = createServer(async (req, res) => {
     });
     return;
   }
+  // ── Telegram: link this account's chat, see its state, or disconnect ────────
+  if (url.pathname === "/api/telegram/status" && req.method === "GET") {
+    const a = acting(req);
+    if (!a) {
+      json(res, 401, { error: "sign in with your wallet first" });
+      return;
+    }
+    const token = telegramBotToken();
+    if (token) await ensureBotUsername(token);
+    json(res, 200, {
+      available: Boolean(token),
+      linked: tgIsLinked(a.cfgPath),
+      botUsername,
+    });
+    return;
+  }
+
+  if (url.pathname === "/api/telegram/link" && req.method === "POST") {
+    const a = acting(req);
+    if (!a) {
+      json(res, 401, { error: "sign in with your wallet first" });
+      return;
+    }
+    const token = telegramBotToken();
+    if (!token) {
+      json(res, 503, { error: "Telegram isn't configured on this server yet" });
+      return;
+    }
+    await ensureBotUsername(token);
+    const code = tgIssueCode(a.cfgPath);
+    json(res, 200, {
+      code,
+      botUsername,
+      deepLink: botUsername ? `https://t.me/${botUsername}?start=${code}` : null,
+    });
+    return;
+  }
+
+  if (url.pathname === "/api/telegram/unlink" && req.method === "POST") {
+    const a = acting(req);
+    if (!a) {
+      json(res, 401, { error: "sign in with your wallet first" });
+      return;
+    }
+    tgUnlink(a.cfgPath);
+    json(res, 200, { ok: true, linked: false });
+    return;
+  }
+
   // Pay for a month of Pro from the balance, priced in dollars, debited in ETH.
   if (url.pathname === "/api/subscribe" && req.method === "POST") {
     const a = acting(req);
@@ -4764,7 +4967,10 @@ server.listen(PORT, HOST, () => {
     log(cfg.telegram ? "telegram notifications ON" : "telegram notifications off (no token/chat id)");
     // The same bot, now also listening: /add collects a drop that exists
     // nowhere but Twitter yet, and the site reads the list back.
-    if (cfg.telegram) startTelegramBot(cfg.telegram, CONFIG_PATH, log);
+    if (cfg.telegram) {
+      startTelegramBot(cfg.telegram, CONFIG_PATH, log, undefined, handleLinkCommand);
+      void ensureBotUsername(cfg.telegram.botToken); // so deep links are ready
+    }
     if (WHALE_ON) {
       log("whale alert  watching curated whales for 3+ entering one collection (SNIPE_WHALE_ALERT=0 to disable)");
       setTimeout(() => void whaleTick(), 6_000);

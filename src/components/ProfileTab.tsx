@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRunnerApi } from "../lib/runnerClient";
 import { shortAddress } from "./ConnectBar";
 
@@ -54,6 +54,10 @@ export default function ProfileTab() {
   const [copied, setCopied] = useState(false);
   const [withdrawAmount, setWithdrawAmount] = useState("");
   const [withdrawing, setWithdrawing] = useState(false);
+  const [tg, setTg] = useState<{ available: boolean; linked: boolean; botUsername: string | null } | null>(null);
+  const [tgBusy, setTgBusy] = useState(false);
+  const [tgHint, setTgHint] = useState<string | null>(null);
+  const tgPoll = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const load = useCallback(async () => {
     if (!base || !token) {
@@ -73,6 +77,11 @@ export default function ProfileTab() {
         setBilling((await call("/api/billing")) as unknown as Billing);
       } catch {
         setBilling(null);
+      }
+      try {
+        setTg((await call("/api/telegram/status")) as unknown as typeof tg);
+      } catch {
+        setTg(null);
       }
     } catch (e) {
       setMe(null);
@@ -121,6 +130,59 @@ export default function ProfileTab() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Stop polling for the Telegram link if the tab goes away mid-wait.
+  useEffect(() => () => {
+    if (tgPoll.current) clearInterval(tgPoll.current);
+  }, []);
+
+  async function connectTelegram() {
+    setTgBusy(true);
+    setError(null);
+    setTgHint(null);
+    try {
+      const r = (await call("/api/telegram/link", { method: "POST" })) as unknown as {
+        deepLink: string | null;
+        code: string;
+      };
+      if (r.deepLink) window.open(r.deepLink, "_blank", "noopener");
+      setTgHint("Press Start in Telegram — this updates on its own once you do.");
+      // Watch for the link to complete, then stop.
+      if (tgPoll.current) clearInterval(tgPoll.current);
+      let tries = 0;
+      tgPoll.current = setInterval(async () => {
+        tries += 1;
+        try {
+          const s = (await call("/api/telegram/status")) as unknown as typeof tg;
+          if (s?.linked || tries >= 20) {
+            if (tgPoll.current) clearInterval(tgPoll.current);
+            setTg(s);
+            if (s?.linked) setTgHint("Connected — your alerts will arrive in Telegram.");
+          }
+        } catch {
+          /* keep waiting */
+        }
+      }, 3000);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setTgBusy(false);
+    }
+  }
+
+  async function disconnectTelegram() {
+    setTgBusy(true);
+    setError(null);
+    setTgHint(null);
+    try {
+      await call("/api/telegram/unlink", { method: "POST" });
+      setTg((prev) => (prev ? { ...prev, linked: false } : prev));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setTgBusy(false);
+    }
+  }
 
   async function save() {
     setSaving(true);
@@ -361,6 +423,35 @@ export default function ProfileTab() {
                       );
                     })}
                   </ul>
+                </div>
+              ) : null}
+
+              {tg?.available ? (
+                <div style={{ marginTop: 20, borderTop: "1px solid var(--border, #2a2a2a)", paddingTop: 14 }}>
+                  <h3 style={{ marginBottom: 6 }}>Telegram alerts</h3>
+                  {tg.linked ? (
+                    <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                      <span className="pill ok">connected</span>
+                      <button className="secondary" disabled={tgBusy} onClick={() => void disconnectTelegram()}>
+                        {tgBusy ? <span className="spin">…</span> : "disconnect"}
+                      </button>
+                      <span className="dim" style={{ fontSize: 12 }}>
+                        whale alerts and snipe results arrive privately in your Telegram
+                      </span>
+                    </div>
+                  ) : (
+                    <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                      <button className="primary" disabled={tgBusy} onClick={() => void connectTelegram()}>
+                        {tgBusy ? <span className="spin">…</span> : "Connect Telegram"}
+                      </button>
+                      <span className="dim" style={{ fontSize: 12 }}>
+                        get your whale alerts &amp; snipe results in a private chat
+                      </span>
+                    </div>
+                  )}
+                  {tgHint ? (
+                    <p className="dim hint" style={{ marginBottom: 0, marginTop: 8 }}>{tgHint}</p>
+                  ) : null}
                 </div>
               ) : null}
             </div>

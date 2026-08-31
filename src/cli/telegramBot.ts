@@ -104,6 +104,14 @@ export function startTelegramBot(
   configPath: string,
   log: Log,
   tzOffsetMin = DEFAULT_TZ_OFFSET,
+  /**
+   * First look at every incoming message, from any chat, before the
+   * operator-only gate below. This is how account linking works: a brand-new
+   * user pressing Start is not the operator, so their `/start <code>` would
+   * otherwise be dropped. Returns true when it has handled the message, so the
+   * rest of the bot leaves it alone.
+   */
+  onLinkCommand?: (u: { message?: { chat: { id: number | string }; text?: string } }) => boolean,
 ): () => void {
   let offset = 0;
   let stopped = false;
@@ -135,6 +143,10 @@ export function startTelegramBot(
   }).catch(() => undefined);
 
   async function handle(u: TgUpdate): Promise<void> {
+    // Linking runs first and for every chat: a new user is by definition not
+    // the operator, so their Start must be seen before the gate below.
+    if (u.message && onLinkCommand?.({ message: u.message })) return;
+
     const chat = u.message?.chat.id ?? u.callback_query?.message?.chat.id;
     // Anyone can find a bot and message it; only one chat gets answered.
     if (String(chat ?? "") !== String(cfg.chatId)) return;
