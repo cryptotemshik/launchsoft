@@ -1669,7 +1669,7 @@ function saveExtraRpcs(urls: string[]): string[] {
   writeFileSync(abs, `${JSON.stringify(raw, null, 2)}\n`, { mode: 0o600 });
   // Balances were read through the old endpoint; don't serve them as if they
   // came from the new one.
-  balanceCache = null;
+  balanceCaches.clear();
   return clean;
 }
 
@@ -1701,18 +1701,28 @@ function audit(event: AuditEvent, detail: Record<string, unknown> = {}): void {
  * changed by whoever controls the box's config and environment, never over
  * the API. That is the entire distinction between it and the registry.
  */
-function policyContext(): PolicyContext {
-  const cfg = loadConfig(CONFIG_PATH);
+/**
+ * The signing policy for a world. Mirrors the daemon's policyFor (signerd.ts)
+ * so the in-process path and the socket path enforce the same rules: an
+ * account may withdraw instantly to the address it signed in with plus what it
+ * registered an hour ago; only the main world carries the operator's env
+ * targets, which no account inherits.
+ */
+function policyContext(cfgPath = CONFIG_PATH, account: string | null = null): PolicyContext {
+  const cfg = loadConfig(cfgPath);
   const info = getChainInfo(cfg.chainId);
-  const withdrawTo = maturedAddresses(CONFIG_PATH, Date.now());
+  const withdrawTo = maturedAddresses(cfgPath, Date.now());
+  if (account) withdrawTo.add(account.toLowerCase());
   if (cfg.consolidateTo) withdrawTo.add(cfg.consolidateTo.toLowerCase());
-  for (const a of (process.env.SNIPE_WITHDRAW_TO ?? "").split(",")) {
-    const t = a.trim().toLowerCase();
-    if (/^0x[0-9a-f]{40}$/.test(t)) withdrawTo.add(t);
+  if (!account) {
+    for (const a of (process.env.SNIPE_WITHDRAW_TO ?? "").split(",")) {
+      const t = a.trim().toLowerCase();
+      if (/^0x[0-9a-f]{40}$/.test(t)) withdrawTo.add(t);
+    }
   }
   return {
     ownWallets: new Set(
-      walletBook().map((w) => w.address.toLowerCase()),
+      walletBook(cfgPath).map((w) => w.address.toLowerCase()),
     ),
     withdrawTo,
     mintContract: (info?.seaDrop ?? "").toLowerCase(),
@@ -1747,27 +1757,38 @@ function policyContext(): PolicyContext {
  * has it. Either way the rest of the server asks here and never decrypts a key
  * just to learn an address.
  */
-function walletBook(): WalletRef[] {
-  const cfg = loadConfig(CONFIG_PATH);
-  const book = loadAddressBook(CONFIG_PATH, cfg.keysFile);
+function walletBook(cfgPath = CONFIG_PATH): WalletRef[] {
+  const cfg = loadConfig(cfgPath);
+  const book = loadAddressBook(cfgPath, cfg.keysFile);
   if (book) return book;
-  return loadKeyEntries(CONFIG_PATH, cfg.keysFile).map((e) => ({
+  return loadKeyEntries(cfgPath, cfg.keysFile).map((e) => ({
     address: privateKeyToAccount(e.key).address,
     label: e.label,
   }));
 }
 
 const SIGNER_SOCKET = process.env.SNIPE_SIGNER_SOCKET?.trim() || "";
-function getSigner(): Signer {
-  if (SIGNER_SOCKET) return connectSigner(SIGNER_SOCKET);
+/**
+ * The signer for a world. With the socket set the keys live in the daemon and
+ * this process holds none — the account is named on the wire so the daemon
+ * signs in the right world. Without it, an in-process signer scoped to that
+ * world's keystore and policy, exactly as a single box has always run.
+ */
+function getSigner(cfgPath = CONFIG_PATH, account: string | null = null): Signer {
+  if (SIGNER_SOCKET) return connectSigner(SIGNER_SOCKET, account);
   return makeInProcessSigner({
-    loadKeys: () => loadKeyEntries(CONFIG_PATH, loadConfig(CONFIG_PATH).keysFile),
-    policy: policyContext,
+    loadKeys: () => loadKeyEntries(cfgPath, loadConfig(cfgPath).keysFile),
+    policy: () => policyContext(cfgPath, account),
   });
 }
 
-function enforcePolicy(tx: { to?: string; value: bigint; data?: string }, what: string): void {
-  const verdict = judgeTransaction(tx, policyContext());
+function enforcePolicy(
+  tx: { to?: string; value: bigint; data?: string },
+  what: string,
+  cfgPath = CONFIG_PATH,
+  account: string | null = null,
+): void {
+  const verdict = judgeTransaction(tx, policyContext(cfgPath, account));
   if (!verdict.ok) {
     audit("policy.refused", { what, to: tx.to, reason: verdict.reason });
     throw new Error(
@@ -1796,15 +1817,15 @@ ${address}
   ).catch(() => {});
 }
 
-function writeKeys(entries: KeyEntry[]) {
-  const cfg = loadConfig(CONFIG_PATH);
-  const abs = keysPath(CONFIG_PATH, cfg.keysFile);
+function writeKeys(entries: KeyEntry[], cfgPath = CONFIG_PATH) {
+  const cfg = loadConfig(cfgPath);
+  const abs = keysPath(cfgPath, cfg.keysFile);
   // Sealed when a passphrase is set, in the clear when it is not, and always
   // through a temporary file and a rename so a crash mid-write cannot leave
   // half a wallet list. 0600 either way.
   writeKeysText(abs, serialiseKeys(entries), keystorePassphrase());
   // Keep the public address book in step, so a keyless API sees the change.
-  writeAddressBook(CONFIG_PATH, cfg.keysFile, entries.map((e) => ({
+  writeAddressBook(cfgPath, cfg.keysFile, entries.map((e) => ({
     address: privateKeyToAccount(e.key).address,
     label: e.label,
   })));
@@ -1816,30 +1837,33 @@ function writeKeys(entries: KeyEntry[]) {
  * hundred-wallet set from spending the endpoint's whole rate budget on a view.
  */
 const BALANCE_TTL_MS = 10_000;
-let balanceCache: { at: number; values: Map<string, string> } | null = null;
+// Keyed by world, so one account's cached balances can never be served to
+// another — isolation holds even for the cheap nicety.
+const balanceCaches = new Map<string, { at: number; values: Map<string, string> }>();
 
-/** Addresses, labels and balances — never keys. */
-async function walletsView() {
-  const cfg = loadConfig(CONFIG_PATH);
+/** Addresses, labels and balances — never keys. Scoped to one world. */
+async function walletsView(cfgPath = CONFIG_PATH) {
+  const cfg = loadConfig(cfgPath);
   const info = getChainInfo(cfg.chainId);
   // Addresses and labels come from the book, so listing wallets needs no key.
-  const addresses = walletBook().map((w) => ({ address: w.address, label: w.label }));
+  const addresses = walletBook(cfgPath).map((w) => ({ address: w.address, label: w.label }));
 
   let balances = new Map<string, string>();
-  const fresh = balanceCache && Date.now() - balanceCache.at < BALANCE_TTL_MS;
-  if (fresh && balanceCache) {
-    balances = balanceCache.values;
+  const cached = balanceCaches.get(cfgPath);
+  const fresh = cached && Date.now() - cached.at < BALANCE_TTL_MS;
+  if (fresh && cached) {
+    balances = cached.values;
   } else if (info && addresses.length > 0) {
     try {
       const client = makeReadClient(info.chain, readRpcs(cfg));
       const got = await mapWithLimit(addresses, (a) => client.getBalance({ address: a.address }));
       balances = new Map(addresses.map((a, i) => [a.address, formatEther(got[i])]));
-      balanceCache = { at: Date.now(), values: balances };
+      balanceCaches.set(cfgPath, { at: Date.now(), values: balances });
     } catch (e) {
       // Balances are a nicety; the list itself must still render. Say why once
       // so a rate limit doesn't look like the wallets have no money.
       log(`balances unavailable: ${e instanceof Error ? e.message.split("\n")[0] : e}`);
-      balances = balanceCache?.values ?? new Map();
+      balances = cached?.values ?? new Map();
     }
   }
 
@@ -2447,6 +2471,71 @@ const server = createServer(async (req, res) => {
     }
   }
 
+  // Your custodial wallets, read-only, scoped to your world. Adding/removing
+  // wallets and moving funds stay operator/admin-only below the gate for now —
+  // those tie into billing and the runner, which are the next step.
+  if (url.pathname === "/api/wallets" && req.method === "GET") {
+    const a = acting(req);
+    if (!a) {
+      json(res, 401, { error: "sign in with your wallet first" });
+      return;
+    }
+    try {
+      json(res, 200, await walletsView(a.cfgPath));
+    } catch (e) {
+      json(res, 500, { error: e instanceof Error ? e.message : String(e) });
+    }
+    return;
+  }
+
+  // What your wallet set holds, scoped to your world.
+  if (url.pathname === "/api/nfts" && req.method === "GET") {
+    const a = acting(req);
+    if (!a) {
+      json(res, 401, { error: "sign in with your wallet first" });
+      return;
+    }
+    try {
+      const cfg = loadConfig(a.cfgPath);
+      const info = getChainInfo(cfg.chainId);
+      if (!info) throw new Error(`chain ${cfg.chainId} isn't in the registry`);
+      const onlyRaw = url.searchParams.get("collection");
+      const only =
+        onlyRaw && /^0x[0-9a-fA-F]{40}$/.test(onlyRaw) ? (onlyRaw as `0x${string}`) : undefined;
+      const addresses = walletBook(a.cfgPath).map((w) => w.address);
+      const started = Date.now();
+      const client = makeReadClient(info.chain, readRpcs(cfg));
+      const scan = await scanChain(client as never, addresses, { collection: only });
+      const tookMs = Date.now() - started;
+      json(res, 200, {
+        chain: info.label,
+        explorerUrl: info.explorerUrl,
+        openSeaSlug: info.openSeaSlug,
+        checked: addresses.length,
+        withTokens: scan.walletsWithTokens,
+        totalTokens: scan.totalTokens,
+        collections: scan.collections.map((c) => ({
+          collection: c.collection,
+          name: c.name,
+          totalTokens: c.totalTokens,
+          wallets: c.wallets,
+        })),
+        holdings: scan.collections.flatMap((c) =>
+          c.wallets.map((w) => ({
+            wallet: w.wallet,
+            collection: c.collection,
+            collectionName: c.name,
+            tokenIds: w.tokenIds,
+          })),
+        ),
+        tookMs,
+      });
+    } catch (e) {
+      json(res, 500, { error: e instanceof Error ? e.message : String(e) });
+    }
+    return;
+  }
+
   // Access to the shared server: the operator token, or an admin's session.
   // A non-admin session is a valid identity but has no power over the shared
   // box yet — that waits for per-user isolation, at which point a session will
@@ -2562,10 +2651,7 @@ const server = createServer(async (req, res) => {
       return;
     }
 
-    if (url.pathname === "/api/wallets" && req.method === "GET") {
-      json(res, 200, await walletsView());
-      return;
-    }
+    // GET /api/wallets is served per-account above the gate.
 
     // Add wallets. Keys are accepted, stored, and never handed back.
     if (url.pathname === "/api/wallets" && req.method === "POST") {
@@ -2933,54 +3019,7 @@ const server = createServer(async (req, res) => {
       return;
     }
 
-    if (url.pathname === "/api/nfts" && req.method === "GET") {
-      const cfg = loadConfig(CONFIG_PATH);
-      const info = getChainInfo(cfg.chainId);
-      if (!info) throw new Error(`chain ${cfg.chainId} isn't in the registry`);
-
-      const onlyRaw = url.searchParams.get("collection");
-      const only =
-        onlyRaw && /^0x[0-9a-fA-F]{40}$/.test(onlyRaw) ? (onlyRaw as `0x${string}`) : undefined;
-
-      const addresses = walletBook().map((w) => w.address);
-      const started = Date.now();
-      const client = makeReadClient(info.chain, readRpcs(cfg));
-
-      // Two queries cover every wallet and every collection, so there is
-      // nothing to discover first and nothing that can be missed.
-      const scan = await scanChain(client as never, addresses, { collection: only });
-      const tookMs = Date.now() - started;
-      log(
-        `nft scan: ${addresses.length} wallets → ${scan.totalTokens} tokens across ` +
-          `${scan.collections.length} collection(s) in ${tookMs}ms`,
-      );
-
-      json(res, 200, {
-        chain: info.label,
-        explorerUrl: info.explorerUrl,
-        openSeaSlug: info.openSeaSlug,
-        checked: addresses.length,
-        withTokens: scan.walletsWithTokens,
-        totalTokens: scan.totalTokens,
-        collections: scan.collections.map((c) => ({
-          collection: c.collection,
-          name: c.name,
-          totalTokens: c.totalTokens,
-          wallets: c.wallets,
-        })),
-        // Flat shape too, so the sweep panel keeps working unchanged.
-        holdings: scan.collections.flatMap((c) =>
-          c.wallets.map((w) => ({
-            wallet: w.wallet,
-            collection: c.collection,
-            collectionName: c.name,
-            tokenIds: w.tokenIds,
-          })),
-        ),
-        tookMs,
-      });
-      return;
-    }
+    // GET /api/nfts is served per-account above the gate.
 
     if (url.pathname === "/api/sweep-nfts" && req.method === "POST") {
       if (activeJobId) {
