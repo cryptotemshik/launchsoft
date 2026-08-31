@@ -128,6 +128,7 @@ import {
   loadBilling,
   refund as refundBalance,
   spendForFunding,
+  withdraw as withdrawBalance,
 } from "./billing";
 import {
   addCredited,
@@ -1227,6 +1228,39 @@ async function sweepDeposit(
 
 function bigMin(a: bigint, b: bigint): bigint {
   return a < b ? a : b;
+}
+
+/**
+ * The exact wei that left a wallet across a set of transactions.
+ *
+ * Broadcasting returns as soon as a node accepts the transaction, not once it
+ * is mined, so a balance read straight after would still show the old figure.
+ * This waits for the receipts and then measures the real drop — value and the
+ * gas it actually cost — which is what a ledger debit must match so the balance
+ * and the wallet never drift. Falls back to a caller estimate if the waits or
+ * the reads fail, or if a deposit landing mid-flight masks the drop.
+ */
+async function settledOutflow(
+  client: ReturnType<typeof makeReadClient>,
+  address: `0x${string}`,
+  before: bigint | null,
+  hashes: readonly `0x${string}`[],
+  fallback: bigint,
+): Promise<bigint> {
+  for (const hash of hashes) {
+    try {
+      await client.waitForTransactionReceipt({ hash, timeout: 30_000 });
+    } catch {
+      /* keep going — a slow or dropped receipt must not strand the debit */
+    }
+  }
+  if (before == null) return fallback;
+  try {
+    const after = await client.getBalance({ address });
+    return before > after ? before - after : fallback;
+  } catch {
+    return fallback;
+  }
 }
 
 /**
@@ -3630,11 +3664,10 @@ const server = createServer(async (req, res) => {
             lines.push(line);
             log(`fund-from-deposit[${a.address}]: ${line}`);
           });
-          const after = await client.getBalance({ address: dep }).catch(() => null);
-          let outflow =
-            before != null && after != null && before > after
-              ? before - after
-              : BigInt(result.requiredWei);
+          const hashes = result.outcomes
+            .map((o) => o.txHash)
+            .filter((h): h is `0x${string}` => typeof h === "string");
+          let outflow = await settledOutflow(client, dep, before, hashes, BigInt(result.requiredWei));
           outflow = bigMin(outflow, balanceOf(a.cfgPath));
           if (outflow > 0n) {
             spendForFunding(a.cfgPath, outflow, `funded ${result.funded} wallet(s) from deposit`);
@@ -3642,6 +3675,91 @@ const server = createServer(async (req, res) => {
           }
           audit("funds.fromDeposit", { targets: result.funded, wei: outflow.toString(), account: a.address });
           json(res, 200, { ...result, logs: lines, spentWei: outflow.toString(), balanceWei: balanceOf(a.cfgPath).toString() });
+          return;
+        }
+
+        // ── Withdraw your balance to your own wallet ─────────────────────────
+        // The way out of the custody: the service moves ETH from your deposit
+        // wallet to the wallet you signed in with — an address you have proven
+        // you control, so a stolen session can only ever send your money back to
+        // you. What you can take is the ledger balance; the fees still owed to
+        // the owner (the surplus the wallet holds over your balance) are never
+        // touched. The exact wei that leaves is booked, keeping ledger and
+        // wallet in step.
+        if (url.pathname === "/api/withdraw" && req.method === "POST") {
+          const body = await readBody(req);
+          const cfg = loadConfig(a.cfgPath);
+          const info = getChainInfo(cfg.chainId);
+          if (!info) throw new Error(`chain ${cfg.chainId} isn't in the registry`);
+          const dep = depositAddress(a.cfgPath);
+          if (!dep) throw new Error("no deposit wallet yet — open the profile once to create one");
+          const key = depositKey(a.cfgPath, keystorePassphrase());
+          if (!key) throw new Error("the deposit key is unavailable");
+          const to = a.address as `0x${string}`; // your own, signed-in wallet
+          const have = balanceOf(a.cfgPath);
+          if (have <= 0n) throw new Error("your balance is empty");
+
+          const maxFeePerGas = parseGwei(cfg.gas.maxFeeGwei);
+          const maxPriorityFeePerGas = parseGwei(cfg.gas.tipGwei);
+          const gasCost = 21_000n * maxFeePerGas * 2n; // 2× margin for base-fee drift
+
+          // Either a set amount, or everything — "everything" means the whole
+          // balance minus the gas the transfer itself burns.
+          let value: bigint;
+          if (body.all === true) {
+            value = have - gasCost;
+            if (value <= 0n) throw new Error("balance is too small to cover the withdrawal gas");
+          } else {
+            const amt = typeof body.amountEth === "string" ? body.amountEth.trim() : "";
+            if (!/^\d+(\.\d+)?$/.test(amt)) throw new Error("amountEth must be a plain number");
+            value = parseEther(amt);
+            if (value <= 0n) throw new Error("amount must be greater than zero");
+            if (value + gasCost > have) {
+              json(res, 402, {
+                error: "not enough balance for that withdrawal plus gas — take less, or use 'all'",
+                needWei: (value + gasCost).toString(),
+                haveWei: have.toString(),
+              });
+              return;
+            }
+          }
+
+          if (body.dryRun !== false) {
+            json(res, 200, {
+              to,
+              valueWei: value.toString(),
+              haveWei: have.toString(),
+              estGasWei: gasCost.toString(),
+            });
+            return;
+          }
+
+          const client = makeReadClient(info.chain, readRpcs(cfg));
+          const before = await client.getBalance({ address: dep }).catch(() => null);
+          const account = privateKeyToAccount(key);
+          const wallet = createWalletClient({ account, chain: info.chain, transport: http() });
+          const hash = await wallet.sendTransaction({
+            to,
+            value,
+            gas: 21_000n,
+            maxFeePerGas,
+            maxPriorityFeePerGas,
+          });
+          log(`withdraw[${a.address}]: ${formatEther(value)} ETH → ${to} (${hash})`);
+          let outflow = await settledOutflow(client, dep, before, [hash], value + gasCost);
+          outflow = bigMin(outflow, balanceOf(a.cfgPath));
+          if (outflow > 0n) {
+            withdrawBalance(a.cfgPath, outflow, `withdrawal to ${to}`);
+            addSwept(a.cfgPath, outflow);
+          }
+          audit("funds.withdrawn", { to, wei: outflow.toString(), account: a.address });
+          json(res, 200, {
+            to,
+            txHash: hash,
+            valueWei: value.toString(),
+            spentWei: outflow.toString(),
+            balanceWei: balanceOf(a.cfgPath).toString(),
+          });
           return;
         }
       } catch (e) {

@@ -30,6 +30,7 @@ export type EntryKind =
   | "subscription"
   | "refund"
   | "funding"
+  | "withdrawal"
   | "admin-credit"
   | "admin-debit";
 
@@ -205,6 +206,32 @@ export function spendForFunding(
   return append(configPath, {
     at: nowMs,
     kind: "funding",
+    wei: (-amountWei).toString(),
+    note,
+  });
+}
+
+/**
+ * Take money out — a withdrawal of the account's own balance to its wallet.
+ *
+ * Like a funding spend, a real transfer out of the deposit wallet backs it, so
+ * the debit is the exact wei that left. Refused if the balance will not cover
+ * it. Kept a distinct kind from `funding` so a statement reads true: money that
+ * went to the account's own wallet, not into its snipe wallets.
+ */
+export function withdraw(
+  configPath: string,
+  amountWei: bigint,
+  note?: string,
+  nowMs = Date.now(),
+): BillingState {
+  if (amountWei <= 0n) throw new Error("a withdrawal must be positive");
+  if (balanceOf(configPath) < amountWei) {
+    throw new InsufficientBalance(amountWei, balanceOf(configPath));
+  }
+  return append(configPath, {
+    at: nowMs,
+    kind: "withdrawal",
     wei: (-amountWei).toString(),
     note,
   });

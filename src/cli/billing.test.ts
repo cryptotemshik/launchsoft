@@ -14,6 +14,7 @@ import {
   loadBilling,
   refund,
   spendForFunding,
+  withdraw,
 } from "./billing";
 
 let dir: string;
@@ -128,5 +129,27 @@ describe("funding snipe wallets from the balance", () => {
   it("refuses a non-positive funding spend", () => {
     deposit(cfg, ETH);
     expect(() => spendForFunding(cfg, 0n)).toThrow(/positive/);
+  });
+});
+
+describe("withdrawing the balance", () => {
+  it("takes the withdrawal from the balance and books it", () => {
+    deposit(cfg, ETH);
+    withdraw(cfg, ETH / 3n, "to 0xabc");
+    expect(balanceOf(cfg)).toBe(ETH - ETH / 3n);
+    const last = loadBilling(cfg).entries.at(-1)!;
+    expect(last.kind).toBe("withdrawal");
+    expect(last.wei).toBe((-(ETH / 3n)).toString());
+  });
+
+  it("refuses to withdraw more than the balance", () => {
+    deposit(cfg, ETH / 2n);
+    expect(() => withdraw(cfg, ETH, "greedy")).toThrow(InsufficientBalance);
+    expect(balanceOf(cfg)).toBe(ETH / 2n);
+  });
+
+  it("refuses a non-positive withdrawal", () => {
+    deposit(cfg, ETH);
+    expect(() => withdraw(cfg, 0n)).toThrow(/positive/);
   });
 });

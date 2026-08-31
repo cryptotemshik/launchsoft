@@ -52,6 +52,8 @@ export default function ProfileTab() {
   const [billing, setBilling] = useState<Billing | null>(null);
   const [subscribing, setSubscribing] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [withdrawAmount, setWithdrawAmount] = useState("");
+  const [withdrawing, setWithdrawing] = useState(false);
 
   const load = useCallback(async () => {
     if (!base || !token) {
@@ -92,6 +94,27 @@ export default function ProfileTab() {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setSubscribing(false);
+    }
+  }
+
+  async function withdraw(all: boolean) {
+    setWithdrawing(true);
+    setError(null);
+    setSavedNote(null);
+    try {
+      const body = all ? { all: true } : { amountEth: withdrawAmount.trim() };
+      const r = (await call("/api/withdraw", {
+        method: "POST",
+        body: JSON.stringify(body),
+      })) as unknown as { valueWei?: string };
+      const eth = r.valueWei ? (Number(r.valueWei) / 1e18).toFixed(5) : "";
+      setSavedNote(`withdrew ${eth} ETH to your wallet`);
+      setWithdrawAmount("");
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setWithdrawing(false);
     }
   }
 
@@ -272,6 +295,39 @@ export default function ProfileTab() {
                   </p>
                 </div>
               ) : null}
+
+              <div className="field" style={{ marginTop: 14 }}>
+                <label>withdraw to your wallet ({shortAddress(me.address)})</label>
+                <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                  <input
+                    style={{ width: 130 }}
+                    value={withdrawAmount}
+                    onChange={(e) => setWithdrawAmount(e.target.value)}
+                    placeholder="0.05"
+                    inputMode="decimal"
+                    spellCheck={false}
+                  />
+                  <button
+                    className="secondary"
+                    disabled={withdrawing || !withdrawAmount.trim() || Number(billing.balanceEth) <= 0}
+                    onClick={() => void withdraw(false)}
+                  >
+                    {withdrawing ? <span className="spin">…</span> : "withdraw"}
+                  </button>
+                  <button
+                    className="secondary"
+                    disabled={withdrawing || Number(billing.balanceEth) <= 0}
+                    onClick={() => void withdraw(true)}
+                    title="withdraw the whole balance"
+                  >
+                    all
+                  </button>
+                </div>
+                <p className="dim hint" style={{ marginBottom: 0 }}>
+                  Goes to the wallet you signed in with — the one address you have
+                  proven you control. Fees owed to the service stay behind.
+                </p>
+              </div>
 
               <div style={{ marginTop: 14, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
                 <button className="primary" disabled={subscribing} onClick={() => void subscribe()}>
