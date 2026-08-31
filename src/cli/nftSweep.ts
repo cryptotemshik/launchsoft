@@ -16,7 +16,6 @@
  * different wallets are independent, and all of it goes out together.
  */
 import { createPublicClient, encodeFunctionData, parseGwei, type Hex, type PublicClient } from "viem";
-import { privateKeyToAccount, type PrivateKeyAccount } from "viem/accounts";
 import { getChainInfo } from "../chains";
 import { mapWithLimit, readTransport } from "../lib/rpcRead";
 import {
@@ -34,6 +33,7 @@ import {
   type RpcEndpoint,
 } from "../lib/rpcBlast";
 import { nodeSender } from "./nodeSender";
+import type { Signer, UnsignedTx } from "./signer";
 import type { FundingGas } from "./funding";
 
 /** An ERC-721 transferFrom costs well under this; unused gas is refunded. */
@@ -177,7 +177,9 @@ export interface SweepNftsOptions {
   extraRpcs: string[];
   gas: FundingGas;
   /** Wallets to empty, with the tokens each one should move. */
-  holdings: { key: `0x${string}`; items: { collection: `0x${string}`; tokenId: string }[] }[];
+  holdings: { wallet: `0x${string}`; items: { collection: `0x${string}`; tokenId: string }[] }[];
+  /** Turns unsigned transfers into raw signed ones. Keys never enter here. */
+  signer: Signer;
   to: `0x${string}`;
   dryRun: boolean;
 }
@@ -212,7 +214,7 @@ export async function sweepNfts(
   if (maxPriorityFeePerGas > maxFeePerGas) throw new Error("tip cannot exceed max fee");
 
   const senders = opts.holdings
-    .map((h) => ({ account: privateKeyToAccount(h.key), items: h.items }))
+    .map((h) => ({ address: h.wallet, items: h.items }))
     .filter((s) => s.items.length > 0);
   const total = senders.reduce((n, s) => n + s.items.length, 0);
 
@@ -227,7 +229,7 @@ export async function sweepNfts(
       total,
       outcomes: senders.flatMap((s) =>
         s.items.map((i) => ({
-          wallet: s.account.address,
+          wallet: s.address,
           collection: i.collection,
           tokenId: i.tokenId,
           status: "rejected" as const,
@@ -240,7 +242,7 @@ export async function sweepNfts(
   // One wallet moving several tokens needs sequential nonces; wallets are
   // independent of each other, so those run in parallel.
   const startNonces = await mapWithLimit(senders, (s) =>
-    client.getTransactionCount({ address: s.account.address, blockTag: "pending" }),
+    client.getTransactionCount({ address: s.address, blockTag: "pending" }),
   );
 
   interface Prepared {
@@ -249,37 +251,34 @@ export async function sweepNfts(
     tokenId: string;
     blast: ReturnType<typeof prepareBlast>;
   }
-  const prepared: Prepared[] = [];
-  await Promise.all(
-    senders.map(async (s, si) => {
-      const account: PrivateKeyAccount = s.account;
-      for (let i = 0; i < s.items.length; i++) {
-        const item = s.items[i];
-        const data: Hex = encodeFunctionData({
-          abi: transferFromAbi,
-          functionName: "transferFrom",
-          args: [account.address, opts.to, BigInt(item.tokenId)],
-        });
-        const raw = await account.signTransaction({
-          chainId: info.id,
-          to: item.collection,
-          data,
-          value: 0n,
-          nonce: startNonces[si] + i,
-          gas: NFT_TRANSFER_GAS,
-          maxFeePerGas,
-          maxPriorityFeePerGas,
-          type: "eip1559",
-        });
-        prepared.push({
-          wallet: account.address,
-          collection: item.collection,
-          tokenId: item.tokenId,
-          blast: prepareBlast(raw),
-        });
-      }
-    }),
-  );
+  // Flatten wallet × token into one batch, sign it in a single call to the
+  // signer, then map the raw transactions back in the same order. The keys
+  // never enter this process when the signer is across a socket.
+  const unsigned: UnsignedTx[] = [];
+  const meta: { wallet: `0x${string}`; collection: `0x${string}`; tokenId: string }[] = [];
+  senders.forEach((s, si) => {
+    s.items.forEach((item, i) => {
+      const data: Hex = encodeFunctionData({
+        abi: transferFromAbi,
+        functionName: "transferFrom",
+        args: [s.address, opts.to, BigInt(item.tokenId)],
+      });
+      unsigned.push({
+        from: s.address,
+        chainId: info.id,
+        to: item.collection,
+        data,
+        value: "0",
+        nonce: startNonces[si] + i,
+        gas: NFT_TRANSFER_GAS.toString(),
+        maxFeePerGas: maxFeePerGas.toString(),
+        maxPriorityFeePerGas: maxPriorityFeePerGas.toString(),
+      });
+      meta.push({ wallet: s.address, collection: item.collection, tokenId: item.tokenId });
+    });
+  });
+  const raw = await opts.signer.sign(unsigned);
+  const prepared: Prepared[] = raw.map((r, i) => ({ ...meta[i], blast: prepareBlast(r) }));
   onLog(`signed ${prepared.length} transfer(s)`);
 
   await warmEndpoints(endpoints, prepared.length, nodeSender);

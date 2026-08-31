@@ -20,7 +20,6 @@ import {
   parseGwei,
   type PublicClient,
 } from "viem";
-import { privateKeyToAccount, type PrivateKeyAccount } from "viem/accounts";
 import { getChainInfo } from "../chains";
 import { mapWithLimit, readTransport } from "../lib/rpcRead";
 import {
@@ -32,6 +31,7 @@ import {
   type RpcEndpoint,
 } from "../lib/rpcBlast";
 import { nodeSender } from "./nodeSender";
+import type { Signer, UnsignedTx } from "./signer";
 
 /** A plain ETH transfer costs 21000; the margin covers chain-specific extras. */
 export const TRANSFER_GAS = 30_000n;
@@ -55,9 +55,11 @@ interface Ctx {
   chainId: number;
   maxFeePerGas: bigint;
   maxPriorityFeePerGas: bigint;
+  /** Turns unsigned transfers into raw signed ones. Keys never enter here. */
+  signer: Signer;
 }
 
-async function context(chainId: number, extraRpcs: string[], gas: FundingGas): Promise<Ctx> {
+async function context(chainId: number, extraRpcs: string[], gas: FundingGas, signer: Signer): Promise<Ctx> {
   const info = getChainInfo(chainId);
   if (!info) throw new Error(`chain ${chainId} isn't in the registry`);
   const readUrl = extraRpcs[0] ?? info.chain.rpcUrls.default.http[0];
@@ -80,30 +82,30 @@ async function context(chainId: number, extraRpcs: string[], gas: FundingGas): P
       `max fee (${gas.maxFeeGwei} gwei) is below the current base fee — every node would reject it`,
     );
   }
-  return { client, endpoints, chainId, maxFeePerGas, maxPriorityFeePerGas };
+  return { client, endpoints, chainId, maxFeePerGas, maxPriorityFeePerGas, signer };
 }
 
 /** Sign, blast, and report — shared by both directions. */
 async function fire(
   ctx: Ctx,
-  txs: { from: PrivateKeyAccount; to: `0x${string}`; value: bigint; nonce: number; tag: `0x${string}` }[],
+  txs: { from: `0x${string}`; to: `0x${string}`; value: bigint; nonce: number; tag: `0x${string}` }[],
   onLog: (s: string) => void,
 ): Promise<TransferOutcome[]> {
-  const prepared = await Promise.all(
-    txs.map(async (t) => {
-      const raw = await t.from.signTransaction({
-        chainId: ctx.chainId,
-        to: t.to,
-        value: t.value,
-        nonce: t.nonce,
-        gas: TRANSFER_GAS,
-        maxFeePerGas: ctx.maxFeePerGas,
-        maxPriorityFeePerGas: ctx.maxPriorityFeePerGas,
-        type: "eip1559",
-      });
-      return { tag: t.tag, value: t.value, blast: prepareBlast(raw) };
-    }),
-  );
+  // One batch to the signer, which resolves each `from` to its key, checks the
+  // policy, and returns the raw transactions in order. The keys never enter
+  // this process when the signer is across a socket.
+  const unsigned: UnsignedTx[] = txs.map((t) => ({
+    from: t.from,
+    chainId: ctx.chainId,
+    to: t.to,
+    value: t.value.toString(),
+    nonce: t.nonce,
+    gas: TRANSFER_GAS.toString(),
+    maxFeePerGas: ctx.maxFeePerGas.toString(),
+    maxPriorityFeePerGas: ctx.maxPriorityFeePerGas.toString(),
+  }));
+  const raw = await ctx.signer.sign(unsigned);
+  const prepared = txs.map((t, i) => ({ tag: t.tag, value: t.value, blast: prepareBlast(raw[i]) }));
   onLog(`signed ${prepared.length} transfer(s)`);
 
   await warmEndpoints(ctx.endpoints, txs.length, nodeSender);
@@ -133,8 +135,10 @@ export interface DisperseOptions {
   chainId: number;
   extraRpcs: string[];
   gas: FundingGas;
-  /** The wallet paying out. */
-  fromKey: `0x${string}`;
+  /** The wallet paying out, by address. Its key is the signer's. */
+  from: `0x${string}`;
+  /** Turns unsigned transfers into raw signed ones. */
+  signer: Signer;
   /** Wallets to top up. */
   targets: `0x${string}`[];
   /** Amount each target receives, in wei. Ignored when topUpToWei is set. */
@@ -197,8 +201,8 @@ export async function disperse(
   opts: DisperseOptions,
   onLog: (s: string) => void,
 ): Promise<DisperseResult> {
-  const ctx = await context(opts.chainId, opts.extraRpcs, opts.gas);
-  const from = privateKeyToAccount(opts.fromKey);
+  const ctx = await context(opts.chainId, opts.extraRpcs, opts.gas, opts.signer);
+  const from = { address: opts.from };
 
   // Balances decide who actually needs money, so an aborted run can be
   // repeated without double-funding anyone.
@@ -279,7 +283,7 @@ export async function disperse(
   const outcomes = await fire(
     ctx,
     plan.map((p, i) => ({
-      from,
+      from: from.address,
       to: p.to,
       value: p.value,
       nonce: startNonce + i,
@@ -301,8 +305,10 @@ export interface CollectOptions {
   chainId: number;
   extraRpcs: string[];
   gas: FundingGas;
-  /** Wallets to empty. */
-  keys: `0x${string}`[];
+  /** Wallets to empty, by address. Their keys are the signer's. */
+  wallets: `0x${string}`[];
+  /** Turns unsigned transfers into raw signed ones. */
+  signer: Signer;
   /** Where everything goes. */
   to: `0x${string}`;
   /** Don't bother with wallets holding less than this (dust). */
@@ -322,8 +328,8 @@ export async function collect(
   opts: CollectOptions,
   onLog: (s: string) => void,
 ): Promise<CollectResult> {
-  const ctx = await context(opts.chainId, opts.extraRpcs, opts.gas);
-  const accounts = opts.keys.map((k) => privateKeyToAccount(k));
+  const ctx = await context(opts.chainId, opts.extraRpcs, opts.gas, opts.signer);
+  const accounts = opts.wallets.map((address) => ({ address }));
   const reserve = TRANSFER_GAS * ctx.maxFeePerGas;
   const min = opts.minWei ?? reserve * 2n;
 
@@ -335,7 +341,7 @@ export async function collect(
   const balances = accounts.map((a, i) => ({ a, bal: read[i] }));
 
   const outcomes: TransferOutcome[] = [];
-  const sendable: { from: PrivateKeyAccount; value: bigint }[] = [];
+  const sendable: { from: `0x${string}`; value: bigint }[] = [];
   for (const { a, bal } of balances) {
     // A wallet can only send what's left after the fee it must reserve.
     const value = bal - reserve;
@@ -348,7 +354,7 @@ export async function collect(
       });
       continue;
     }
-    sendable.push({ from: a, value });
+    sendable.push({ from: a.address, value });
   }
 
   const total = sendable.reduce((n, s) => n + s.value, 0n);
@@ -367,7 +373,7 @@ export async function collect(
       outcomes: [
         ...outcomes,
         ...sendable.map((s) => ({
-          address: s.from.address,
+          address: s.from,
           status: "skipped" as const,
           detail: "dry run",
           amountWei: s.value.toString(),
@@ -378,7 +384,7 @@ export async function collect(
 
   // Independent senders → independent nonces, nothing to sequence.
   const nonces = await mapWithLimit(sendable, (x) =>
-    ctx.client.getTransactionCount({ address: x.from.address, blockTag: "pending" }),
+    ctx.client.getTransactionCount({ address: x.from, blockTag: "pending" }),
   );
   const sent = await fire(
     ctx,
@@ -387,7 +393,7 @@ export async function collect(
       to: opts.to,
       value: s.value,
       nonce: nonces[i],
-      tag: s.from.address,
+      tag: s.from,
     })),
     onLog,
   );

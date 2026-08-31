@@ -1906,22 +1906,14 @@ async function consolidate(job: Job) {
 
   const outcomes = job.result?.outcomes ?? [];
   const collection = job.request.collection;
-  const entries = loadKeyEntries(CONFIG_PATH, cfg.keysFile);
-  const keyByAddress = new Map(
-    entries.map((e) => [privateKeyToAccount(e.key).address.toLowerCase(), e.key] as const),
-  );
-
   const holdings = outcomes
     .filter((o) => o.status === "mined" && (o.tokenIds?.length ?? 0) > 0)
     // A wallet that is itself the destination has nothing to move.
     .filter((o) => o.address.toLowerCase() !== to.toLowerCase())
     .map((o) => ({
-      key: keyByAddress.get(o.address.toLowerCase()),
+      wallet: o.address as `0x${string}`,
       items: (o.tokenIds ?? []).map((tokenId) => ({ collection, tokenId })),
-    }))
-    .filter((h): h is { key: `0x${string}`; items: { collection: `0x${string}`; tokenId: string }[] } =>
-      Boolean(h.key),
-    );
+    }));
 
   if (holdings.length === 0) return;
   try {
@@ -1931,6 +1923,7 @@ async function consolidate(job: Job) {
         extraRpcs: job.request.extraRpcs,
         gas: { maxFeeGwei: job.request.gas.maxFeeGwei, tipGwei: job.request.gas.tipGwei },
         holdings,
+        signer: getSigner(),
         to,
         dryRun: false,
       },
@@ -2723,7 +2716,7 @@ const server = createServer(async (req, res) => {
         const address = privateKeyToAccount(e.key).address;
         const held = byWallet.get(address.toLowerCase()) ?? [];
         return {
-          key: e.key,
+          wallet: address,
           items: held.flatMap((h) =>
             // Never move a token to the wallet it already sits on.
             address.toLowerCase() === to.toLowerCase()
@@ -2743,6 +2736,7 @@ const server = createServer(async (req, res) => {
           extraRpcs: readRpcs(cfg),
           gas: { maxFeeGwei: cfg.gas.maxFeeGwei, tipGwei: cfg.gas.tipGwei },
           holdings: perWallet,
+          signer: getSigner(),
           to: to as `0x${string}`,
           dryRun: body.dryRun !== false,
         },
@@ -2777,16 +2771,23 @@ const server = createServer(async (req, res) => {
       const entries = loadKeyEntries(CONFIG_PATH, cfg.keysFile);
       if (entries.length === 0) throw new Error("no wallets on the server to fund");
 
-      // The payer is either one of the stored wallets, or a one-off key that
-      // is used for this call and never written anywhere.
-      let fromKey: `0x${string}`;
+      // The payer is either one of the stored wallets — signed by the shared
+      // signer, whose keys may be in another process — or a one-off key pasted
+      // for this call alone. A one-off key gets a signer of its very own,
+      // holding nothing but that key: it is never written anywhere and never
+      // reaches the daemon, and it is gone when this request ends.
+      let fromAddress: `0x${string}`;
+      let disperseSigner: Signer;
       if (typeof body.fromKey === "string" && body.fromKey.trim()) {
-        fromKey = normalizePrivateKey(body.fromKey);
+        const oneOff = normalizePrivateKey(body.fromKey);
+        fromAddress = privateKeyToAccount(oneOff).address;
+        disperseSigner = makeInProcessSigner({ loadKeys: () => [{ key: oneOff }], policy: policyContext });
       } else if (typeof body.fromAddress === "string") {
         const want = body.fromAddress.toLowerCase();
         const hit = entries.find((e) => privateKeyToAccount(e.key).address.toLowerCase() === want);
         if (!hit) throw new Error("that source wallet isn't on the server");
-        fromKey = hit.key;
+        fromAddress = privateKeyToAccount(hit.key).address;
+        disperseSigner = getSigner();
       } else {
         throw new Error("supply either fromKey (a one-off payer) or fromAddress (a stored wallet)");
       }
@@ -2810,7 +2811,7 @@ const server = createServer(async (req, res) => {
         if (amountWei <= 0n) throw new Error("amountEth must be greater than zero");
       }
 
-      const payer = privateKeyToAccount(fromKey).address.toLowerCase();
+      const payer = fromAddress.toLowerCase();
       const firing = walletsOfActiveJob();
       if (firing?.has(payer)) {
         json(res, 409, {
@@ -2838,7 +2839,8 @@ const server = createServer(async (req, res) => {
           chainId: cfg.chainId,
           extraRpcs: readRpcs(cfg),
           gas: { maxFeeGwei: cfg.gas.maxFeeGwei, tipGwei: cfg.gas.tipGwei },
-          fromKey,
+          from: fromAddress,
+          signer: disperseSigner,
           targets,
           amountWei,
           topUpToWei,
@@ -2857,7 +2859,7 @@ const server = createServer(async (req, res) => {
         // The payer's address rather than the payer's key, obviously — and the
         // audit module would drop the key anyway.
         audit("funds.dispersed", {
-          from: privateKeyToAccount(fromKey).address,
+          from: fromAddress,
           targets: targets.length,
         });
       }
@@ -2896,7 +2898,8 @@ const server = createServer(async (req, res) => {
           chainId: cfg.chainId,
           extraRpcs: readRpcs(cfg),
           gas: { maxFeeGwei: cfg.gas.maxFeeGwei, tipGwei: cfg.gas.tipGwei },
-          keys: entries.map((e) => e.key),
+          wallets: entries.map((e) => privateKeyToAccount(e.key).address),
+          signer: getSigner(),
           to: to as `0x${string}`,
           dryRun: body.dryRun !== false,
         },
