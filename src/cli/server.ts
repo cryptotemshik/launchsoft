@@ -88,7 +88,7 @@ import {
 import { readDrop, runSnipe, waveSize, type RunOptions, type RunResult } from "./runner";
 import { formatMintReport, sendTelegram, type MintedWallet } from "../lib/telegram";
 import { startTelegramBot } from "./telegramBot";
-import { addUpcoming, annotateUpcoming, loadUpcoming, removeUpcoming } from "./upcomingStore";
+import { addUpcoming, annotateUpcoming, loadUpcoming, removeUpcoming, sameDrop } from "./upcomingStore";
 import { loadJobs, restoreStatus, saveJobs, type StoredJob, type StoredStatus } from "./jobStore";
 import { audit as auditLine, type AuditEvent } from "./audit";
 import { judgeTransaction, type PolicyContext } from "./signPolicy";
@@ -106,9 +106,11 @@ import {
   type Session,
 } from "./auth";
 import {
+  accountConfigPath,
   accountsRoot,
   ensureAccount,
   getAccount,
+  isPro,
   listAccounts,
   tierOf,
   updateAccount,
@@ -153,6 +155,8 @@ const ORIGINS = (process.env.SNIPE_ORIGINS ?? "*").split(",").map((s) => s.trim(
 const CONFIG_PATH = process.env.SNIPE_CONFIG ?? "snipe.config.json";
 /** Where each wallet's own isolated world lives (accounts.ts). */
 const ACCOUNTS_ROOT = accountsRoot();
+/** Free-plan ceilings. Pro (and the owner) are unlimited. */
+const FREE_WATCHLIST_MAX = 3;
 /** How far ahead of a stage a job is armed (read nonces, pre-sign, warm). */
 const ARM_LEAD_MS = envNumber(process.env.SNIPE_ARM_LEAD_MS, 120_000);
 /** Set to 0 to stop the server pulling its own updates. */
@@ -356,6 +360,43 @@ function saveSessions(): void {
 function requestSession(req: IncomingMessage): Session | null {
   const token = (req.headers.authorization ?? "").replace(/^Bearer\s+/i, "");
   return sessionOf(token);
+}
+
+/**
+ * Who is making this request, and whose world they act in.
+ *
+ * The keystone of isolation: a route that reads or writes account data asks
+ * this, then hands the returned `cfgPath` to the store — and the store's
+ * derived files (jobs, watchlist, keys) follow. Three ways in:
+ *
+ *  - the operator token → the main world (the box's own config), full power;
+ *  - an admin's wallet session → the same main world, so the owner sees the
+ *    same wallets and drops whether they used the token or signed in;
+ *  - any other wallet session → that wallet's own isolated world.
+ *
+ * Null means no valid credential at all. This does not by itself gate
+ * admin-only actions — callers check `.admin` for those.
+ */
+interface Acting {
+  cfgPath: string;
+  /** The signed-in address, or null when the operator token was used. */
+  address: `0x${string}` | null;
+  admin: boolean;
+}
+function acting(req: IncomingMessage): Acting | null {
+  if (tokenOk(req.headers.authorization)) {
+    return { cfgPath: CONFIG_PATH, address: null, admin: true };
+  }
+  const sess = requestSession(req);
+  if (!sess) return null;
+  if (isAdmin(sess.address)) {
+    return { cfgPath: CONFIG_PATH, address: sess.address, admin: true };
+  }
+  return {
+    cfgPath: accountConfigPath(ACCOUNTS_ROOT, sess.address),
+    address: sess.address,
+    admin: false,
+  };
 }
 
 function cors(req: IncomingMessage, res: ServerResponse) {
@@ -2310,6 +2351,101 @@ const server = createServer(async (req, res) => {
     return;
   }
 
+  // ── Per-account routes ──────────────────────────────────────────────────
+  // These sit above the shared-server gate because they are each account's
+  // own data, not the box's: a regular wallet session reaches its own world
+  // (acting().cfgPath), the owner reaches the main one. Everything below the
+  // gate is still operator/admin-only until it too is scoped.
+
+  if (url.pathname === "/api/upcoming") {
+    const a = acting(req);
+    if (!a) {
+      json(res, 401, { error: "sign in with your wallet first" });
+      return;
+    }
+    const info = getChainInfo(loadConfig(a.cfgPath).chainId);
+
+    if (req.method === "GET") {
+      json(res, 200, {
+        upcoming: sortByDate(loadUpcoming(a.cfgPath)),
+        openSeaSlug: info?.openSeaSlug,
+      });
+      return;
+    }
+
+    if (req.method === "POST") {
+      const body = await readBody(req);
+      const built = buildUpcoming(
+        {
+          name: String(body.name ?? ""),
+          twitter: String(body.twitter ?? ""),
+          contract: body.contract === undefined ? undefined : String(body.contract),
+          supply: body.supply === undefined ? undefined : String(body.supply),
+          when: body.when === undefined ? undefined : String(body.when),
+        },
+        Math.floor(Date.now() / 1000),
+      );
+      if ("error" in built) {
+        json(res, 400, { error: built.error });
+        return;
+      }
+      // Free accounts watch a handful of drops; Pro (and the owner) are
+      // unlimited. Counted before the add, and a drop already on the list
+      // never counts against the cap (re-adding it is a no-op below).
+      if (a.address && !a.admin) {
+        const acct = getAccount(ACCOUNTS_ROOT, a.address);
+        const already = loadUpcoming(a.cfgPath);
+        const isNew = !already.some((u) => sameDrop(u, built.mint));
+        if (isNew && (!acct || !isPro(acct)) && already.length >= FREE_WATCHLIST_MAX) {
+          json(res, 402, {
+            error: `the free plan watches up to ${FREE_WATCHLIST_MAX} drops — upgrade to Pro for an unlimited watchlist`,
+            limit: FREE_WATCHLIST_MAX,
+            tier: "free",
+          });
+          return;
+        }
+      }
+      const { list, duplicate } = addUpcoming(a.cfgPath, built.mint);
+      if (duplicate) {
+        json(res, 200, { added: duplicate, duplicate: true, upcoming: sortByDate(list) });
+        return;
+      }
+      json(res, 200, { added: built.mint, upcoming: sortByDate(list) });
+      return;
+    }
+
+    if (req.method === "PATCH") {
+      const id = url.searchParams.get("id") ?? "";
+      const body = await readBody(req);
+      const wanted = body.color;
+      if (wanted !== undefined && !isPickable(wanted)) {
+        json(res, 400, { error: `color must be one of ${PICKABLE.join(", ")}` });
+        return;
+      }
+      const patch: { color?: string | undefined; note?: string | undefined } = {};
+      if ("color" in body) patch.color = wanted as string | undefined;
+      if ("note" in body) patch.note = cleanNote(body.note);
+      const { updated, list } = annotateUpcoming(a.cfgPath, id, patch);
+      json(res, updated ? 200 : 404, {
+        updated,
+        upcoming: sortByDate(list),
+        ...(updated ? {} : { error: `no upcoming mint with id ${id}` }),
+      });
+      return;
+    }
+
+    if (req.method === "DELETE") {
+      const id = url.searchParams.get("id") ?? "";
+      const { removed, list } = removeUpcoming(a.cfgPath, id);
+      json(res, removed ? 200 : 404, {
+        removed: removed?.name,
+        upcoming: sortByDate(list),
+        ...(removed ? {} : { error: `no upcoming mint with id ${id}` }),
+      });
+      return;
+    }
+  }
+
   // Access to the shared server: the operator token, or an admin's session.
   // A non-admin session is a valid identity but has no power over the shared
   // box yet — that waits for per-user isolation, at which point a session will
@@ -2747,86 +2883,8 @@ const server = createServer(async (req, res) => {
       return;
     }
 
-    if (url.pathname === "/api/upcoming" && req.method === "GET") {
-      const info = getChainInfo(loadConfig(CONFIG_PATH).chainId);
-      json(res, 200, {
-        upcoming: sortByDate(loadUpcoming(CONFIG_PATH)),
-        // So a row with a contract can link the same way every other table
-        // in the app does.
-        openSeaSlug: info?.openSeaSlug,
-      });
-      return;
-    }
-
-    /**
-     * Add a drop from the panel rather than from the bot.
-     *
-     * Same four fields and the same validation — they share `buildUpcoming`,
-     * so a name the bot accepts cannot be one the form rejects.
-     */
-    if (url.pathname === "/api/upcoming" && req.method === "POST") {
-      const body = await readBody(req);
-      const built = buildUpcoming(
-        {
-          name: String(body.name ?? ""),
-          twitter: String(body.twitter ?? ""),
-          contract: body.contract === undefined ? undefined : String(body.contract),
-          supply: body.supply === undefined ? undefined : String(body.supply),
-          when: body.when === undefined ? undefined : String(body.when),
-        },
-        Math.floor(Date.now() / 1000),
-      );
-      if ("error" in built) {
-        json(res, 400, { error: built.error });
-        return;
-      }
-      const { list, duplicate } = addUpcoming(CONFIG_PATH, built.mint);
-      if (duplicate) {
-        // Not an error: the caller wanted this drop watched and it is. Saying
-        // so as a failure would have the panel show a red button for the one
-        // outcome that is exactly what was asked for.
-        log(`upcoming: ${built.mint.name} is already on the list — not added twice`);
-        json(res, 200, { added: duplicate, duplicate: true, upcoming: sortByDate(list) });
-        return;
-      }
-      log(`upcoming: added ${built.mint.name} from the panel`);
-      json(res, 200, { added: built.mint, upcoming: sortByDate(list) });
-      return;
-    }
-
-    /** Paint one entry. The calendar is the only caller. */
-    if (url.pathname === "/api/upcoming" && req.method === "PATCH") {
-      const id = url.searchParams.get("id") ?? "";
-      const body = await readBody(req);
-      const wanted = body.color;
-      if (wanted !== undefined && !isPickable(wanted)) {
-        json(res, 400, { error: `color must be one of ${PICKABLE.join(", ")}` });
-        return;
-      }
-      // Only what the body actually carries is touched, so the colour picker
-      // and the note box can write without either clearing the other.
-      const patch: { color?: string | undefined; note?: string | undefined } = {};
-      if ("color" in body) patch.color = wanted as string | undefined;
-      if ("note" in body) patch.note = cleanNote(body.note);
-      const { updated, list } = annotateUpcoming(CONFIG_PATH, id, patch);
-      json(res, updated ? 200 : 404, {
-        updated,
-        upcoming: sortByDate(list),
-        ...(updated ? {} : { error: `no upcoming mint with id ${id}` }),
-      });
-      return;
-    }
-
-    if (url.pathname === "/api/upcoming" && req.method === "DELETE") {
-      const id = url.searchParams.get("id") ?? "";
-      const { removed, list } = removeUpcoming(CONFIG_PATH, id);
-      json(res, removed ? 200 : 404, {
-        removed: removed?.name,
-        upcoming: sortByDate(list),
-        ...(removed ? {} : { error: `no upcoming mint with id ${id}` }),
-      });
-      return;
-    }
+    // The watchlist/calendar routes moved above the shared-server gate so each
+    // account reaches its own — see the "/api/upcoming" block there.
 
     if (url.pathname === "/api/profit" && req.method === "GET") {
       // Reading every wallet's whole history takes far longer than the hundred
