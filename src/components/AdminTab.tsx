@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
+import { formatEther } from "viem";
 import { useRunnerApi } from "../lib/runnerClient";
+import { useActiveChain } from "../signer";
+import { fetchEthBalance, fetchTopHolders, type Holder } from "../lib/discoverHolders";
 import { shortAddress } from "./ConnectBar";
 
 /**
@@ -39,6 +42,10 @@ export default function AdminTab() {
   const [busy, setBusy] = useState(false);
   const [whales, setWhales] = useState<{ address: string; label?: string }[]>([]);
   const [influencers, setInfluencers] = useState<{ address: string; name: string; twitter?: string }[]>([]);
+  const chainInfo = useActiveChain();
+  const [discContract, setDiscContract] = useState("");
+  const [discBusy, setDiscBusy] = useState(false);
+  const [candidates, setCandidates] = useState<Holder[]>([]);
 
   const load = useCallback(async () => {
     if (!base || !token) return;
@@ -140,6 +147,42 @@ export default function AdminTab() {
     );
   }
 
+  async function discoverWhales() {
+    const api = chainInfo?.blockscoutApi;
+    if (!api) {
+      setError("this chain has no Blockscout API to read holders from");
+      return;
+    }
+    const contract = discContract.trim();
+    if (!/^0x[0-9a-fA-F]{40}$/.test(contract)) {
+      setError("paste a 0x collection contract to scan its holders");
+      return;
+    }
+    setDiscBusy(true);
+    setError(null);
+    setNote(null);
+    setCandidates([]);
+    try {
+      const holders = await fetchTopHolders(api, contract, 40);
+      // Enrich the top 20 with an ETH balance for a rough "size" read — the one
+      // figure we can price. Best-effort and rate-limit-friendly (sequential).
+      const withBal: Holder[] = [];
+      for (const h of holders) {
+        withBal.push(
+          withBal.length < 20 ? { ...h, balanceWei: await fetchEthBalance(api, h.address) } : h,
+        );
+      }
+      setCandidates(withBal);
+      if (holders.length === 0) setNote("no holders came back for that contract");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setDiscBusy(false);
+    }
+  }
+
+  const whaleSet = new Set(whales.map((w) => w.address.toLowerCase()));
+
   if (!base || !token) {
     return (
       <div className="panel">
@@ -217,6 +260,65 @@ export default function AdminTab() {
             ) : null}
           </tbody>
         </table>
+      </div>
+
+      {/* Discover whales from a collection's holders (runs in your browser, so
+          it clears the chain explorer's bot check). Ranks by holdings, with an
+          ETH balance for size — there is no USD floor feed for these NFTs. */}
+      <div style={{ marginTop: 24 }}>
+        <h3 style={{ marginBottom: 8 }}>Discover whales from a collection</h3>
+        <p className="dim" style={{ marginTop: 0, fontSize: 12 }}>
+          Paste a collection contract — its biggest holders are ranked here so you
+          can add them as whales. Sized by ETH balance (the one figure with a
+          price); NFT portfolio value has no floor feed on this chain.
+        </p>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+          <input
+            value={discContract}
+            onChange={(e) => setDiscContract(e.target.value)}
+            placeholder="0x… collection contract"
+            style={{ flex: 1, minWidth: 260, fontFamily: "var(--mono)" }}
+          />
+          <button className="primary" disabled={discBusy} onClick={() => void discoverWhales()}>
+            {discBusy ? <span className="spin">SCANNING</span> : "find holders"}
+          </button>
+        </div>
+        {candidates.length > 0 ? (
+          <ul style={{ listStyle: "none", padding: 0, margin: "10px 0 0", fontSize: 12 }}>
+            {candidates.map((h) => {
+              const already = whaleSet.has(h.address.toLowerCase());
+              return (
+                <li key={h.address} style={{ display: "flex", justifyContent: "space-between", gap: 8, padding: "3px 0" }}>
+                  <span className="mono-break" title={h.address}>
+                    {shortAddress(h.address)}
+                    <span className="dim">
+                      {" · "}holds {h.count}
+                      {h.balanceWei != null ? ` · ${Number(formatEther(BigInt(h.balanceWei))).toFixed(3)} ETH` : ""}
+                    </span>
+                  </span>
+                  {already ? (
+                    <span className="pill ok" style={{ fontSize: 10 }}>added</span>
+                  ) : (
+                    <button
+                      className="secondary"
+                      style={btn}
+                      disabled={busy}
+                      onClick={() =>
+                        void curatedAction(
+                          "/api/admin/whales",
+                          { method: "POST", body: JSON.stringify({ address: h.address, label: `holds ${h.count}` }) },
+                          `whale added: ${shortAddress(h.address)}`,
+                        )
+                      }
+                    >
+                      + whale
+                    </button>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        ) : null}
       </div>
 
       <div style={{ display: "flex", gap: 24, flexWrap: "wrap", marginTop: 24 }}>
