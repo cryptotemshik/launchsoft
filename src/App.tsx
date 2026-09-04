@@ -11,6 +11,7 @@ import RevealTab from "./components/RevealTab";
 import FundingTab from "./components/FundingTab";
 import ServerWalletsTab from "./components/ServerWalletsTab";
 import MintProfitPanel from "./components/MintProfitPanel";
+import WalletInspectTab from "./components/WalletInspectTab";
 import SnipeTab from "./components/SnipeTab";
 import StatusTab from "./components/StatusTab";
 import WalletsTab from "./components/WalletsTab";
@@ -57,6 +58,7 @@ type Tab =
   | "profile"
   | "admin"
   | "whales"
+  | "inspect"
 ;
 
 const TAB_ICON = {
@@ -76,6 +78,7 @@ const TAB_ICON = {
   profile: UserIcon,
   admin: ShieldIcon,
   whales: WhaleIcon,
+  inspect: EyeIcon,
 } as const;
 
 export default function App() {
@@ -147,6 +150,7 @@ export default function App() {
         {([
           ["wallets", "TRACKER"],
           ["whales", "WHALES"],
+          ["inspect", "INSPECT"],
           ["scanner", "SCANNER"],
           ["live", "LIVE"],
           ["calendar", "CALENDAR"],
@@ -281,6 +285,7 @@ export default function App() {
       {tab === "profile" ? <ProfileTab /> : null}
       {tab === "admin" && isAdmin ? <AdminTab /> : null}
       {tab === "whales" ? <WhaleAlertTab /> : null}
+      {tab === "inspect" ? <WalletInspectTab /> : null}
       <div className="footer">
         {info.label} · explorer:{" "}
         <a href={info.explorerUrl} target="_blank" rel="noreferrer">

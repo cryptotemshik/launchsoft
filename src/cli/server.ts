@@ -768,6 +768,96 @@ async function buildProfitReport(cfgPath = CONFIG_PATH): Promise<Record<string, 
 }
 
 /**
+ * The same cost-and-revenue read, but for any one address — the wallet
+ * inspector. There is no ledger for a stranger's wallet, so every figure comes
+ * from the chain: what its mints cost (gas + price, from the mint transactions
+ * themselves) and what its tokens have sold for (a token leaving while the
+ * balance rises in the same block). It is much lighter than the account report
+ * — one address, not a hundred — so it answers inline. NFT PnL only, which is
+ * what "OpenSea PnL" means; ERC-20 balances are a separate question.
+ */
+async function buildWalletReport(address: `0x${string}`): Promise<Record<string, unknown>> {
+  const cfg = loadConfig(CONFIG_PATH);
+  const info = getChainInfo(cfg.chainId);
+  if (!info) throw new Error(`chain ${cfg.chainId} isn't in the registry`);
+  const started = Date.now();
+  const client = makeReadClient(info.chain, scanRpcs(cfg));
+
+  const [balance, scan] = await Promise.all([
+    client.getBalance({ address }),
+    scanChain(client as never, [address]),
+  ]);
+  const [sales, mintTxs] = await Promise.all([
+    priceTransfers(client as never, scan.sent, [address]),
+    readMintTxs(client as never, scan.minted),
+  ]);
+  const minted = costByMintTx(mintTxs);
+  const salesByCollection = new Map<string, typeof sales>();
+  for (const s of sales) {
+    const key = s.collection.toLowerCase();
+    salesByCollection.set(key, [...(salesByCollection.get(key) ?? []), s]);
+  }
+
+  const seen = new Set<string>([
+    ...scan.collections.map((c) => c.collection.toLowerCase()),
+    ...minted.keys(),
+  ]);
+  const reports = [...seen].map((key) => {
+    const held = scan.collections.find((c) => c.collection.toLowerCase() === key);
+    const chain = minted.get(key);
+    const collection = (held?.collection ?? key) as `0x${string}`;
+    const mine = salesByCollection.get(key) ?? [];
+    const spend = chain ?? { gasWei: 0n, priceWei: 0n, tokens: 0, wallets: 0 };
+    const r = summarise(collection, spend, mine, held?.totalTokens ?? 0, held?.name);
+    return {
+      collection: r.collection,
+      collectionName: r.collectionName,
+      cost: {
+        gasWei: r.cost.gasWei.toString(),
+        priceWei: r.cost.priceWei.toString(),
+        tokens: r.cost.tokens,
+      },
+      soldTokens: r.soldTokens,
+      revenueWei: r.revenueWei.toString(),
+      netWei: r.netWei.toString(),
+      heldTokens: r.heldTokens,
+      unpricedSales: r.unpricedSales,
+    };
+  });
+  reports.sort((a, b) => b.heldTokens + b.soldTokens - (a.heldTokens + a.soldTokens));
+
+  // Totals across every collection — the one line the card leads with.
+  const spentWei = reports.reduce((n, r) => n + BigInt(r.cost.gasWei) + BigInt(r.cost.priceWei), 0n);
+  const revenueWei = reports.reduce((n, r) => n + BigInt(r.revenueWei), 0n);
+  const heldTokens = reports.reduce((n, r) => n + r.heldTokens, 0);
+  const soldTokens = reports.reduce((n, r) => n + r.soldTokens, 0);
+
+  return {
+    address,
+    chain: info.label,
+    explorerUrl: info.explorerUrl,
+    openSeaSlug: info.openSeaSlug,
+    balanceWei: balance.toString(),
+    heldTokens,
+    soldTokens,
+    collectionsHeld: scan.collections.length,
+    totals: {
+      spentWei: spentWei.toString(),
+      revenueWei: revenueWei.toString(),
+      netWei: (revenueWei - spentWei).toString(),
+    },
+    collections: reports,
+    now: Math.floor(Date.now() / 1000),
+    tookMs: Date.now() - started,
+  };
+}
+
+/** Recent wallet-inspector reads, per address — a stranger's card should be instant on a second look. */
+const walletReportCache = new Map<string, { at: number; body: Record<string, unknown> }>();
+const walletReportInflight = new Map<string, Promise<Record<string, unknown>>>();
+const WALLET_REPORT_TTL_MS = envNumber(process.env.SNIPE_WALLET_REPORT_TTL_MS, 120_000);
+
+/**
  * A report being built right now, per account, so two panels don't start two —
  * and one account's build never blocks or overwrites another's. Keyed by config
  * path, which is the account's world.
@@ -3668,6 +3758,41 @@ const server = createServer(async (req, res) => {
       building: true,
       ...(now ? { ...now.body, cachedAt: now.at, stale: true } : {}),
     });
+    return;
+  }
+
+  // Inspect any wallet: paste a stranger's address and see its balance, NFT
+  // holdings and NFT (OpenSea) PnL, all from the chain. Signed-in only — it
+  // reads public data but each call is a chain scan, so it is not left open.
+  if (url.pathname === "/api/wallet-report" && req.method === "GET") {
+    const a = acting(req);
+    if (!a) {
+      json(res, 401, { error: "sign in with your wallet first" });
+      return;
+    }
+    const raw = (url.searchParams.get("address") ?? "").trim().toLowerCase();
+    if (!/^0x[0-9a-f]{40}$/.test(raw)) {
+      json(res, 400, { error: "not a wallet address" });
+      return;
+    }
+    const addr = raw as `0x${string}`;
+    const cached = walletReportCache.get(addr);
+    if (cached && Date.now() - cached.at < WALLET_REPORT_TTL_MS) {
+      json(res, 200, { ...cached.body, cachedAt: cached.at });
+      return;
+    }
+    let build = walletReportInflight.get(addr);
+    if (!build) {
+      build = buildWalletReport(addr)
+        .then((body) => {
+          walletReportCache.set(addr, { at: Date.now(), body });
+          return body;
+        })
+        .finally(() => walletReportInflight.delete(addr));
+      walletReportInflight.set(addr, build);
+    }
+    const body = await build;
+    json(res, 200, { ...body, cachedAt: walletReportCache.get(addr)?.at });
     return;
   }
 

@@ -4,6 +4,7 @@ import { openSeaCollectionUrl } from "../chains";
 import { notify, notifyPermission, requestNotifyPermission } from "../lib/notify";
 import { useMe, useRunnerApi } from "../lib/runnerClient";
 import { shortAddress } from "./ConnectBar";
+import PeekAddr from "./PeekAddr";
 import { timeAgo } from "../lib/convert";
 
 const POLL_MS = 30_000;
@@ -129,7 +130,7 @@ export default function WhaleAlertTab() {
           </div>
           {(list ?? []).map((w) => (
             <div key={w.address} className="mono-break" style={{ fontSize: 11, padding: "1px 0" }}>
-              {w.address}
+              <PeekAddr address={w.address}>{w.address}</PeekAddr>
               {w.label ? <span className="dim"> · {w.label}</span> : null}
             </div>
           ))}
@@ -152,8 +153,10 @@ export default function WhaleAlertTab() {
                 <div className="dim" style={{ fontSize: 12 }}>last {timeAgo(Math.floor(a.lastAt / 1000))}</div>
               </div>
               {a.whales?.length ? (
-                <div className="dim mono-break" style={{ fontSize: 11, marginTop: 4 }}>
-                  {a.whales.map((w) => shortAddress(w)).join(" · ")}
+                <div className="dim mono-break" style={{ fontSize: 11, marginTop: 4, display: "flex", flexWrap: "wrap", gap: 6 }}>
+                  {a.whales.map((w) => (
+                    <PeekAddr key={w} address={w} />
+                  ))}
                 </div>
               ) : null}
               {chainInfo && a.contract.startsWith("0x") ? (
