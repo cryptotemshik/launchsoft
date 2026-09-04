@@ -49,6 +49,53 @@ export default function AdminTab() {
   const [minEth, setMinEth] = useState("6");
   const [candidates, setCandidates] = useState<Holder[]>([]);
   const [sweep, setSweep] = useState<{ running: boolean; scanned: number; total: number; candidates: number; added: number; note: string } | null>(null);
+  const [updateNote, setUpdateNote] = useState<string | null>(null);
+  const [updating, setUpdating] = useState(false);
+
+  /**
+   * Pull the latest server code and restart it — no SSH. The server checks it
+   * compiles and rolls back if not, and refuses while a snipe is armed, so the
+   * worst case is "nothing changed". It restarts itself, so we poll ping until
+   * it answers again.
+   */
+  async function updateServer() {
+    setUpdating(true);
+    setError(null);
+    setUpdateNote(null);
+    try {
+      const r = (await call("/api/update", { method: "POST" })) as unknown as {
+        before: string;
+        after: string;
+        changed: boolean;
+      };
+      if (!r.changed) {
+        setUpdateNote(`Already on the latest code (${r.after}).`);
+        return;
+      }
+      setUpdateNote(`Updated ${r.before} → ${r.after}, restarting…`);
+      for (let i = 0; i < 15; i++) {
+        await new Promise((res) => setTimeout(res, 2000));
+        try {
+          await call("/api/ping");
+          setUpdateNote(`Updated to ${r.after} and back up.`);
+          return;
+        } catch {
+          setUpdateNote(`Updated ${r.before} → ${r.after}, waiting for it to come back…`);
+        }
+      }
+      setUpdateNote(null);
+      setError("The server pulled the update but hasn't come back — check pm2 on the box.");
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setError(
+        /HTTP 404/.test(msg)
+          ? "This server is too old to update itself — it needs one manual `git pull` over SSH first."
+          : msg,
+      );
+    } finally {
+      setUpdating(false);
+    }
+  }
 
   const load = useCallback(async () => {
     if (!base || !token) return;
@@ -276,6 +323,27 @@ export default function AdminTab() {
           )}
         </p>
       ) : null}
+
+      <div
+        style={{
+          display: "flex",
+          gap: 12,
+          alignItems: "center",
+          flexWrap: "wrap",
+          marginBottom: 16,
+          paddingBottom: 16,
+          borderBottom: "1px solid var(--border, #2b2f37)",
+        }}
+      >
+        <button className="secondary" disabled={updating} onClick={() => void updateServer()}>
+          {updating ? <span className="spin">…</span> : "update server"}
+        </button>
+        <span className="dim" style={{ fontSize: 12 }}>
+          pulls the latest code and restarts — no SSH. Refused while a snipe is armed;
+          rolls back if it doesn&apos;t compile. Env changes still need the server.
+        </span>
+        {updateNote ? <span className="ok" style={{ fontSize: 12 }}>{updateNote}</span> : null}
+      </div>
 
       <div style={{ overflowX: "auto" }}>
         <table className="admin-table" style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>

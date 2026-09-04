@@ -180,7 +180,6 @@ export default function RemoteRunner(props: RemoteRunnerProps) {
   // request carries it. A one-shot flag the effect below consumes.
   const [connectAfterLogin, setConnectAfterLogin] = useState(false);
   const [rpcError, setRpcError] = useState<string | null>(null);
-  const [updateNote, setUpdateNote] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   /**
    * How this job puts its transactions on the clock.
@@ -348,53 +347,8 @@ export default function RemoteRunner(props: RemoteRunnerProps) {
     }
   }, [call, props.extraRpcs, refresh]);
 
-  /**
-   * Bring the server up to this page's version without a terminal. It restarts
-   * itself after answering, so give it a few seconds before reconnecting.
-   */
-  async function updateServer() {
-    setBusy(true);
-    setError(null);
-    setUpdateNote(null);
-    try {
-      const r = (await call("/api/update", { method: "POST" })) as unknown as {
-        before: string;
-        after: string;
-        changed: boolean;
-        detail: string;
-      };
-      if (!r.changed) {
-        setUpdateNote(`Server is already on the latest code (${r.after}).`);
-        return;
-      }
-      setUpdateNote(`Updated ${r.before} → ${r.after}, restarting…`);
-      // pm2 usually has it back within a few seconds, but a dependency install
-      // or a slow box can take longer — keep asking rather than reporting a
-      // failure the moment the first attempt lands mid-restart.
-      for (let i = 0; i < 15; i++) {
-        await new Promise((res) => setTimeout(res, 2000));
-        try {
-          await call("/api/ping");
-          await refresh();
-          setUpdateNote(`Updated to ${r.after} and back up.`);
-          return;
-        } catch {
-          setUpdateNote(`Updated ${r.before} → ${r.after}, waiting for it to come back…`);
-        }
-      }
-      setUpdateNote(null);
-      setError("The server pulled the update but hasn't come back — check pm2 on the box.");
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setError(
-        /HTTP 404/.test(msg)
-          ? "This server is too old to update itself — it needs one manual `git pull` over SSH first."
-          : msg,
-      );
-    } finally {
-      setBusy(false);
-    }
-  }
+  // Updating the server (git pull + restart) lives on the Admin tab now, not
+  // here — see AdminTab's "server update" panel.
 
   async function enqueue(dryRun: boolean) {
     if (!props.collection) {
@@ -575,26 +529,11 @@ export default function RemoteRunner(props: RemoteRunnerProps) {
             connected{pending.length ? ` · ${pending.length} pending` : ""}
           </span>
         ) : null}
-        {connected && admin ? (
-          <button
-            className="secondary"
-            style={{ padding: "3px 12px", fontSize: 11 }}
-            disabled={busy}
-            onClick={() => void updateServer()}
-          >
-            update server
-          </button>
-        ) : null}
       </div>
       {error ? <p className="error">{error}</p> : null}
       {loginNote ? (
         <p className="ok" style={{ marginBottom: 0 }}>
           {loginNote}
-        </p>
-      ) : null}
-      {updateNote ? (
-        <p className="ok" style={{ marginBottom: 0 }}>
-          {updateNote}
         </p>
       ) : null}
 
