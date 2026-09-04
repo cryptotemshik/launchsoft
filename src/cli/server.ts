@@ -630,15 +630,15 @@ function jobView(j: Job) {
  * up on a request after a hundred seconds. So the route starts this in the
  * background and hands back what it has, and the panel asks again in a moment.
  */
-async function buildProfitReport(): Promise<Record<string, unknown>> {
-  const cfg = loadConfig(CONFIG_PATH);
+async function buildProfitReport(cfgPath = CONFIG_PATH): Promise<Record<string, unknown>> {
+  const cfg = loadConfig(cfgPath);
   const info = getChainInfo(cfg.chainId);
   if (!info) throw new Error(`chain ${cfg.chainId} isn't in the registry`);
 
   const started = Date.now();
-  const addresses = walletBook().map((w) => w.address);
-  const costs = costByCollection(loadMints(CONFIG_PATH));
-  const known = loadCollections(CONFIG_PATH);
+  const addresses = walletBook(cfgPath).map((w) => w.address);
+  const costs = costByCollection(loadMints(cfgPath));
+  const known = loadCollections(cfgPath);
 
   const client = makeReadClient(info.chain, scanRpcs(cfg));
 
@@ -767,27 +767,33 @@ async function buildProfitReport(): Promise<Record<string, unknown>> {
   return body;
 }
 
-/** Whether a report is being built right now, so two panels don't start two. */
-let profitBuilding: Promise<Record<string, unknown>> | null = null;
+/**
+ * A report being built right now, per account, so two panels don't start two —
+ * and one account's build never blocks or overwrites another's. Keyed by config
+ * path, which is the account's world.
+ */
+const profitBuilding = new Map<string, Promise<Record<string, unknown>>>();
 
-/** Start one if none is running, and remember the result when it lands. */
-function startProfitBuild(): Promise<Record<string, unknown>> {
-  if (profitBuilding) return profitBuilding;
+/** Start one if none is running for this account, caching the result when it lands. */
+function startProfitBuild(cfgPath: string): Promise<Record<string, unknown>> {
+  const existing = profitBuilding.get(cfgPath);
+  if (existing) return existing;
   const started = Date.now();
-  profitBuilding = buildProfitReport()
+  const p = buildProfitReport(cfgPath)
     .then((body) => {
-      profitCache = { at: Date.now(), body };
-      log(`profit: report built in ${Date.now() - started}ms`);
+      profitCache.set(cfgPath, { at: Date.now(), body });
+      log(`profit: report built for ${cfgPath} in ${Date.now() - started}ms`);
       return body;
     })
     .catch((e) => {
-      log(`profit: build failed — ${e instanceof Error ? e.message : e}`);
+      log(`profit: build failed for ${cfgPath} — ${e instanceof Error ? e.message : e}`);
       throw e;
     })
     .finally(() => {
-      profitBuilding = null;
+      profitBuilding.delete(cfgPath);
     });
-  return profitBuilding;
+  profitBuilding.set(cfgPath, p);
+  return p;
 }
 
 /**
@@ -1853,7 +1859,7 @@ async function startScan(hours: number): Promise<Record<string, unknown>> {
  * Reading it costs hundreds of round trips; nothing it reports on changes by
  * the second, and two panels asking at once should not mean two full scans.
  */
-let profitCache: { at: number; body: Record<string, unknown> } | null = null;
+const profitCache = new Map<string, { at: number; body: Record<string, unknown> }>();
 const PROFIT_TTL_MS = envNumber(process.env.SNIPE_PROFIT_TTL_MS, 60_000);
 /**
  * How long a request waits for a build before answering "still working".
@@ -3619,6 +3625,52 @@ const server = createServer(async (req, res) => {
     return;
   }
 
+  // Your snipe PnL — what each drop cost and what its tokens have made — scoped
+  // to your own wallets. Reading a whole history takes longer than the tunnel
+  // allows one request, so the work runs in the background per account: the
+  // first ask starts it, a later ask collects it, and one account's build never
+  // blocks or overwrites another's.
+  if (url.pathname === "/api/profit" && req.method === "GET") {
+    const a = acting(req);
+    if (!a) {
+      json(res, 401, { error: "sign in with your wallet first" });
+      return;
+    }
+    const cfgPath = a.cfgPath;
+    const fresh = url.searchParams.get("fresh") === "1";
+    if (fresh && !profitBuilding.has(cfgPath)) {
+      clearProfitCaches();
+      profitCache.delete(cfgPath);
+    }
+    const cached = profitCache.get(cfgPath);
+    if (cached && Date.now() - cached.at < PROFIT_TTL_MS) {
+      json(res, 200, { ...cached.body, cachedAt: cached.at });
+      return;
+    }
+    const building = startProfitBuild(cfgPath);
+    let why: string | null = null;
+    const quick = await Promise.race([
+      building.then(() => "done" as const).catch((e) => {
+        why = e instanceof Error ? e.message : String(e);
+        return "failed" as const;
+      }),
+      new Promise<"slow">((r) => setTimeout(() => r("slow"), PROFIT_WAIT_MS)),
+    ]);
+    const now = profitCache.get(cfgPath);
+    if (quick === "done" && now) {
+      json(res, 200, { ...now.body, cachedAt: now.at });
+      return;
+    }
+    if (quick === "failed") {
+      throw new Error(`couldn't read the chain: ${why ?? "no reason given"}`);
+    }
+    json(res, 202, {
+      building: true,
+      ...(now ? { ...now.body, cachedAt: now.at, stale: true } : {}),
+    });
+    return;
+  }
+
   // ── A user's own snipe world ────────────────────────────────────────────
   // A non-admin wallet session drives its own wallets and queue here, scoped
   // to its config path and charged per snipe. The operator token and admin
@@ -4541,53 +4593,8 @@ const server = createServer(async (req, res) => {
     }
 
     // The watchlist/calendar routes moved above the shared-server gate so each
-    // account reaches its own — see the "/api/upcoming" block there.
-
-    if (url.pathname === "/api/profit" && req.method === "GET") {
-      // Reading every wallet's whole history takes far longer than the hundred
-      // seconds a Cloudflare tunnel allows a request, and this server does one
-      // thing at a time — which is why a Dashboard left open used to stall the
-      // Snipe tab and then fail anyway. So the work happens in the background:
-      // the first ask starts it and says so, the next ask gets the answer.
-      const fresh = url.searchParams.get("fresh") === "1";
-      if (fresh && !profitBuilding) {
-        clearProfitCaches();
-        profitCache = null;
-      }
-      if (profitCache && Date.now() - profitCache.at < PROFIT_TTL_MS) {
-        json(res, 200, { ...profitCache.body, cachedAt: profitCache.at });
-        return;
-      }
-      const building = startProfitBuild();
-      // Give it a few seconds first: with the caches warm it is usually done
-      // well inside that, and then there is nothing to come back for.
-      let why: string | null = null;
-      const quick = await Promise.race([
-        building
-          .then(() => "done" as const)
-          .catch((e) => {
-            why = e instanceof Error ? e.message : String(e);
-            return "failed" as const;
-          }),
-        new Promise<"slow">((r) => setTimeout(() => r("slow"), PROFIT_WAIT_MS)),
-      ]);
-      if (quick === "done" && profitCache) {
-        json(res, 200, { ...profitCache.body, cachedAt: profitCache.at });
-        return;
-      }
-      // The reason travels with the failure. "See the server log" is not an
-      // error message, it is an instruction to go and find one — and the whole
-      // point of a panel talking to a box over a tunnel is not having to.
-      if (quick === "failed") {
-        throw new Error(`couldn't read the chain: ${why ?? "no reason given"}`);
-      }
-      json(res, 202, {
-        building: true,
-        // Something to show while it works, if there is anything at all.
-        ...(profitCache ? { ...profitCache.body, cachedAt: profitCache.at, stale: true } : {}),
-      });
-      return;
-    }
+    // account reaches its own — see the "/api/upcoming" block there. So did
+    // /api/profit, which is now per-account.
 
     // GET /api/nfts is served per-account above the gate.
 

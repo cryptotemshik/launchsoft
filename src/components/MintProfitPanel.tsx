@@ -13,7 +13,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import RunnerConnect from "./RunnerConnect";
-import { useRunnerApi } from "../lib/runnerClient";
+import { useMe, useRunnerApi } from "../lib/runnerClient";
 import { formatEthShort } from "../lib/profit";
 import StaleServer from "./StaleServer";
 import Addr from "./Addr";
@@ -102,6 +102,7 @@ interface Row {
 
 export default function MintProfitPanel() {
   const { url, setUrl, token, setToken, base, call, save, serverVersion } = useRunnerApi();
+  const admin = Boolean(useMe().me?.admin);
   const [view, setView] = useState<ProfitView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -353,14 +354,14 @@ export default function MintProfitPanel() {
     <div className="panel">
       <h2>Sniped mints — cost &amp; profit</h2>
       <p className="dim" style={{ marginTop: 0 }}>
-        Read from your server: what each drop cost in gas and mint price, and
-        what its tokens have sold for since — both taken from the chain itself,
-        so a drop counts whether or not it was minted through this server. A
-        sale is a token leaving one of your wallets while that wallet&apos;s
-        balance rises in the same block; no OpenSea account or API key involved.
+        What each drop cost your wallets in gas and mint price, and what its
+        tokens have sold for since — both read straight from the chain, so a drop
+        counts whether or not it was minted here. A sale is a token leaving one
+        of your wallets while that wallet&apos;s balance rises in the same block;
+        no marketplace account or API key involved.
       </p>
 
-      <RunnerConnect url={url} setUrl={setUrl} token={token} setToken={setToken} />
+      {admin ? <RunnerConnect url={url} setUrl={setUrl} token={token} setToken={setToken} /> : null}
       <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap", marginTop: 8 }}>
         <button className="secondary" onClick={() => void load()} disabled={busy || !base || !token}>
           {waiting ? <span className="spin">READING CHAIN</span> : busy ? <span className="spin">BUSY</span> : view ? "refresh" : "load"}

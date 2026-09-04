@@ -10,6 +10,7 @@ import LaunchTab from "./components/LaunchTab";
 import RevealTab from "./components/RevealTab";
 import FundingTab from "./components/FundingTab";
 import ServerWalletsTab from "./components/ServerWalletsTab";
+import MintProfitPanel from "./components/MintProfitPanel";
 import SnipeTab from "./components/SnipeTab";
 import StatusTab from "./components/StatusTab";
 import WalletsTab from "./components/WalletsTab";
@@ -48,6 +49,7 @@ type Tab =
   | "snipe"
   | "serverwallets"
   | "funding"
+  | "pnl"
   | "upcoming"
   | "scanner"
   | "live"
@@ -66,6 +68,7 @@ const TAB_ICON = {
   snipe: CrosshairIcon,
   serverwallets: KeyIcon,
   funding: CoinsIcon,
+  pnl: ActivityIcon,
   upcoming: CalendarIcon,
   scanner: RadarIcon,
   live: ActivityIcon,
@@ -200,7 +203,7 @@ export default function App() {
         <div className="tab-group snipe-group">
           <button
             className={`tab-mint ${
-              tab === "snipe" ? "active" : tab === "serverwallets" || tab === "funding" || tab === "profile" || tab === "admin" ? "group-active" : ""
+              tab === "snipe" ? "active" : tab === "serverwallets" || tab === "funding" || tab === "pnl" || tab === "profile" || tab === "admin" ? "group-active" : ""
             }`}
             onClick={() => setTab("snipe")}
           >
@@ -231,6 +234,13 @@ export default function App() {
               FUNDING
             </button>
             <button
+              className={tab === "pnl" ? "active" : ""}
+              onClick={() => setTab("pnl")}
+            >
+              <ActivityIcon />
+              PNL
+            </button>
+            <button
               className={tab === "profile" ? "active" : ""}
               onClick={() => setTab("profile")}
             >
@@ -257,6 +267,7 @@ export default function App() {
       {tab === "snipe" ? <SnipeTab /> : null}
       {tab === "serverwallets" ? <ServerWalletsTab /> : null}
       {tab === "funding" ? <FundingTab /> : null}
+      {tab === "pnl" ? <MintProfitPanel /> : null}
       {/* No onSnipe/onWatch handlers here on purpose. Marking a row parks the
           collection for the snipe tab and adds to the watchlist where asked,
           and that is all it does: someone going down a scan marks three or
