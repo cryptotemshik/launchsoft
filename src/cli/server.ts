@@ -202,6 +202,13 @@ const log = (msg: string) => console.log(`[${stamp()}] ${msg}`);
 const PORT = envNumber(process.env.SNIPE_PORT, 8787, 1);
 const HOST = process.env.SNIPE_HOST ?? "127.0.0.1";
 const TOKEN = process.env.SNIPE_TOKEN ?? "";
+/**
+ * A scoped token that may do exactly one privileged thing: pull the latest code
+ * and restart (`/api/update`). It authorizes nothing else — not wallets, not
+ * funds — so it can be handed to an automation that ships updates without giving
+ * it the operator's master token. Unset means the feature is off.
+ */
+const UPDATE_TOKEN = (process.env.SNIPE_UPDATE_TOKEN ?? "").trim();
 /** Comma-separated list; "*" allows any origin (only sane behind a tunnel + token). */
 const ORIGINS = (process.env.SNIPE_ORIGINS ?? "*").split(",").map((s) => s.trim());
 const CONFIG_PATH = process.env.SNIPE_CONFIG ?? "snipe.config.json";
@@ -429,6 +436,16 @@ function tokenOk(header: string | undefined): boolean {
   const a = Buffer.from(given);
   const b = Buffer.from(TOKEN);
   // timingSafeEqual throws on length mismatch, so equalise first.
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
+}
+
+/** True when the request carries the scoped update token (and one is set). */
+function updateTokenOk(header: string | undefined): boolean {
+  if (!UPDATE_TOKEN) return false;
+  const given = (header ?? "").replace(/^Bearer\s+/i, "");
+  const a = Buffer.from(given);
+  const b = Buffer.from(UPDATE_TOKEN);
   if (a.length !== b.length) return false;
   return timingSafeEqual(a, b);
 }
@@ -3094,6 +3111,31 @@ const server = createServer(async (req, res) => {
     return;
   }
 
+  // Update the server: git pull + restart. Sits before the operator gate so a
+  // scoped SNIPE_UPDATE_TOKEN can trigger it — that token may do this and only
+  // this. The operator token and an admin session (isAdminReq covers both) also
+  // work, which is what the Admin panel's button uses. Guarded the same either
+  // way: refused mid-snipe, rolled back if the new code doesn't compile.
+  if (url.pathname === "/api/update" && req.method === "POST") {
+    if (!isAdminReq(req) && !updateTokenOk(req.headers.authorization)) {
+      json(res, 401, { error: "bad or missing token" });
+      return;
+    }
+    try {
+      const blocked = updateBlockedBecause();
+      if (blocked) {
+        json(res, 409, { error: `${blocked} — a restart now could cost you the mint` });
+        return;
+      }
+      const result = await selfUpdate();
+      log(`update: ${result.before} → ${result.after} (${result.detail})`);
+      json(res, 200, result);
+    } catch (e) {
+      json(res, 400, { error: e instanceof Error ? e.message : String(e) });
+    }
+    return;
+  }
+
   // ── Account login: public, because it is how you get a session ──────────
   // These sit before the SNIPE_TOKEN gate. The operator token still opens
   // everything as before; sessions are the new, per-wallet identity that the
@@ -4315,21 +4357,8 @@ const server = createServer(async (req, res) => {
       return;
     }
 
-    /**
-     * Pull the latest code and restart. Refused while a job is armed or
-     * running — a restart mid-mint would lose it.
-     */
-    if (url.pathname === "/api/update" && req.method === "POST") {
-      const blocked = updateBlockedBecause();
-      if (blocked) {
-        json(res, 409, { error: `${blocked} — a restart now could cost you the mint` });
-        return;
-      }
-      const result = await selfUpdate();
-      log(`update: ${result.before} → ${result.after} (${result.detail})`);
-      json(res, 200, result);
-      return;
-    }
+    // /api/update is handled above the operator gate so a scoped update token
+    // can reach it — see the block after /api/ping.
 
     /**
      * Store the endpoints the panel is using. Reads on the server (balances,
