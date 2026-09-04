@@ -230,6 +230,8 @@ const CONFIG_PATH = process.env.SNIPE_CONFIG ?? "snipe.config.json";
 const ACCOUNTS_ROOT = accountsRoot();
 /** Free-plan ceilings. Pro (and the owner) are unlimited. */
 const FREE_WATCHLIST_MAX = 3;
+/** How far ahead the scanner shows on the free plan; Pro sees the whole window. */
+const FREE_SCAN_HOURS = envNumber(process.env.SNIPE_FREE_SCAN_HOURS, 6, 1);
 /** Pro subscription: a fixed dollar price, one month at a time, paid in ETH. */
 const PRO_PRICE_CENTS = envNumber(process.env.SNIPE_PRO_CENTS, 2999, 1);
 const PRO_DAYS = envNumber(process.env.SNIPE_PRO_DAYS, 30, 1);
@@ -4595,19 +4597,25 @@ const server = createServer(async (req, res) => {
       // The index has already done the reading, so it can answer further back
       // than one request could ever read.
       const ceiling = dropIndex ? Math.max(MAX_SCAN_HOURS, INDEX_DAYS * 24) : MAX_SCAN_HOURS;
-      const hours = Math.min(
+      let hours = Math.min(
         ceiling,
         Math.max(1, Number(url.searchParams.get("hours") ?? 24) || 24),
       );
+      // The free plan sees only the nearest few hours; Pro (and the owner) get
+      // the whole window. Clamped on the server so it can't be widened by hand,
+      // and the flags tell the panel to offer Pro for the longer views.
+      const pro = isAdminReq(req) || isProReq(req);
+      if (!pro) hours = Math.min(hours, FREE_SCAN_HOURS);
+      const gate = { proWindow: pro, freeMaxHours: FREE_SCAN_HOURS };
       const fresh = url.searchParams.get("fresh") === "1";
       const hit = scanCache.get(hours);
       if (!fresh && hit && Date.now() - hit.at < SCAN_TTL_MS) {
-        json(res, 200, { ...hit.body, cachedAt: hit.at });
+        json(res, 200, { ...hit.body, cachedAt: hit.at, ...gate });
         return;
       }
       // Two panels asking at once should cost one scan, not two.
       const inflight = scanInflight.get(hours);
-      json(res, 200, await (inflight ?? startScan(hours)));
+      json(res, 200, { ...(await (inflight ?? startScan(hours))), ...gate });
       return;
     }
 

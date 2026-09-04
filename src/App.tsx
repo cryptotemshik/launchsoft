@@ -12,6 +12,7 @@ import FundingTab from "./components/FundingTab";
 import ServerWalletsTab from "./components/ServerWalletsTab";
 import MintProfitPanel from "./components/MintProfitPanel";
 import WalletInspectTab from "./components/WalletInspectTab";
+import PricingTab from "./components/PricingTab";
 import SnipeTab from "./components/SnipeTab";
 import StatusTab from "./components/StatusTab";
 import WalletsTab from "./components/WalletsTab";
@@ -39,6 +40,7 @@ import {
   UserIcon,
   ShieldIcon,
   WhaleIcon,
+  StarIcon,
 } from "./components/icons";
 
 type Tab =
@@ -59,6 +61,7 @@ type Tab =
   | "admin"
   | "whales"
   | "inspect"
+  | "pricing"
 ;
 
 const TAB_ICON = {
@@ -79,6 +82,7 @@ const TAB_ICON = {
   admin: ShieldIcon,
   whales: WhaleIcon,
   inspect: EyeIcon,
+  pricing: StarIcon,
 } as const;
 
 export default function App() {
@@ -119,6 +123,17 @@ export default function App() {
   // first of those clicks is the user gesture that unlocks the AudioContext.
   useEffect(() => installClickSound(), []);
 
+  // Panels switch tabs by firing an "lp-nav" event (see lib/nav) — upsell
+  // buttons use it to send someone to PRICING or PROFILE.
+  useEffect(() => {
+    const h = (e: Event) => {
+      const t = (e as CustomEvent).detail;
+      if (typeof t === "string") setTab(t as Tab);
+    };
+    window.addEventListener("lp-nav", h);
+    return () => window.removeEventListener("lp-nav", h);
+  }, []);
+
   // On a phone the nav scrolls sideways — keep the selected tab in view.
   useEffect(() => {
     if (!window.matchMedia("(max-width: 640px)").matches) return;
@@ -151,6 +166,7 @@ export default function App() {
           ["wallets", "TRACKER"],
           ["whales", "WHALES"],
           ["inspect", "INSPECT"],
+          ["pricing", "PRICING"],
           ["scanner", "SCANNER"],
           ["live", "LIVE"],
           ["calendar", "CALENDAR"],
@@ -286,6 +302,7 @@ export default function App() {
       {tab === "admin" && isAdmin ? <AdminTab /> : null}
       {tab === "whales" ? <WhaleAlertTab /> : null}
       {tab === "inspect" ? <WalletInspectTab /> : null}
+      {tab === "pricing" ? <PricingTab /> : null}
       <div className="footer">
         {info.label} · explorer:{" "}
         <a href={info.explorerUrl} target="_blank" rel="noreferrer">

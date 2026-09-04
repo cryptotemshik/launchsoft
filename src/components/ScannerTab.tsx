@@ -14,7 +14,8 @@ import AdminOnly from "./AdminOnly";
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import RunnerConnect from "./RunnerConnect";
 import { parseEther } from "viem";
-import { useRunnerApi } from "../lib/runnerClient";
+import { useMe, useRunnerApi } from "../lib/runnerClient";
+import { goTab } from "../lib/nav";
 import { useCustomRpcs } from "../lib/customRpc";
 import {
   applyFilter,
@@ -117,6 +118,12 @@ function numberOrUndefined(v: string): number | undefined {
 
 export default function ScannerTab() {
   const { url, setUrl, token, setToken, base, call, save, serverVersion } = useRunnerApi();
+  const { me, loading: meLoading } = useMe();
+  // Free (and signed-out) sees only the nearest few hours; Pro and the owner
+  // get the whole window. The server enforces the same clamp — this only
+  // decides what the chips offer and whether to nudge toward Pro.
+  const pro = me?.tier === "pro" || me?.admin === true;
+  const FREE_SCAN_HOURS = 6;
   const { urls: customRpcs } = useCustomRpcs();
   const [rpcNote, setRpcNote] = useState<string | null>(null);
   // Everything a request paid for is held in the module, not here: this
@@ -186,6 +193,15 @@ export default function ScannerTab() {
     setScanArrivalHandler(sndFeedTick);
     return () => setScanArrivalHandler(null);
   }, []);
+
+  // A free viewer parked on a Pro-length window would just see it clamped to
+  // 6h with the wrong chip lit — so once we know they are not Pro, snap to the
+  // free window. Only ever narrows; a Pro user is left alone.
+  useEffect(() => {
+    if (!base || meLoading || pro) return;
+    if (hours > FREE_SCAN_HOURS) void load(FREE_SCAN_HOURS);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [base, meLoading, pro, hours]);
 
   /**
    * Hand the server the endpoint this browser is set up with.
@@ -504,18 +520,21 @@ export default function ScannerTab() {
         <div className="scan-bar">
           <span className="bar-label">WINDOW</span>
           <div className="chip-group">
-            {WINDOWS.map((w) => (
-              <button
-                key={w.hours}
-                className={hours === w.hours ? "secondary active-chip" : "secondary"}
-                disabled={busy || !base}
-                onClick={() => {
-                  void load(w.hours);
-                }}
-              >
-                {w.label}
-              </button>
-            ))}
+            {WINDOWS.map((w) => {
+              const locked = !pro && w.hours > FREE_SCAN_HOURS;
+              return (
+                <button
+                  key={w.hours}
+                  className={hours === w.hours ? "secondary active-chip" : "secondary"}
+                  disabled={busy || !base}
+                  onClick={() => (locked ? goTab("pricing") : void load(w.hours))}
+                  title={locked ? "Longer windows are Pro — tap to unlock" : undefined}
+                >
+                  {w.label}
+                  {locked ? " 🔒" : ""}
+                </button>
+              );
+            })}
             <button
               className="secondary"
               disabled={busy || !base}
@@ -598,6 +617,25 @@ export default function ScannerTab() {
             ) : null}
           </div>
         </div>
+
+        {!pro ? (
+          <div
+            className="panel"
+            style={{ margin: "8px 0 0", padding: "8px 12px", display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}
+          >
+            <span className="dim" style={{ fontSize: 12 }}>
+              Free shows the next <b>{FREE_SCAN_HOURS}h</b> of mints. <b>Pro</b> unlocks the
+              full window — up to 14 days ahead.
+            </span>
+            <button
+              className="primary"
+              style={{ padding: "3px 12px", fontSize: 11 }}
+              onClick={() => goTab("pricing")}
+            >
+              Get Pro
+            </button>
+          </div>
+        ) : null}
 
         {error ? <p className="error">{error}</p> : null}
         <AdminOnly>
