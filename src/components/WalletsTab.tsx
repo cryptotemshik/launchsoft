@@ -25,7 +25,8 @@ import {
 import { timeAgo } from "../lib/convert";
 import { useMe, useRunnerApi } from "../lib/runnerClient";
 import { shortAddress } from "./ConnectBar";
-import { AddrLink, TxLink } from "./Bits";
+import { TxLink } from "./Bits";
+import PeekAddr from "./PeekAddr";
 
 const POLL_MS = 5_000;
 const FREE_TRACKER_MAX = 3;
@@ -230,7 +231,7 @@ export default function WalletsTab() {
             {wallets.map((w) => (
               <span key={w.address} className="wallet-chip">
                 {w.label ? <b>{w.label}</b> : null}
-                <AddrLink address={w.address} />
+                <PeekAddr address={w.address} />
                 <button
                   className="chip-x"
                   title="stop tracking"
@@ -269,7 +270,7 @@ export default function WalletsTab() {
               <li key={e.id} className="feed-row">
                 <span className={`ev-pill ${KIND_CLASS[e.kind]}`}>{e.kind}</span>
                 <span className="feed-main">
-                  <b>{e.label || shortAddress(e.wallet)}</b> {KIND_VERB[e.kind]}{" "}
+                  <PeekAddr address={e.wallet}><b>{e.label || shortAddress(e.wallet)}</b></PeekAddr> {KIND_VERB[e.kind]}{" "}
                   {e.contract ? (
                     <a
                       href={openSeaCollectionUrl(chainInfo!, e.contract)}
