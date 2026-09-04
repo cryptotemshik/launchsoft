@@ -224,7 +224,8 @@ export default function CalendarTab() {
   // The store keeps the fetcher, so the URL and the token have to be pushed
   // down whenever they change.
   useEffect(() => {
-    store.setFetcher(base && token ? load : null);
+    // The calendar is public — drops read from a shared cache, no token needed.
+    store.setFetcher(base ? load : null);
   }, [load, base, token]);
 
   /**
@@ -232,7 +233,7 @@ export default function CalendarTab() {
    * gone stale, underneath the rows rather than instead of them.
    */
   useEffect(() => {
-    if (base && token && store.isStale()) void store.run();
+    if (base && store.isStale()) void store.run();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -256,7 +257,7 @@ export default function CalendarTab() {
       .map((e) => e.contract)
       .filter((c): c is string => Boolean(c) && !(c!.toLowerCase() in info))
       .slice(0, 40);
-    if (!base || !token || wanted.length === 0) return;
+    if (!base || wanted.length === 0) return;
     let alive = true;
     const t = setTimeout(async () => {
       try {
@@ -398,7 +399,7 @@ export default function CalendarTab() {
             </button>
             <button
               className="secondary"
-              disabled={busy || !base || !token}
+              disabled={busy || !base}
               onClick={() => void store.run()}
             >
               {busy ? <span className="spin">READING</span> : "refresh"}

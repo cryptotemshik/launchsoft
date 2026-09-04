@@ -200,7 +200,8 @@ export default function LiveTab() {
   const feedError = view?.error ? `could not read the mint feed: ${view.error}` : null;
 
   useEffect(() => {
-    store.setFetcher(base && token ? load : null);
+    // The live board is public — served from a shared cache, no token needed.
+    store.setFetcher(base ? load : null);
   }, [load, base, token]);
 
   /**
@@ -227,12 +228,14 @@ export default function LiveTab() {
    * how a changed RPC reaches the server at all.
    */
   useEffect(() => {
-    if (!base || !token) return;
+    if (!base) return;
     if (!loopStarted) {
       loopStarted = true;
       store.setEvery(DEFAULT_EVERY);
     }
-    void pushRpcs().then(() => {
+    // Pushing the RPC endpoint is operator-only; the feed reads for everyone.
+    const kick = token ? pushRpcs() : Promise.resolve();
+    void kick.then(() => {
       if (store.isStale()) void store.run();
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -263,7 +266,7 @@ export default function LiveTab() {
   );
 
   useEffect(() => {
-    if (!base || !token || wanted.length === 0) return;
+    if (!base || wanted.length === 0) return;
     let alive = true;
     let timer: ReturnType<typeof setTimeout>;
     const ask = async (round: number) => {
@@ -350,7 +353,7 @@ export default function LiveTab() {
               <button
                 key={w.minutes}
                 className={minutes === w.minutes ? "secondary active-chip" : "secondary"}
-                disabled={busy || !base || !token}
+                disabled={busy || !base}
                 onClick={() => {
                   store.set({ minutes: w.minutes });
                   void store.run();
@@ -367,13 +370,13 @@ export default function LiveTab() {
               <button
                 key={i.secs}
                 className={every === i.secs ? "secondary active-chip" : "secondary"}
-                disabled={!base || !token}
+                disabled={!base}
                 onClick={() => store.setEvery(i.secs)}
               >
                 {i.label}
               </button>
             ))}
-            <button className="secondary" disabled={busy || !base || !token} onClick={() => void store.run()}>
+            <button className="secondary" disabled={busy || !base} onClick={() => void store.run()}>
               {busy ? <span className="spin">READING</span> : "refresh"}
             </button>
           </div>

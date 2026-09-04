@@ -152,7 +152,8 @@ export default function UpcomingTab() {
   }, [call, save]);
 
   useEffect(() => {
-    store.setFetcher(base && token ? load : null);
+    // The watchlist/calendar reads are public — shared drops from cache.
+    store.setFetcher(base ? load : null);
   }, [load, base, token]);
 
   /**
@@ -167,7 +168,7 @@ export default function UpcomingTab() {
    */
   useEffect(() => {
     const c = draft.contract.trim();
-    if (!adding || !base || !token || !/^0x[0-9a-fA-F]{40}$/.test(c)) {
+    if (!adding || !base || !/^0x[0-9a-fA-F]{40}$/.test(c)) {
       setFound(null);
       return;
     }
@@ -240,7 +241,7 @@ export default function UpcomingTab() {
    * underneath the rows rather than instead of them.
    */
   useEffect(() => {
-    if (base && token && store.isStale()) void store.run();
+    if (base && store.isStale()) void store.run();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -490,7 +491,7 @@ export default function UpcomingTab() {
           <button
             className="secondary"
             onClick={() => void store.run()}
-            disabled={busy || !base || !token}
+            disabled={busy || !base}
           >
             {busy ? <span className="spin">BUSY</span> : list ? "refresh" : "load"}
           </button>

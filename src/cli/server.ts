@@ -209,6 +209,20 @@ const TOKEN = process.env.SNIPE_TOKEN ?? "";
  * it the operator's master token. Unset means the feature is off.
  */
 const UPDATE_TOKEN = (process.env.SNIPE_UPDATE_TOKEN ?? "").trim();
+/**
+ * Read-only, shared, cached endpoints anyone may GET without a wallet — the
+ * free public surface (scanner, live board, calendar drops, collection lookups).
+ * They serve the same chain data to everyone from a shared cache, so opening
+ * them adds no meaningful cost over the always-on index. Per-account and
+ * per-address endpoints are NOT here; they stay behind sign-in.
+ */
+const PUBLIC_READ_PATHS = new Set<string>([
+  "/api/scan",
+  "/api/live",
+  "/api/drops",
+  "/api/collection-info",
+  "/api/collection-preview",
+]);
 /** Comma-separated list; "*" allows any origin (only sane behind a tunnel + token). */
 const ORIGINS = (process.env.SNIPE_ORIGINS ?? "*").split(",").map((s) => s.trim());
 const CONFIG_PATH = process.env.SNIPE_CONFIG ?? "snipe.config.json";
@@ -873,6 +887,21 @@ async function buildWalletReport(address: `0x${string}`): Promise<Record<string,
 const walletReportCache = new Map<string, { at: number; body: Record<string, unknown> }>();
 const walletReportInflight = new Map<string, Promise<Record<string, unknown>>>();
 const WALLET_REPORT_TTL_MS = envNumber(process.env.SNIPE_WALLET_REPORT_TTL_MS, 120_000);
+// Only a fresh scan (cache miss) costs anything; that is what is rate-limited,
+// per account, so browsing cached cards stays free. Pro gets a higher ceiling.
+const walletScanHits = new Map<string, number[]>();
+const WR_LOOKUPS_FREE = envNumber(process.env.SNIPE_WALLET_LOOKUPS_FREE_PER_MIN, 15, 1);
+const WR_LOOKUPS_PRO = envNumber(process.env.SNIPE_WALLET_LOOKUPS_PRO_PER_MIN, 90, 1);
+function allowWalletScan(key: string, limit: number, nowMs = Date.now()): boolean {
+  const recent = (walletScanHits.get(key) ?? []).filter((t) => nowMs - t < 60_000);
+  if (recent.length >= limit) {
+    walletScanHits.set(key, recent);
+    return false;
+  }
+  recent.push(nowMs);
+  walletScanHits.set(key, recent);
+  return true;
+}
 
 /**
  * A report being built right now, per account, so two panels don't start two —
@@ -3605,17 +3634,22 @@ const server = createServer(async (req, res) => {
 
   if (url.pathname === "/api/upcoming") {
     const a = acting(req);
-    if (!a) {
-      json(res, 401, { error: "sign in with your wallet first" });
-      return;
-    }
-    const info = getChainInfo(loadConfig(a.cfgPath).chainId);
 
+    // Reading the calendar is public: a visitor with no account sees the
+    // shared, operator/bot-curated list; a signed-in account sees its own.
+    // Adding, colouring or removing a drop needs a session.
     if (req.method === "GET") {
+      const cfgPath = a?.cfgPath ?? CONFIG_PATH;
+      const info = getChainInfo(loadConfig(cfgPath).chainId);
       json(res, 200, {
-        upcoming: sortByDate(loadUpcoming(a.cfgPath)),
+        upcoming: sortByDate(loadUpcoming(cfgPath)),
         openSeaSlug: info?.openSeaSlug,
       });
+      return;
+    }
+
+    if (!a) {
+      json(res, 401, { error: "sign in with your wallet first" });
       return;
     }
 
@@ -3825,6 +3859,19 @@ const server = createServer(async (req, res) => {
     }
     let build = walletReportInflight.get(addr);
     if (!build) {
+      // A miss means a real scan. Charge it against a per-minute budget — the
+      // owner is exempt, Pro gets a higher ceiling — so open access can't be
+      // scripted into a node bill. A cached card above never reaches here.
+      if (!isAdminReq(req)) {
+        const limit = isProReq(req) ? WR_LOOKUPS_PRO : WR_LOOKUPS_FREE;
+        if (!allowWalletScan(a.address ?? "anon", limit)) {
+          json(res, 429, {
+            error: `too many new wallet lookups — ${limit}/min${isProReq(req) ? "" : "; Pro raises the limit"}`,
+            tier: isProReq(req) ? "pro" : "free",
+          });
+          return;
+        }
+      }
       build = buildWalletReport(addr)
         .then((body) => {
           walletReportCache.set(addr, { at: Date.now(), body });
@@ -4324,12 +4371,15 @@ const server = createServer(async (req, res) => {
     }
   }
 
-  // Access to the shared server: the operator token, or an admin's session.
-  // A non-admin session is a valid identity but has no power over the shared
-  // box yet — that waits for per-user isolation, at which point a session will
-  // scope to its own data rather than open everything.
+  // Access to the shared server: the operator token, or an admin's session —
+  // EXCEPT the read-only, shared, cached views below, which are public so a
+  // visitor sees the scanner, live board and calendar without a wallet. They
+  // read the same chain data for everyone and cost near nothing beyond the
+  // 24/7 index that already runs; anything per-account or per-address stays
+  // gated (and above this line), and writes are never public.
+  const publicRead = req.method === "GET" && PUBLIC_READ_PATHS.has(url.pathname);
   const sess = requestSession(req);
-  if (!tokenOk(req.headers.authorization) && !(sess && isAdmin(sess.address))) {
+  if (!publicRead && !tokenOk(req.headers.authorization) && !(sess && isAdmin(sess.address))) {
     json(res, 401, { error: "bad or missing token" });
     return;
   }

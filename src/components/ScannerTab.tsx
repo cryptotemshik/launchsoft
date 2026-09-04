@@ -168,7 +168,9 @@ export default function ScannerTab() {
    * the mount scan below already has one.
    */
   useEffect(() => {
-    if (!base || !token) {
+    // The scanner is public — a visitor with no token still gets the shared,
+    // cached read. Only a base URL is required.
+    if (!base) {
       setScanFetcher(null);
       return;
     }
@@ -219,10 +221,11 @@ export default function ScannerTab() {
    * has gone stale — underneath the rows, not instead of them.
    */
   useEffect(() => {
-    if (!base || !token) return;
-    // The endpoint goes down either way — it is one small POST, and it is how
-    // a changed RPC reaches the server at all.
-    void pushRpcs().then(() => {
+    if (!base) return;
+    // Pushing the RPC endpoint down is an operator-only POST — skip it when
+    // there is no session — but the scan load runs for everyone.
+    const kick = token ? pushRpcs() : Promise.resolve();
+    void kick.then(() => {
       if (scanIsStale()) void load(hours);
     });
     // Only on mount: every other load is a click or the store's own loop.
@@ -417,7 +420,7 @@ export default function ScannerTab() {
   );
 
   useEffect(() => {
-    if (!base || !token || wanted.length === 0) return;
+    if (!base || wanted.length === 0) return;
     let alive = true;
     let timer: ReturnType<typeof setTimeout>;
     const ask = async (round: number) => {
@@ -505,7 +508,7 @@ export default function ScannerTab() {
               <button
                 key={w.hours}
                 className={hours === w.hours ? "secondary active-chip" : "secondary"}
-                disabled={busy || !base || !token}
+                disabled={busy || !base}
                 onClick={() => {
                   void load(w.hours);
                 }}
@@ -515,7 +518,7 @@ export default function ScannerTab() {
             ))}
             <button
               className="secondary"
-              disabled={busy || !base || !token}
+              disabled={busy || !base}
               onClick={() => void load(hours, true)}
               title="Ignore the cached result and read the whole window again"
             >
@@ -529,7 +532,7 @@ export default function ScannerTab() {
               <button
                 key={i.secs}
                 className={every === i.secs ? "secondary active-chip" : "secondary"}
-                disabled={!base || !token}
+                disabled={!base}
                 onClick={() => setScanEvery(i.secs)}
                 title={
                   i.secs
