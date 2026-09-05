@@ -21,7 +21,7 @@ const ROWS: Row[] = [
   { feature: "Wallet tracker (activity feed)", free: "✓", pro: "✓" },
   { feature: "Tracker → Telegram delivery", free: "up to 3 wallets", pro: "up to 100 wallets" },
   { feature: "Inspect any wallet (balance, NFTs, PnL)", free: "15 lookups/min", pro: "90 lookups/min" },
-  { feature: "Your own PnL", free: "✓", pro: "✓ + history/export (soon)" },
+  { feature: "Your own PnL", free: "totals + table", pro: "+ profit-over-time chart & CSV export" },
   { feature: "Whale Alerts (3+ whales into one collection)", free: "—", pro: "✓ + whale list" },
   { feature: "Whale Alerts → Telegram", free: "—", pro: "✓" },
   { feature: "Deposit, withdraw, fund, snipe", free: "✓", pro: "✓" },

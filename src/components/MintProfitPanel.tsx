@@ -13,7 +13,9 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import RunnerConnect from "./RunnerConnect";
+import { formatEther } from "viem";
 import { useMe, useRunnerApi } from "../lib/runnerClient";
+import { goTab } from "../lib/nav";
 import { formatEthShort } from "../lib/profit";
 import StaleServer from "./StaleServer";
 import Addr from "./Addr";
@@ -102,7 +104,11 @@ interface Row {
 
 export default function MintProfitPanel() {
   const { url, setUrl, token, setToken, base, call, save, serverVersion } = useRunnerApi();
-  const admin = Boolean(useMe().me?.admin);
+  const me = useMe().me;
+  const admin = Boolean(me?.admin);
+  // The profit line and CSV export are the Pro half of PnL; the totals and the
+  // per-collection table stay free.
+  const pro = admin || me?.tier === "pro";
   const [view, setView] = useState<ProfitView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -332,6 +338,38 @@ export default function MintProfitPanel() {
     { spent: 0n, earned: 0n, net: 0n, minted: 0, sold: 0, held: 0, unpriced: 0 },
   );
 
+  /** Download the per-collection PnL as CSV — the Pro "export" half. */
+  function exportCsv() {
+    const head = ["collection", "name", "held", "sold", "spent_eth", "revenue_eth", "net_eth"];
+    const q = (s: string) => `"${s.replace(/"/g, '""')}"`;
+    const lines = [head.join(",")];
+    for (const r of sorted) {
+      lines.push(
+        [
+          r.collection,
+          q(r.name ?? ""),
+          r.held,
+          r.sold,
+          formatEther(r.spent),
+          formatEther(r.earned),
+          formatEther(r.net),
+        ].join(","),
+      );
+    }
+    lines.push(
+      ["TOTAL", "", totals.held, totals.sold, formatEther(totals.spent), formatEther(totals.earned), formatEther(totals.net)].join(","),
+    );
+    const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" });
+    const href = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = href;
+    a.download = `launchpad-pnl-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(href);
+  }
+
   function header(key: SortKey, label: string, className = "") {
     return (
       <th
@@ -450,6 +488,19 @@ export default function MintProfitPanel() {
             <button className="secondary card-btn" onClick={makeCard}>
               card ↗
             </button>
+            {pro ? (
+              <button className="secondary card-btn" onClick={exportCsv} title="Download this table as CSV">
+                export CSV
+              </button>
+            ) : (
+              <button
+                className="secondary card-btn"
+                onClick={() => goTab("pricing")}
+                title="CSV export is a Pro feature"
+              >
+                export CSV 🔒
+              </button>
+            )}
           </div>
 
           {card ? (
@@ -562,7 +613,27 @@ export default function MintProfitPanel() {
             </table>
           </div>
 
-          {!legacy ? <PnlChart events={events} /> : null}
+          {!legacy ? (
+            pro ? (
+              <PnlChart events={events} />
+            ) : (
+              <div
+                className="panel"
+                style={{ margin: "10px 0 0", padding: "10px 12px", display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}
+              >
+                <span className="dim" style={{ fontSize: 12 }}>
+                  📈 <b>Profit-over-time chart</b> and <b>CSV export</b> are Pro.
+                </span>
+                <button
+                  className="primary"
+                  style={{ padding: "3px 12px", fontSize: 11 }}
+                  onClick={() => goTab("pricing")}
+                >
+                  Get Pro
+                </button>
+              </div>
+            )
+          ) : null}
         </>
       ) : null}
 
