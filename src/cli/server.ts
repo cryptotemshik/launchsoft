@@ -97,6 +97,15 @@ import {
   unlink as tgUnlink,
 } from "./telegramLink";
 import { getScanBlock, loadTracker, setScanBlock, setTracker } from "./tracker";
+import {
+  loadFeed,
+  loadProgress as loadFeedProgress,
+  removeArticle,
+  setChecked as setFeedChecked,
+  upsertArticle,
+  type Article,
+  type ArticleInput,
+} from "./feed";
 import { startTelegramBot } from "./telegramBot";
 import { addUpcoming, annotateUpcoming, loadUpcoming, removeUpcoming, sameDrop } from "./upcomingStore";
 import { loadJobs, restoreStatus, saveJobs, type StoredJob, type StoredStatus } from "./jobStore";
@@ -1273,6 +1282,27 @@ function notifyAccount(cfgPath: string, html: string): void {
   const chatId = tgChatId(cfgPath);
   if (!token || !chatId) return;
   void sendTelegram({ botToken: token, chatId }, html).catch(() => {});
+}
+
+/**
+ * Announce a freshly-published feed article to linked chats — a Pro article to
+ * linked Pro accounts, a free one to everyone linked. This is the "Pro group
+ * hears first" hook.
+ */
+function notifyFeedArticle(article: Article): void {
+  const html =
+    `📣 <b>New ${article.pro ? "Pro " : ""}alpha</b> — ${escapeHtml(article.title)}` +
+    (article.project ? `\n${escapeHtml(article.project)}` : "") +
+    `\nOpen the Feed tab to read it.`;
+  for (const addr of accountDirs(ACCOUNTS_ROOT)) {
+    const cfgPath = accountConfigPath(ACCOUNTS_ROOT, addr);
+    if (!tgIsLinked(cfgPath)) continue;
+    if (article.pro) {
+      const acct = getAccount(ACCOUNTS_ROOT, addr);
+      if (!acct || !isPro(acct)) continue;
+    }
+    notifyAccount(cfgPath, html);
+  }
 }
 
 /** The account whose pending, unexpired code this is — or null. */
@@ -3266,6 +3296,107 @@ const server = createServer(async (req, res) => {
     return;
   }
   // The admin dashboard's roster of accounts. Admin session only.
+  // ── Alpha feed: owner-written project write-ups with a WL checklist ─────────
+  // Reading the list is public. A Pro article is served whole only to a Pro
+  // reader (or the owner); everyone else gets the card and a teaser, with the
+  // body and checklist withheld. Each accessible article carries the reader's
+  // own ticked items.
+  if (url.pathname === "/api/feed" && req.method === "GET") {
+    const a = acting(req);
+    const pro = isProReq(req);
+    const progress = a ? loadFeedProgress(a.cfgPath) : {};
+    const articles = loadFeed(CONFIG_PATH)
+      .filter((art) => art.published)
+      .sort((x, y) => y.createdAt - x.createdAt)
+      .map((art) => {
+        const open = !art.pro || pro;
+        const card = {
+          id: art.id,
+          title: art.title,
+          project: art.project,
+          cover: art.cover,
+          tags: art.tags,
+          pro: art.pro,
+          wlDeadline: art.wlDeadline,
+          createdAt: art.createdAt,
+          checklistCount: art.checklist.length,
+          locked: !open,
+        };
+        if (!open) {
+          return { ...card, teaser: art.body.slice(0, 200), links: [], checklist: [], checked: [] };
+        }
+        return {
+          ...card,
+          body: art.body,
+          links: art.links,
+          checklist: art.checklist,
+          checked: progress[art.id] ?? [],
+        };
+      });
+    json(res, 200, { articles, pro });
+    return;
+  }
+
+  // Tick or untick a checklist item — the reader's own progress, saved server
+  // side. Refused on a Pro article the reader can't open.
+  if (url.pathname === "/api/feed/check" && req.method === "POST") {
+    const a = acting(req);
+    if (!a) {
+      json(res, 401, { error: "sign in with your wallet first" });
+      return;
+    }
+    const body = await readBody(req);
+    const articleId = String(body.articleId ?? "");
+    const itemId = String(body.itemId ?? "");
+    const checked = body.checked === true;
+    const art = loadFeed(CONFIG_PATH).find((x) => x.id === articleId && x.published);
+    if (!art) {
+      json(res, 404, { error: "no such article" });
+      return;
+    }
+    if (art.pro && !isProReq(req)) {
+      json(res, 402, { error: "this article is Pro", tier: "free" });
+      return;
+    }
+    if (!art.checklist.some((c) => c.id === itemId)) {
+      json(res, 400, { error: "no such checklist item" });
+      return;
+    }
+    json(res, 200, { articleId, checked: setFeedChecked(a.cfgPath, articleId, itemId, checked) });
+    return;
+  }
+
+  // Admin: the full list including drafts, and create/update/delete.
+  if (url.pathname === "/api/admin/feed" && req.method === "GET") {
+    if (!isAdminReq(req)) {
+      json(res, 403, { error: "admins only" });
+      return;
+    }
+    json(res, 200, { articles: loadFeed(CONFIG_PATH).sort((x, y) => y.createdAt - x.createdAt) });
+    return;
+  }
+  if (url.pathname === "/api/admin/feed" && req.method === "POST") {
+    if (!isAdminReq(req)) {
+      json(res, 403, { error: "admins only" });
+      return;
+    }
+    const body = await readBody(req);
+    const { article, firstPublish } = upsertArticle(CONFIG_PATH, body as unknown as ArticleInput);
+    // Push once, the moment it first goes public, unless the editor opted out.
+    if (firstPublish && (body as { notify?: boolean }).notify !== false) notifyFeedArticle(article);
+    json(res, 200, { article });
+    return;
+  }
+  if (url.pathname === "/api/admin/feed" && req.method === "DELETE") {
+    if (!isAdminReq(req)) {
+      json(res, 403, { error: "admins only" });
+      return;
+    }
+    const removed = removeArticle(CONFIG_PATH, url.searchParams.get("id") ?? "");
+    json(res, removed ? 200 : 404, { removed });
+    return;
+  }
+
   if (url.pathname === "/api/admin/accounts" && req.method === "GET") {
     if (!isAdminReq(req)) {
       json(res, 403, { error: "admins only" });

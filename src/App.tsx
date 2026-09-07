@@ -12,6 +12,7 @@ import FundingTab from "./components/FundingTab";
 import ServerWalletsTab from "./components/ServerWalletsTab";
 import MintProfitPanel from "./components/MintProfitPanel";
 import WalletInspectTab from "./components/WalletInspectTab";
+import FeedTab from "./components/FeedTab";
 import PricingTab from "./components/PricingTab";
 import SnipeTab from "./components/SnipeTab";
 import StatusTab from "./components/StatusTab";
@@ -61,6 +62,7 @@ type Tab =
   | "admin"
   | "whales"
   | "inspect"
+  | "feed"
   | "pricing"
 ;
 
@@ -82,6 +84,7 @@ const TAB_ICON = {
   admin: ShieldIcon,
   whales: WhaleIcon,
   inspect: EyeIcon,
+  feed: PulseIcon,
   pricing: StarIcon,
 } as const;
 
@@ -165,6 +168,7 @@ export default function App() {
         {([
           ["wallets", "TRACKER"],
           ["whales", "WHALES"],
+          ["feed", "FEED"],
           ["inspect", "INSPECT"],
           ["pricing", "PRICING"],
           ["scanner", "SCANNER"],
@@ -302,6 +306,7 @@ export default function App() {
       {tab === "admin" && isAdmin ? <AdminTab /> : null}
       {tab === "whales" ? <WhaleAlertTab /> : null}
       {tab === "inspect" ? <WalletInspectTab /> : null}
+      {tab === "feed" ? <FeedTab /> : null}
       {tab === "pricing" ? <PricingTab /> : null}
       <div className="footer">
         {info.label} · explorer:{" "}

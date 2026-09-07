@@ -3,6 +3,7 @@ import { formatEther } from "viem";
 import { useRunnerApi } from "../lib/runnerClient";
 import { useActiveChain } from "../signer";
 import { fetchEthBalance, fetchTopHolders, type Holder } from "../lib/discoverHolders";
+import AdminFeedEditor from "./AdminFeedEditor";
 import { shortAddress } from "./ConnectBar";
 
 /**
@@ -298,6 +299,7 @@ export default function AdminTab() {
   }
 
   return (
+    <>
     <div className="panel">
       <h2>Admin — accounts &amp; subscriptions</h2>
       {error ? <p className="error">{error}</p> : null}
@@ -542,6 +544,8 @@ export default function AdminTab() {
         </div>
       </div>
     </div>
+    <AdminFeedEditor />
+    </>
   );
 }
 
