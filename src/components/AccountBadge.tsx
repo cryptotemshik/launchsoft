@@ -14,7 +14,7 @@ const shortAddress = (a: string) => `${a.slice(0, 6)}…${a.slice(-4)}`;
  */
 export default function AccountBadge() {
   const { me } = useMe();
-  const { signIn, busy, error, hasBackend, walletConnected } = useSignIn();
+  const { signIn, busy, error, hasBackend, walletConnected, hasWalletConnect } = useSignIn();
 
   if (!hasBackend) return null;
 
@@ -41,11 +41,38 @@ export default function AccountBadge() {
     );
   }
 
+  // Once a wallet is connected the only step left is to sign — one button.
+  // Before that, offer the two ways in: a browser extension, or a phone over
+  // WalletConnect's QR (only when a project id was baked in, so a build without
+  // one falls back to the single extension button it always had).
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-      <button className="secondary" disabled={busy} onClick={() => void signIn()} title="prove your wallet to sign in">
-        {busy ? <span className="spin">…</span> : walletConnected ? "sign in" : "connect & sign in"}
-      </button>
+      {walletConnected ? (
+        <button className="secondary" disabled={busy} onClick={() => void signIn()} title="prove your wallet to sign in">
+          {busy ? <span className="spin">…</span> : "sign in"}
+        </button>
+      ) : (
+        <>
+          <button
+            className="secondary"
+            disabled={busy}
+            onClick={() => void signIn("injected")}
+            title="connect a browser extension wallet"
+          >
+            {busy ? <span className="spin">…</span> : hasWalletConnect ? "browser wallet" : "connect & sign in"}
+          </button>
+          {hasWalletConnect ? (
+            <button
+              className="secondary"
+              disabled={busy}
+              onClick={() => void signIn("walletConnect")}
+              title="connect a phone wallet with a QR code"
+            >
+              mobile / QR
+            </button>
+          ) : null}
+        </>
+      )}
       {error ? <span className="error" style={{ fontSize: 11 }}>{error}</span> : null}
     </div>
   );

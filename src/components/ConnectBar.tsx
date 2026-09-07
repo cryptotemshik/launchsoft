@@ -14,6 +14,12 @@ export default function ConnectBar({ onHome }: { onHome?: () => void }) {
   const { address, isConnected } = useAccount();
   const { connect, connectors, isPending, error } = useConnect();
   const { disconnect } = useDisconnect();
+  // Two doors into a wallet: a browser extension (injected) or a phone over
+  // WalletConnect's QR. The QR connector only exists when a project id was
+  // baked in at build (wagmi.ts) — without one we show the single extension
+  // button this bar always had.
+  const injectedConnector = connectors.find((c) => c.type === "injected") ?? connectors[0];
+  const walletConnectConnector = connectors.find((c) => c.type === "walletConnect");
   const { chainInfo, wrongNetwork } = useSigner();
   const { select, switching, activeId } = useChainSwitcher();
 
@@ -108,10 +114,26 @@ export default function ConnectBar({ onHome }: { onHome?: () => void }) {
                 <button
                   className="secondary"
                   disabled={isPending}
-                  onClick={() => connect({ connector: connectors[0] })}
+                  onClick={() => connect({ connector: injectedConnector })}
                 >
-                  {isPending ? <span className="spin">CONNECTING</span> : "connect wallet"}
+                  {isPending ? (
+                    <span className="spin">CONNECTING</span>
+                  ) : walletConnectConnector ? (
+                    "browser wallet"
+                  ) : (
+                    "connect wallet"
+                  )}
                 </button>
+                {walletConnectConnector ? (
+                  <button
+                    className="secondary"
+                    disabled={isPending}
+                    onClick={() => connect({ connector: walletConnectConnector })}
+                    title="connect a phone wallet with a QR code"
+                  >
+                    mobile / QR
+                  </button>
+                ) : null}
                 {error ? <span className="error">{error.message}</span> : null}
               </>
             ) : (

@@ -1,7 +1,10 @@
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { useAccount, useConnect } from "wagmi";
 import { useSigner } from "../signer";
 import { saveRunnerCreds, signInWithWallet, useRunnerApi } from "./runnerClient";
+
+/** How a wallet reaches us: an extension in this browser, or a phone over QR. */
+export type ConnectKind = "injected" | "walletConnect";
 
 /**
  * Signing in with a wallet, as one action any part of the app can offer.
@@ -13,7 +16,15 @@ import { saveRunnerCreds, signInWithWallet, useRunnerApi } from "./runnerClient"
  * otherwise propagate between components, and a login is exactly the moment a
  * clean reload is acceptable.
  *
- * Returns a `signIn` to call, whether a wallet is connected yet, and any error.
+ * A wallet can arrive two ways — a browser extension (injected) or a phone
+ * scanning a WalletConnect QR — so `signIn` takes an optional kind. On a phone
+ * with no extension the injected path has nothing to connect to; WalletConnect
+ * is what makes the app usable there. The QR connector only exists when a
+ * project id was baked in at build (see wagmi.ts), so `hasWalletConnect` tells
+ * the UI whether to offer that choice at all.
+ *
+ * Returns a `signIn(kind?)` to call, whether a wallet is connected yet, whether
+ * WalletConnect is available, and any error.
  */
 export function useSignIn() {
   const { base } = useRunnerApi();
@@ -23,7 +34,16 @@ export function useSignIn() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const signIn = useCallback(async () => {
+  const injectedConnector = useMemo(
+    () => connectors.find((c) => c.type === "injected") ?? connectors[0],
+    [connectors],
+  );
+  const walletConnectConnector = useMemo(
+    () => connectors.find((c) => c.type === "walletConnect"),
+    [connectors],
+  );
+
+  const signIn = useCallback(async (kind: ConnectKind = "injected") => {
     setError(null);
     if (!base) {
       setError("the service address isn't configured yet");
@@ -31,8 +51,17 @@ export function useSignIn() {
     }
     if (!isConnected || !signer.address || !signer.walletClient) {
       // Connect the wallet first; the user presses sign in once more to sign.
-      if (connectors[0]) connect({ connector: connectors[0] });
-      setError("approve the wallet, then press sign in again");
+      const chosen = kind === "walletConnect" ? walletConnectConnector : injectedConnector;
+      if (chosen) {
+        connect({ connector: chosen });
+        setError(
+          kind === "walletConnect"
+            ? "scan the QR / approve on your phone, then press sign in"
+            : "approve the wallet, then press sign in again",
+        );
+      } else {
+        setError("no wallet available to connect");
+      }
       return;
     }
     const address = signer.address;
@@ -50,7 +79,14 @@ export function useSignIn() {
     } finally {
       setBusy(false);
     }
-  }, [base, isConnected, signer, connect, connectors]);
+  }, [base, isConnected, signer, connect, injectedConnector, walletConnectConnector]);
 
-  return { signIn, busy, error, walletConnected: isConnected, hasBackend: Boolean(base) };
+  return {
+    signIn,
+    busy,
+    error,
+    walletConnected: isConnected,
+    hasBackend: Boolean(base),
+    hasWalletConnect: Boolean(walletConnectConnector),
+  };
 }
