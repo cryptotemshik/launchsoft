@@ -239,8 +239,25 @@ const CONFIG_PATH = process.env.SNIPE_CONFIG ?? "snipe.config.json";
 const ACCOUNTS_ROOT = accountsRoot();
 /** Free-plan ceilings. Pro (and the owner) are unlimited. */
 const FREE_WATCHLIST_MAX = 3;
-/** How far ahead the scanner shows on the free plan; Pro sees the whole window. */
+/**
+ * How far ahead the scanner shows on the free plan; Pro sees everything.
+ *
+ * This is a horizon on the *mint start*, not on how far back the chain was
+ * read: free readers see a drop that opens inside the next few hours and
+ * nothing scheduled beyond it, so Pro really does hear about later drops first.
+ */
 const FREE_SCAN_HOURS = envNumber(process.env.SNIPE_FREE_SCAN_HOURS, 6, 1);
+/**
+ * How far *back* a free scan reads to populate that horizon.
+ *
+ * A drop opening in an hour may have been configured days ago, so the forward
+ * horizon above is only honest if the backward read is wide enough to have
+ * found it. Free readers don't pick a window, so theirs is fixed here. Where
+ * the server keeps a drop index this is answered from it with no chain read, so
+ * a generous default costs nothing; a server without one falls back to reading
+ * this many hours of chain, capped by MAX_SCAN_HOURS.
+ */
+const FREE_LOOKBACK_HOURS = envNumber(process.env.SNIPE_FREE_LOOKBACK_HOURS, 168, 6);
 /** Pro subscription: a fixed dollar price, one month at a time, paid in ETH. */
 const PRO_PRICE_CENTS = envNumber(process.env.SNIPE_PRO_CENTS, 2999, 1);
 const PRO_DAYS = envNumber(process.env.SNIPE_PRO_DAYS, 30, 1);
@@ -2019,6 +2036,35 @@ async function startScan(hours: number): Promise<Record<string, unknown>> {
 
   scanInflight.set(hours, run);
   return run;
+}
+
+/**
+ * The free-plan view of a scan.
+ *
+ * A scan is read and cached once, in full, and shared by everyone — so the
+ * free/Pro line is drawn here, on the way out, not by reading a different
+ * window. Free readers keep every drop whose mint is already open or opens
+ * inside FREE_SCAN_HOURS and lose the rest; the count of what was withheld
+ * rides along as `lockedCount` so the panel can offer Pro without naming a
+ * single collection behind the lock. `related` is rebuilt from only the
+ * surviving contracts, so a far-off drop cannot leak through its owner grouping.
+ */
+function freeScanBody(
+  body: Record<string, unknown>,
+  nowSecs: number,
+): Record<string, unknown> {
+  const horizon = nowSecs + FREE_SCAN_HOURS * 3600;
+  const all = (body.drops as ScannedDrop[] | undefined) ?? [];
+  const visible = all.filter((d) => Number(d.startTime ?? 0) <= horizon);
+  const keys = visible.map((d) => d.contract.toLowerCase());
+  return {
+    ...body,
+    drops: visible,
+    collections: visible.length,
+    related: creators.relatedFor(keys),
+    lockedCount: all.length - visible.length,
+    freeHorizonHours: FREE_SCAN_HOURS,
+  };
 }
 
 /**
@@ -4728,25 +4774,30 @@ const server = createServer(async (req, res) => {
       // The index has already done the reading, so it can answer further back
       // than one request could ever read.
       const ceiling = dropIndex ? Math.max(MAX_SCAN_HOURS, INDEX_DAYS * 24) : MAX_SCAN_HOURS;
-      let hours = Math.min(
+      const pro = isAdminReq(req) || isProReq(req);
+      // Pro picks how far back to read. Free doesn't choose a window at all:
+      // theirs is fixed wide so that everything opening inside the next few
+      // hours is actually found (a drop opening soon may have been configured
+      // days ago), and freeScanBody below is what draws the free/Pro line — by
+      // mint start, not by how far back the chain was read. The wide read is the
+      // index's job where there is one, so it costs no extra chain traffic.
+      const requested = Math.min(
         ceiling,
         Math.max(1, Number(url.searchParams.get("hours") ?? 24) || 24),
       );
-      // The free plan sees only the nearest few hours; Pro (and the owner) get
-      // the whole window. Clamped on the server so it can't be widened by hand,
-      // and the flags tell the panel to offer Pro for the longer views.
-      const pro = isAdminReq(req) || isProReq(req);
-      if (!pro) hours = Math.min(hours, FREE_SCAN_HOURS);
+      const hours = pro ? requested : Math.min(ceiling, FREE_LOOKBACK_HOURS);
       const gate = { proWindow: pro, freeMaxHours: FREE_SCAN_HOURS };
+      const shape = (b: Record<string, unknown>) =>
+        pro ? b : freeScanBody(b, Math.floor(Date.now() / 1000));
       const fresh = url.searchParams.get("fresh") === "1";
       const hit = scanCache.get(hours);
       if (!fresh && hit && Date.now() - hit.at < SCAN_TTL_MS) {
-        json(res, 200, { ...hit.body, cachedAt: hit.at, ...gate });
+        json(res, 200, { ...shape(hit.body), cachedAt: hit.at, ...gate });
         return;
       }
       // Two panels asking at once should cost one scan, not two.
       const inflight = scanInflight.get(hours);
-      json(res, 200, { ...(await (inflight ?? startScan(hours))), ...gate });
+      json(res, 200, { ...shape(await (inflight ?? startScan(hours))), ...gate });
       return;
     }
 

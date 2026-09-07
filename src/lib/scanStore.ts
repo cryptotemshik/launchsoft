@@ -65,6 +65,13 @@ export interface ScanView {
   source?: "index" | "live";
   /** How far back the index actually reaches, in hours. */
   indexHours?: number;
+  /**
+   * Free-plan fields. The server sends these only to a free reader: how many
+   * drops opening beyond the free horizon it withheld, and what that horizon
+   * is in hours. Absent for Pro (who sees everything) and for older servers.
+   */
+  lockedCount?: number;
+  freeHorizonHours?: number;
 }
 
 export interface ScanState {

@@ -118,10 +118,10 @@ function numberOrUndefined(v: string): number | undefined {
 
 export default function ScannerTab() {
   const { url, setUrl, token, setToken, base, call, save, serverVersion } = useRunnerApi();
-  const { me, loading: meLoading } = useMe();
-  // Free (and signed-out) sees only the nearest few hours; Pro and the owner
-  // get the whole window. The server enforces the same clamp — this only
-  // decides what the chips offer and whether to nudge toward Pro.
+  const { me } = useMe();
+  // Free (and signed-out) sees only mints opening within the next few hours;
+  // Pro and the owner see the whole schedule. The server draws the same line —
+  // this only decides whether to show the window chips or nudge toward Pro.
   const pro = me?.tier === "pro" || me?.admin === true;
   const FREE_SCAN_HOURS = 6;
   const { urls: customRpcs } = useCustomRpcs();
@@ -193,15 +193,6 @@ export default function ScannerTab() {
     setScanArrivalHandler(sndFeedTick);
     return () => setScanArrivalHandler(null);
   }, []);
-
-  // A free viewer parked on a Pro-length window would just see it clamped to
-  // 6h with the wrong chip lit — so once we know they are not Pro, snap to the
-  // free window. Only ever narrows; a Pro user is left alone.
-  useEffect(() => {
-    if (!base || meLoading || pro) return;
-    if (hours > FREE_SCAN_HOURS) void load(FREE_SCAN_HOURS);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [base, meLoading, pro, hours]);
 
   /**
    * Hand the server the endpoint this browser is set up with.
@@ -520,26 +511,34 @@ export default function ScannerTab() {
         <div className="scan-bar">
           <span className="bar-label">WINDOW</span>
           <div className="chip-group">
-            {WINDOWS.map((w) => {
-              const locked = !pro && w.hours > FREE_SCAN_HOURS;
-              return (
+            {pro ? (
+              // The window picks how far back to read for the drop configs;
+              // what it shows is still "from now on", ordered by mint start.
+              WINDOWS.map((w) => (
                 <button
                   key={w.hours}
                   className={hours === w.hours ? "secondary active-chip" : "secondary"}
                   disabled={busy || !base}
-                  onClick={() => (locked ? goTab("pricing") : void load(w.hours))}
-                  title={locked ? "Longer windows are Pro — tap to unlock" : undefined}
+                  onClick={() => void load(w.hours)}
                 >
                   {w.label}
-                  {locked ? " 🔒" : ""}
                 </button>
-              );
-            })}
+              ))
+            ) : (
+              // Free readers don't pick a window — they always see the mints
+              // opening within the free horizon, and the rest is under lock.
+              <span
+                className="pill"
+                title="Free shows mints opening in the next few hours — Pro unlocks the whole schedule"
+              >
+                next {view?.freeHorizonHours ?? FREE_SCAN_HOURS}h · free
+              </span>
+            )}
             <button
               className="secondary"
               disabled={busy || !base}
               onClick={() => void load(hours, true)}
-              title="Ignore the cached result and read the whole window again"
+              title="Ignore the cached result and read again"
             >
               {busy ? <span className="spin">SCANNING</span> : "re-scan"}
             </button>
@@ -624,8 +623,18 @@ export default function ScannerTab() {
             style={{ margin: "8px 0 0", padding: "8px 12px", display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}
           >
             <span className="dim" style={{ fontSize: 12 }}>
-              Free shows the next <b>{FREE_SCAN_HOURS}h</b> of mints. <b>Pro</b> unlocks the
-              full window — up to 14 days ahead.
+              Free shows mints opening in the next{" "}
+              <b>{view?.freeHorizonHours ?? FREE_SCAN_HOURS}h</b>.{" "}
+              {typeof view?.lockedCount === "number" && view.lockedCount > 0 ? (
+                <>
+                  <b>🔒 {view.lockedCount}</b> more scheduled later{" "}
+                  {view.lockedCount === 1 ? "is" : "are"} Pro — up to 14 days ahead.
+                </>
+              ) : (
+                <>
+                  <b>Pro</b> unlocks everything scheduled later — up to 14 days ahead.
+                </>
+              )}
             </span>
             <button
               className="primary"
