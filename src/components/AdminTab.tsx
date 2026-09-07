@@ -4,6 +4,7 @@ import { useRunnerApi } from "../lib/runnerClient";
 import { useActiveChain } from "../signer";
 import { fetchEthBalance, fetchTopHolders, type Holder } from "../lib/discoverHolders";
 import AdminFeedEditor from "./AdminFeedEditor";
+import AdminDashboard, { type DashSummary } from "./AdminDashboard";
 import { shortAddress } from "./ConnectBar";
 
 /**
@@ -27,19 +28,10 @@ interface Account {
   freeSnipes: number;
   snipes: number;
 }
-interface Summary {
-  accounts: number;
-  pro: number;
-  totalBalanceEth: string;
-  totalSnipes: number;
-  treasury: string | null;
-  sweeping: boolean;
-}
-
 export default function AdminTab() {
   const { base, token, call } = useRunnerApi();
   const [accounts, setAccounts] = useState<Account[]>([]);
-  const [summary, setSummary] = useState<Summary | null>(null);
+  const [summary, setSummary] = useState<DashSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -104,7 +96,7 @@ export default function AdminTab() {
     try {
       const r = (await call("/api/admin/accounts")) as unknown as {
         accounts: Account[];
-        summary: Summary;
+        summary: DashSummary;
       };
       setAccounts(r.accounts);
       setSummary(r.summary);
@@ -305,24 +297,11 @@ export default function AdminTab() {
       {error ? <p className="error">{error}</p> : null}
       {note ? <p className="ok">{note}</p> : null}
 
-      {summary ? (
-        <div style={{ display: "flex", gap: 18, flexWrap: "wrap", marginBottom: 16 }}>
-          <Stat label="accounts" value={String(summary.accounts)} />
-          <Stat label="pro" value={String(summary.pro)} />
-          <Stat label="balances held" value={`${summary.totalBalanceEth} ETH`} />
-          <Stat label="snipes billed" value={String(summary.totalSnipes)} />
-        </div>
-      ) : null}
-      {summary ? (
-        <p className="dim" style={{ fontSize: 12, marginTop: -8, marginBottom: 16 }}>
-          {summary.sweeping && summary.treasury ? (
-            <>deposits auto-sweep to your treasury <code className="mono-break">{summary.treasury}</code></>
-          ) : (
-            <>
-              ⚠ no treasury set — deposits stay on per-account wallets. Set{" "}
-              <code>SNIPE_TREASURY</code> (or <code>SNIPE_WITHDRAW_TO</code>) on the server to auto-collect.
-            </>
-          )}
+      {summary ? <AdminDashboard summary={summary} accounts={accounts} /> : null}
+      {summary && !(summary.sweeping && summary.treasury) ? (
+        <p className="dim" style={{ fontSize: 12, marginTop: -4, marginBottom: 16 }}>
+          Deposits stay on per-account wallets (Option A). Set{" "}
+          <code>SNIPE_TREASURY</code> (or <code>SNIPE_WITHDRAW_TO</code>) on the server to auto-collect.
         </p>
       ) : null}
 
@@ -550,14 +529,3 @@ export default function AdminTab() {
 }
 
 const btn = { padding: "2px 8px", fontSize: 11 } as const;
-
-function Stat({ label, value }: { label: string; value: string }) {
-  return (
-    <div>
-      <div style={{ fontSize: 20, fontWeight: 600 }}>{value}</div>
-      <div className="dim" style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.04em" }}>
-        {label}
-      </div>
-    </div>
-  );
-}

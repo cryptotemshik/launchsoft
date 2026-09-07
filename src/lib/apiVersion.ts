@@ -11,7 +11,7 @@
  * Bump it whenever the request or response shape of an /api route changes in a
  * way an older server would mishandle.
  */
-export const API_VERSION = 47;
+export const API_VERSION = 48;
 
 /** What to tell the user when the server is behind. */
 export const UPDATE_HINT =

@@ -3450,9 +3450,64 @@ const server = createServer(async (req, res) => {
       return;
     }
     const now = Date.now();
+    // Daily buckets for the dashboard's time-series. A month is enough to read
+    // a trend without turning the endpoint into a full analytics store.
+    const DAY = 86_400_000;
+    const SERIES_DAYS = 30;
+    const dayKey = (ms: number) => new Date(ms).toISOString().slice(0, 10);
+    const firstDay = dayKey(now - (SERIES_DAYS - 1) * DAY);
+    interface Bucket {
+      signups: number;
+      revenueWei: bigint;
+      revenueCents: number;
+      snipes: number;
+    }
+    const buckets = new Map<string, Bucket>();
+    const bucket = (k: string): Bucket => {
+      let b = buckets.get(k);
+      if (!b) {
+        b = { signups: 0, revenueWei: 0n, revenueCents: 0, snipes: 0 };
+        buckets.set(k, b);
+      }
+      return b;
+    };
+    // Revenue is what the business earned: Pro subscription payments and snipe
+    // fees. Both land in the ledger as negative wei (they leave a user's
+    // balance), so revenue is the sign-flipped sum. Funding spend and
+    // withdrawals move a user's own money and are not revenue.
+    let subWei = 0n;
+    let feeWei = 0n;
+    let subCents = 0;
+    let feeCents = 0;
+    let accountsBeforeWindow = 0;
+
     const accounts = listAccounts(ACCOUNTS_ROOT).map((a) => {
       const cfgPath = accountConfigPath(ACCOUNTS_ROOT, a.address);
       const bill = loadBilling(cfgPath);
+      if (dayKey(a.createdAt) < firstDay) accountsBeforeWindow += 1;
+      else bucket(dayKey(a.createdAt)).signups += 1;
+      let snipes = 0;
+      for (const e of bill.entries) {
+        if (e.kind === "snipe") {
+          snipes += 1;
+          const w = -BigInt(e.wei); // fee; a free snipe is zero
+          if (w > 0n) {
+            feeWei += w;
+            feeCents += e.usdCents ?? 0;
+            const b = bucket(dayKey(e.at));
+            b.revenueWei += w;
+            b.revenueCents += e.usdCents ?? 0;
+          }
+          bucket(dayKey(e.at)).snipes += 1;
+        } else if (e.kind === "subscription") {
+          const w = -BigInt(e.wei);
+          subWei += w;
+          subCents += e.usdCents ?? 0;
+          const b = bucket(dayKey(e.at));
+          b.revenueWei += w;
+          b.revenueCents += e.usdCents ?? 0;
+        }
+      }
       return {
         address: a.address,
         createdAt: a.createdAt,
@@ -3464,21 +3519,59 @@ const server = createServer(async (req, res) => {
         balanceWei: bill.balanceWei,
         balanceEth: formatEther(BigInt(bill.balanceWei)),
         freeSnipes: bill.freeSnipes,
-        snipes: bill.entries.filter((e) => e.kind === "snipe").length,
+        snipes,
       };
     });
-    // A little roll-up for the top of the dashboard.
+
+    // Fill the window day by day so the chart has no gaps, oldest first.
+    const series = Array.from({ length: SERIES_DAYS }, (_, i) => {
+      const k = dayKey(now - (SERIES_DAYS - 1 - i) * DAY);
+      const b = buckets.get(k);
+      return {
+        day: k,
+        signups: b?.signups ?? 0,
+        revenueWei: (b?.revenueWei ?? 0n).toString(),
+        revenueCents: b?.revenueCents ?? 0,
+        snipes: b?.snipes ?? 0,
+      };
+    });
+
     const totalBalanceWei = accounts.reduce((s2, a) => s2 + BigInt(a.balanceWei), 0n);
+    const proCount = accounts.filter((a) => a.tier === "pro").length;
+    let ethUsd: number | null = null;
+    try {
+      const cfg = loadConfig(CONFIG_PATH);
+      ethUsd = await nativeUsd(getChainInfo(cfg.chainId)?.blockscoutApi);
+    } catch {
+      ethUsd = null;
+    }
     json(res, 200, {
       accounts,
       summary: {
         accounts: accounts.length,
-        pro: accounts.filter((a) => a.tier === "pro").length,
+        pro: proCount,
+        free: accounts.length - proCount,
         totalBalanceWei: totalBalanceWei.toString(),
         totalBalanceEth: formatEther(totalBalanceWei),
         totalSnipes: accounts.reduce((s2, a) => s2 + a.snipes, 0),
         treasury: treasuryAddress(),
         sweeping: DEPOSITS_ON && Boolean(treasuryAddress()),
+        // Dashboard extras.
+        ethUsd,
+        proPriceCents: PRO_PRICE_CENTS,
+        snipePriceCents: SNIPE_PRICE_CENTS,
+        mrrCents: proCount * PRO_PRICE_CENTS,
+        revenue: {
+          subscriptionWei: subWei.toString(),
+          snipeFeeWei: feeWei.toString(),
+          totalWei: (subWei + feeWei).toString(),
+          subscriptionCents: subCents,
+          snipeFeeCents: feeCents,
+          totalCents: subCents + feeCents,
+        },
+        seriesDays: SERIES_DAYS,
+        accountsBeforeWindow,
+        series,
       },
     });
     return;
