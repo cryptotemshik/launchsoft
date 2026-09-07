@@ -34,6 +34,17 @@ describe("feed articles", () => {
     expect(b.firstPublish).toBe(false); // already public — no re-push
   });
 
+  it("stamps publishedAt on first publish and keeps it across edits", () => {
+    const draft = upsertArticle(cfg, { title: "D" }, 1_000);
+    expect(draft.article.publishedAt).toBeUndefined(); // still a draft
+    const pub = upsertArticle(cfg, { id: draft.article.id, title: "D", published: true }, 2_000);
+    expect(pub.article.publishedAt).toBe(2_000);
+    // A later edit must not make it look new again.
+    const edit = upsertArticle(cfg, { id: draft.article.id, title: "D2", published: true }, 9_000);
+    expect(edit.article.publishedAt).toBe(2_000);
+    expect(edit.article.updatedAt).toBe(9_000);
+  });
+
   it("keeps id and createdAt across an edit", () => {
     const a = upsertArticle(cfg, { title: "One" });
     const b = upsertArticle(cfg, { id: a.article.id, title: "One edited" });

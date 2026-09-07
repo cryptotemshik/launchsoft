@@ -44,6 +44,12 @@ export interface Article {
   published: boolean;
   createdAt: number;
   updatedAt: number;
+  /**
+   * When it first went public, unix ms. This — not createdAt (a draft may sit
+   * for days) nor updatedAt (a later edit bumps it) — is what a "new" badge
+   * should count from. Absent until first published, and on older data.
+   */
+  publishedAt?: number;
 }
 
 function feedPath(configPath: string): string {
@@ -96,6 +102,7 @@ function normalise(a: Article): Article {
     published: a.published === true,
     createdAt: Number.isFinite(a.createdAt) ? a.createdAt : Date.now(),
     updatedAt: Number.isFinite(a.updatedAt) ? a.updatedAt : Date.now(),
+    publishedAt: Number.isFinite(a.publishedAt) ? a.publishedAt : undefined,
   };
 }
 
@@ -128,6 +135,12 @@ export function upsertArticle(
   const list = loadFeed(configPath);
   const existing = input.id ? list.find((a) => a.id === input.id) : undefined;
   const wasPublished = existing?.published === true;
+  const nowPublished = (input.published ?? existing?.published ?? false) === true;
+  // Stamp the first moment it goes public; keep it once set, so an edit to a
+  // long-published article does not make it look new again.
+  const publishedAt = nowPublished
+    ? (existing?.publishedAt ?? nowMs)
+    : existing?.publishedAt;
 
   const article: Article = normalise({
     id: existing?.id ?? id(),
@@ -146,6 +159,7 @@ export function upsertArticle(
     published: input.published ?? existing?.published ?? false,
     createdAt: existing?.createdAt ?? nowMs,
     updatedAt: nowMs,
+    publishedAt,
   } as Article);
 
   const next = existing ? list.map((a) => (a.id === article.id ? article : a)) : [article, ...list];

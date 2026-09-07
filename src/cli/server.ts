@@ -3353,7 +3353,7 @@ const server = createServer(async (req, res) => {
     const progress = a ? loadFeedProgress(a.cfgPath) : {};
     const articles = loadFeed(CONFIG_PATH)
       .filter((art) => art.published)
-      .sort((x, y) => y.createdAt - x.createdAt)
+      .sort((x, y) => (y.publishedAt ?? y.createdAt) - (x.publishedAt ?? x.createdAt))
       .map((art) => {
         const open = !art.pro || pro;
         const card = {
@@ -3365,6 +3365,7 @@ const server = createServer(async (req, res) => {
           pro: art.pro,
           wlDeadline: art.wlDeadline,
           createdAt: art.createdAt,
+          publishedAt: art.publishedAt,
           checklistCount: art.checklist.length,
           locked: !open,
         };

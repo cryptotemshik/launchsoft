@@ -26,6 +26,7 @@ interface Article {
   pro: boolean;
   wlDeadline?: number;
   createdAt: number;
+  publishedAt?: number;
   checklistCount: number;
   locked: boolean;
   body?: string;
@@ -34,6 +35,9 @@ interface Article {
   checklist: ChecklistItem[];
   checked: string[];
 }
+
+/** How long after going public an article wears a "new" badge. */
+const NEW_MS = 72 * 3600 * 1000;
 
 function countdown(deadlineSecs: number, now: number): string {
   const s = deadlineSecs - now;
@@ -54,6 +58,8 @@ export default function FeedTab() {
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
   // Local overlay of ticked items, so a click feels instant.
   const [checks, setChecks] = useState<Record<string, Set<string>>>({});
+  // Which tag the reader has narrowed to, if any.
+  const [tag, setTag] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (!base) return;
@@ -97,7 +103,22 @@ export default function FeedTab() {
     }
   }
 
-  const list = useMemo(() => articles ?? [], [articles]);
+  // Every tag across the feed, for the filter row. A tag the reader has picked
+  // that then vanishes (its only article unpublished) is dropped silently.
+  const allTags = useMemo(() => {
+    const s = new Set<string>();
+    for (const a of articles ?? []) for (const t of a.tags) s.add(t);
+    return [...s].sort((x, y) => x.localeCompare(y));
+  }, [articles]);
+
+  useEffect(() => {
+    if (tag && !allTags.includes(tag)) setTag(null);
+  }, [tag, allTags]);
+
+  const list = useMemo(() => {
+    const base = articles ?? [];
+    return tag ? base.filter((a) => a.tags.includes(tag)) : base;
+  }, [articles, tag]);
 
   if (!base) {
     return (
@@ -117,13 +138,37 @@ export default function FeedTab() {
           checklist you can tick off. <b>Pro</b> articles land here first — free
           readers see a preview.
         </p>
+        {allTags.length > 0 ? (
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 4 }}>
+            <button
+              className={tag === null ? "secondary active-chip" : "secondary"}
+              style={{ padding: "2px 10px", fontSize: 11 }}
+              onClick={() => setTag(null)}
+            >
+              all
+            </button>
+            {allTags.map((t) => (
+              <button
+                key={t}
+                className={tag === t ? "secondary active-chip" : "secondary"}
+                style={{ padding: "2px 10px", fontSize: 11 }}
+                onClick={() => setTag(tag === t ? null : t)}
+              >
+                #{t}
+              </button>
+            ))}
+          </div>
+        ) : null}
         {error ? <p className="error">{error}</p> : null}
-        {articles && list.length === 0 ? <p className="dim">Nothing posted yet.</p> : null}
+        {articles && (articles.length === 0 || list.length === 0) ? (
+          <p className="dim">{tag ? `Nothing tagged #${tag}.` : "Nothing posted yet."}</p>
+        ) : null}
         {!articles ? <p className="dim">Loading…</p> : null}
       </div>
 
       {list.map((a) => {
         const done = checks[a.id]?.size ?? 0;
+        const isNew = (a.publishedAt ?? a.createdAt) > now * 1000 - NEW_MS;
         return (
           <div className="panel" key={a.id}>
             {a.cover ? (
@@ -135,6 +180,7 @@ export default function FeedTab() {
             ) : null}
             <div style={{ display: "flex", gap: 8, alignItems: "baseline", flexWrap: "wrap" }}>
               <h2 style={{ margin: 0 }}>{a.title}</h2>
+              {isNew ? <span className="pill warn">NEW</span> : null}
               {a.pro ? <span className="pill ok">PRO</span> : <span className="pill">free</span>}
               {a.wlDeadline ? (
                 <span className={a.wlDeadline - now <= 0 ? "pill warn" : "pill"}>
@@ -144,8 +190,18 @@ export default function FeedTab() {
             </div>
             {a.project ? <div className="dim" style={{ marginTop: 2 }}>{a.project}</div> : null}
             {a.tags.length > 0 ? (
-              <div className="dim" style={{ fontSize: 11, marginTop: 4 }}>
-                {a.tags.map((t) => `#${t}`).join(" ")}
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 4 }}>
+                {a.tags.map((t) => (
+                  <button
+                    key={t}
+                    className="link-btn dim"
+                    style={{ fontSize: 11 }}
+                    onClick={() => setTag(tag === t ? null : t)}
+                    title={`filter by #${t}`}
+                  >
+                    #{t}
+                  </button>
+                ))}
               </div>
             ) : null}
 
