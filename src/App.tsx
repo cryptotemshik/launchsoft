@@ -93,7 +93,7 @@ const TAB_ICON = {
 } as const;
 
 export default function App() {
-  const [tab, setTab] = useState<Tab>("dashboard");
+  const [tab, setTab] = useState<Tab>("scanner");
   // Which nav group's menu is open, if any. One at a time; a tap toggles it,
   // hover opens it on a mouse, and a tap outside or picking a tab closes it.
   const [openGroup, setOpenGroup] = useState<string | null>(null);
@@ -127,7 +127,7 @@ export default function App() {
   }, [base, token, call]);
   // Never leave a non-admin parked on the admin tab (e.g. after signing out).
   useEffect(() => {
-    if (tab === "admin" && !isAdmin) setTab("dashboard");
+    if (tab === "admin" && !isAdmin) setTab("scanner");
   }, [tab, isAdmin]);
 
   // One capture-phase listener gives every button its click tick — and the
