@@ -3,8 +3,18 @@ import { useAccount, useConnect } from "wagmi";
 import { useSigner } from "../signer";
 import { saveRunnerCreds, signInWithWallet, useRunnerApi } from "./runnerClient";
 
-/** How a wallet reaches us: an extension in this browser, or a phone over QR. */
-export type ConnectKind = "injected" | "walletConnect";
+/**
+ * How a wallet reaches us. "auto" is the only one the UI needs: it picks the
+ * injected provider when one is present (a desktop extension, or a wallet's own
+ * in-app browser) and WalletConnect otherwise (QR on desktop, deep link on a
+ * phone). The explicit kinds remain for callers that want to force a path.
+ */
+export type ConnectKind = "auto" | "injected" | "walletConnect";
+
+/** True when a wallet has injected a provider into this page. */
+function hasInjectedProvider(): boolean {
+  return typeof window !== "undefined" && Boolean((window as { ethereum?: unknown }).ethereum);
+}
 
 /**
  * Signing in with a wallet, as one action any part of the app can offer.
@@ -43,7 +53,7 @@ export function useSignIn() {
     [connectors],
   );
 
-  const signIn = useCallback(async (kind: ConnectKind = "injected") => {
+  const signIn = useCallback(async (kind: ConnectKind = "auto") => {
     setError(null);
     if (!base) {
       setError("the service address isn't configured yet");
@@ -51,14 +61,20 @@ export function useSignIn() {
     }
     if (!isConnected || !signer.address || !signer.walletClient) {
       // Connect the wallet first; the user presses sign in once more to sign.
-      const chosen = kind === "walletConnect" ? walletConnectConnector : injectedConnector;
+      // "auto" is what every button uses: an injected provider if the page has
+      // one, else WalletConnect (which itself shows a QR on desktop and a deep
+      // link on a phone) — so one button covers every device.
+      const chosen =
+        kind === "walletConnect"
+          ? walletConnectConnector
+          : kind === "injected"
+            ? injectedConnector
+            : hasInjectedProvider()
+              ? injectedConnector
+              : (walletConnectConnector ?? injectedConnector);
       if (chosen) {
         connect({ connector: chosen });
-        setError(
-          kind === "walletConnect"
-            ? "scan the QR / approve on your phone, then press sign in"
-            : "approve the wallet, then press sign in again",
-        );
+        setError("approve in your wallet, then press sign in");
       } else {
         setError("no wallet available to connect");
       }

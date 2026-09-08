@@ -857,6 +857,38 @@ export default function ScannerTab() {
           </div>
         ) : null}
 
+        {/* Locked launches: free readers see that more drops are scheduled past
+            their horizon, rendered as blurred rows behind a lock so the value —
+            and the reason to upgrade — is visible without leaking the drops. */}
+        {!pro && view && (view.lockedCount ?? 0) > 0 ? (
+          <div className="locked-preview">
+            <div className="locked-rows" aria-hidden>
+              {Array.from({ length: Math.min(view.lockedCount ?? 0, 6) }).map((_, i) => (
+                <div className="locked-row" key={i}>
+                  <span className="lr lr-name" />
+                  <span className="lr lr-cell" />
+                  <span className="lr lr-cell" />
+                  <span className="lr lr-cell" />
+                  <span className="lr lr-pill" />
+                </div>
+              ))}
+            </div>
+            <div className="locked-overlay">
+              <div className="locked-lock" aria-hidden>🔒</div>
+              <div className="locked-title">
+                {view.lockedCount} more launch{view.lockedCount === 1 ? "" : "es"} scheduled
+                beyond {view.freeHorizonHours ?? FREE_SCAN_HOURS}h
+              </div>
+              <div className="locked-sub">
+                Pro shows the full 14-day schedule — see drops before everyone else.
+              </div>
+              <button className="primary locked-cta" onClick={() => goTab("pricing")}>
+                🔓 Get Pro
+              </button>
+            </div>
+          </div>
+        ) : null}
+
         {view ? (
           <p className="dim hint" style={{ marginBottom: 0 }}>
             Read {view.hours}h of {view.chain ?? "the chain"} — blocks{" "}

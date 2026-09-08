@@ -108,29 +108,23 @@ export default function ConnectBar({ onHome }: { onHome?: () => void }) {
           {mode === "wallet" ? (
             !isConnected ? (
               <>
+                {/* One button: an injected wallet if the page has one, else
+                    WalletConnect (QR on desktop, deep link on a phone). */}
                 <button
                   className="secondary"
                   disabled={isPending}
-                  onClick={() => connect({ connector: injectedConnector })}
+                  onClick={() => {
+                    const hasInjected =
+                      typeof window !== "undefined" &&
+                      Boolean((window as { ethereum?: unknown }).ethereum);
+                    const chosen = hasInjected
+                      ? injectedConnector
+                      : (walletConnectConnector ?? injectedConnector);
+                    connect({ connector: chosen });
+                  }}
                 >
-                  {isPending ? (
-                    <span className="spin">CONNECTING</span>
-                  ) : walletConnectConnector ? (
-                    "browser wallet"
-                  ) : (
-                    "connect wallet"
-                  )}
+                  {isPending ? <span className="spin">CONNECTING</span> : "connect wallet"}
                 </button>
-                {walletConnectConnector ? (
-                  <button
-                    className="secondary"
-                    disabled={isPending}
-                    onClick={() => connect({ connector: walletConnectConnector })}
-                    title="connect a phone wallet with a QR code"
-                  >
-                    mobile / QR
-                  </button>
-                ) : null}
                 {error ? <span className="error">{error.message}</span> : null}
               </>
             ) : (
