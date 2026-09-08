@@ -29,7 +29,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { resolve } from "node:path";
-import { genReferralCode } from "./referrals";
+import { genReferralCode, normRefCode } from "./referrals";
 
 /** What a wallet may reveal about itself. All optional, all self-served. */
 export interface AccountProfile {
@@ -243,6 +243,35 @@ export function ensureReferralCode(root: string, address: string): string {
   registry.set(addr, { ...current, referralCode: code });
   writeRegistry(root, registry);
   return code;
+}
+
+/** Rules for a custom referral code: 3–24 chars, letters and digits only. */
+export const REF_CODE_MIN = 3;
+export const REF_CODE_MAX = 24;
+
+/**
+ * Set an account's referral code to one it chose. Anyone may pick a vanity code
+ * — not only influencers. Throws if it's too short or already taken by someone
+ * else (case-insensitive). Returns the saved record.
+ */
+export function setReferralCode(root: string, address: string, desired: string): AccountRecord {
+  const addr = normAddress(address);
+  const code = normRefCode(desired);
+  if (code.length < REF_CODE_MIN) {
+    throw new Error(`code must be at least ${REF_CODE_MIN} characters (a–z, 0–9)`);
+  }
+  const registry = readRegistry(root);
+  const current = registry.get(addr) ?? ensureAccount(root, addr);
+  if (current.referralCode?.toLowerCase() === code) return current; // no change
+  for (const r of registry.values()) {
+    if (r.address !== addr && r.referralCode?.toLowerCase() === code) {
+      throw new Error("that code is already taken — pick another");
+    }
+  }
+  const next: AccountRecord = { ...current, referralCode: code };
+  registry.set(addr, next);
+  writeRegistry(root, registry);
+  return next;
 }
 
 /** The account that owns a referral code, or null. Case-insensitive. */

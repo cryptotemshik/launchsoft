@@ -135,6 +135,7 @@ import {
   isPro,
   listAccounts,
   referralsOf,
+  setReferralCode,
   tierOf,
   updateAccount,
   type AccountProfile,
@@ -3832,6 +3833,23 @@ const server = createServer(async (req, res) => {
         .slice(0, 200)
         .map((r) => ({ address: r.address, joinedAt: r.createdAt, paying: r.paidEver === true })),
     });
+    return;
+  }
+
+  // Pick a custom referral code — open to everyone, not just influencers.
+  if (url.pathname === "/api/referrals/code" && req.method === "POST") {
+    const a = acting(req);
+    if (!a || !a.address) {
+      json(res, 401, { error: "sign in with your wallet first" });
+      return;
+    }
+    const body = await readBody(req);
+    try {
+      const rec = setReferralCode(ACCOUNTS_ROOT, a.address, String(body.code ?? ""));
+      json(res, 200, { ok: true, code: rec.referralCode });
+    } catch (e) {
+      json(res, 409, { error: e instanceof Error ? e.message : "couldn't set that code" });
+    }
     return;
   }
 

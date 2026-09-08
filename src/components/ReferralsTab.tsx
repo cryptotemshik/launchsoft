@@ -39,6 +39,9 @@ export default function ReferralsTab() {
   const [data, setData] = useState<RefData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [newCode, setNewCode] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [codeMsg, setCodeMsg] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (!base || !token) return;
@@ -63,6 +66,27 @@ export default function ReferralsTab() {
       setTimeout(() => setCopied(false), 1500);
     } catch {
       /* clipboard blocked — the field is selectable as a fallback */
+    }
+  }
+
+  async function saveCode() {
+    const code = newCode.trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+    if (code.length < 3) {
+      setCodeMsg("at least 3 characters (a–z, 0–9)");
+      return;
+    }
+    setSaving(true);
+    setCodeMsg(null);
+    try {
+      await call("/api/referrals/code", { method: "POST", body: JSON.stringify({ code }) });
+      setNewCode("");
+      setCodeMsg("saved ✓");
+      await load();
+      setTimeout(() => setCodeMsg(null), 1500);
+    } catch (e) {
+      setCodeMsg(e instanceof Error ? e.message : "couldn't set that code");
+    } finally {
+      setSaving(false);
     }
   }
 
@@ -113,9 +137,28 @@ export default function ReferralsTab() {
                 {copied ? "copied ✓" : "copy link"}
               </button>
             </div>
-            <p className="dim" style={{ fontSize: 12, marginTop: 0 }}>
-              code <b className="mono-break">{data.code}</b>
+            <p className="dim" style={{ fontSize: 12, margin: "0 0 6px" }}>
+              your code <b className="mono-break">{data.code}</b>
             </p>
+            {/* Anyone can claim a custom, memorable code. */}
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+              <input
+                value={newCode}
+                onChange={(e) => setNewCode(e.target.value)}
+                placeholder="custom code (a–z, 0–9)"
+                maxLength={24}
+                autoComplete="off"
+                spellCheck={false}
+                onKeyDown={(e) => { if (e.key === "Enter") void saveCode(); }}
+                style={{ width: 200, fontFamily: "var(--mono)", fontSize: 13 }}
+              />
+              <button className="secondary" disabled={saving} onClick={() => void saveCode()} style={{ padding: "6px 14px" }}>
+                {saving ? "…" : "set custom code"}
+              </button>
+              {codeMsg ? (
+                <span className={codeMsg === "saved ✓" ? "ok" : "error"} style={{ fontSize: 12 }}>{codeMsg}</span>
+              ) : null}
+            </div>
 
             {/* KPI row */}
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10, marginTop: 12 }}>

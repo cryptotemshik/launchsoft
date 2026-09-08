@@ -70,7 +70,7 @@ export default function PricingTab() {
         </p>
 
         <div className="table-wrap">
-          <table className="projects">
+          <table className="projects plans-table">
             <thead>
               <tr>
                 <th>Feature</th>
@@ -84,9 +84,9 @@ export default function PricingTab() {
             <tbody>
               {ROWS.map((r) => (
                 <tr key={r.feature}>
-                  <td>{r.feature}</td>
-                  <td className={r.free === "—" ? "dim" : ""}>{r.free}</td>
-                  <td className="ok">{r.pro}</td>
+                  <td data-label="">{r.feature}</td>
+                  <td data-label="Free" className={r.free === "—" ? "dim" : ""}>{r.free}</td>
+                  <td data-label="Pro" className="ok">{r.pro}</td>
                 </tr>
               ))}
             </tbody>

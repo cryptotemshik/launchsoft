@@ -453,6 +453,54 @@ h1 .brand-mark {
   font-size: 13px;
 }
 
+/* On a phone the 3-column plans table becomes one card per feature — the Free
+   and Pro values stack under the feature name, each with its label, so nothing
+   is hidden off to the right. */
+@media (max-width: 640px) {
+  .plans-table thead {
+    display: none;
+  }
+  .plans-table,
+  .plans-table tbody,
+  .plans-table tr,
+  .plans-table td {
+    display: block;
+    width: 100%;
+  }
+  .plans-table tr {
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 8px 12px;
+    margin-bottom: 8px;
+  }
+  .plans-table td {
+    border: none;
+    padding: 4px 0;
+  }
+  /* First cell = the feature name: its own line, bold, no label. */
+  .plans-table td:first-child {
+    font-weight: 700;
+    color: var(--text-bright, var(--text));
+    padding-bottom: 6px;
+    margin-bottom: 4px;
+    border-bottom: 1px solid var(--line);
+  }
+  /* Free / Pro cells: label on the left, value on the right. */
+  .plans-table td[data-label]:not(:first-child) {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    align-items: baseline;
+  }
+  .plans-table td[data-label]:not(:first-child)::before {
+    content: attr(data-label);
+    color: var(--text-dim);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+}
+
 /* ── Pricing hero — big price + buy button at the top of the Pricing tab ───── */
 .pro-hero {
   display: flex;
