@@ -26,8 +26,8 @@ if (WC_PROJECT_ID) {
       metadata: {
         name: "Orvex",
         description: "NFT drop launcher & sniper",
-        url: "https://app.theregulators.xyz",
-        icons: ["https://app.theregulators.xyz/favicon.svg"],
+        url: "https://app.orvex.cash",
+        icons: ["https://app.orvex.cash/favicon.svg"],
       },
     }),
   );
