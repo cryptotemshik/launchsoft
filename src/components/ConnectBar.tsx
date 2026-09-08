@@ -66,7 +66,6 @@ export default function ConnectBar({ onHome }: { onHome?: () => void }) {
         </h1>
         <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
           <GasBlock />
-          <AccountBadge />
           <button
             type="button"
             className="snd-toggle"
@@ -176,6 +175,9 @@ export default function ConnectBar({ onHome }: { onHome?: () => void }) {
           ) : (
             <span className="pill warn">no key loaded</span>
           )}
+          {/* The single account control — connect / sign in / who you are —
+              sits at the far right of the bar. */}
+          <AccountBadge />
         </div>
       </div>
 
