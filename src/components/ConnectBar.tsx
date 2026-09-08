@@ -5,6 +5,7 @@ import { setSoundEnabled, soundEnabled } from "../lib/sound";
 import { useAccount, useConnect, useDisconnect } from "wagmi";
 import { DEFAULT_CHAIN_ID } from "../chains";
 import { useChainSwitcher, useSigner, useSignerControls } from "../signer";
+import { useRunnerApi } from "../lib/runnerClient";
 import { OrvexMark } from "./icons";
 
 export function shortAddress(addr: string): string {
@@ -23,6 +24,9 @@ export default function ConnectBar({ onHome }: { onHome?: () => void }) {
   const walletConnectConnector = connectors.find((c) => c.type === "walletConnect");
   const { chainInfo, wrongNetwork } = useSigner();
   const { select, switching } = useChainSwitcher();
+  // When a backend is configured, the account badge is the single connect entry
+  // point; ConnectBar shows its own connect button only without one.
+  const { base } = useRunnerApi();
 
   const { mode, setMode, locals, active, addLocalKey, removeLocal, clearLocals, selectLocal } =
     useSignerControls();
@@ -107,26 +111,32 @@ export default function ConnectBar({ onHome }: { onHome?: () => void }) {
 
           {mode === "wallet" ? (
             !isConnected ? (
-              <>
-                {/* One button: an injected wallet if the page has one, else
-                    WalletConnect (QR on desktop, deep link on a phone). */}
-                <button
-                  className="secondary"
-                  disabled={isPending}
-                  onClick={() => {
-                    const hasInjected =
-                      typeof window !== "undefined" &&
-                      Boolean((window as { ethereum?: unknown }).ethereum);
-                    const chosen = hasInjected
-                      ? injectedConnector
-                      : (walletConnectConnector ?? injectedConnector);
-                    connect({ connector: chosen });
-                  }}
-                >
-                  {isPending ? <span className="spin">CONNECTING</span> : "connect wallet"}
-                </button>
-                {error ? <span className="error">{error.message}</span> : null}
-              </>
+              // The single "connect wallet" lives in the account badge (it
+              // connects the wallet AND signs in). Only a build with no backend
+              // — where the badge isn't shown — needs its own connect button
+              // here, so this one appears only then.
+              !base ? (
+                <>
+                  {/* An injected wallet if the page has one, else WalletConnect
+                      (QR on desktop, deep link on a phone). */}
+                  <button
+                    className="secondary"
+                    disabled={isPending}
+                    onClick={() => {
+                      const hasInjected =
+                        typeof window !== "undefined" &&
+                        Boolean((window as { ethereum?: unknown }).ethereum);
+                      const chosen = hasInjected
+                        ? injectedConnector
+                        : (walletConnectConnector ?? injectedConnector);
+                      connect({ connector: chosen });
+                    }}
+                  >
+                    {isPending ? <span className="spin">CONNECTING</span> : "connect wallet"}
+                  </button>
+                  {error ? <span className="error">{error.message}</span> : null}
+                </>
+              ) : null
             ) : (
               <>
                 {chainInfo ? (
