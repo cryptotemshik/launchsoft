@@ -14,6 +14,7 @@ import MintProfitPanel from "./components/MintProfitPanel";
 import WalletInspectTab from "./components/WalletInspectTab";
 import FeedTab from "./components/FeedTab";
 import PricingTab from "./components/PricingTab";
+import DocsTab from "./components/DocsTab";
 import SnipeTab from "./components/SnipeTab";
 import StatusTab from "./components/StatusTab";
 import WalletsTab from "./components/WalletsTab";
@@ -42,6 +43,7 @@ import {
   ShieldIcon,
   WhaleIcon,
   StarIcon,
+  BookIcon,
 } from "./components/icons";
 
 type Tab =
@@ -64,6 +66,7 @@ type Tab =
   | "inspect"
   | "feed"
   | "pricing"
+  | "docs"
 ;
 
 const TAB_ICON = {
@@ -86,6 +89,7 @@ const TAB_ICON = {
   inspect: EyeIcon,
   feed: PulseIcon,
   pricing: StarIcon,
+  docs: BookIcon,
 } as const;
 
 export default function App() {
@@ -170,6 +174,7 @@ export default function App() {
           ["whales", "WHALES"],
           ["feed", "FEED"],
           ["inspect", "INSPECT"],
+          ["docs", "DOCS"],
           ["pricing", "PRICING"],
           ["scanner", "SCANNER"],
           ["live", "LIVE"],
@@ -308,6 +313,7 @@ export default function App() {
       {tab === "inspect" ? <WalletInspectTab /> : null}
       {tab === "feed" ? <FeedTab /> : null}
       {tab === "pricing" ? <PricingTab /> : null}
+      {tab === "docs" ? <DocsTab /> : null}
       <div className="footer">
         {info.label} · explorer:{" "}
         <a href={info.explorerUrl} target="_blank" rel="noreferrer">

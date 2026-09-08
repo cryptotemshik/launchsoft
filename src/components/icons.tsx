@@ -30,6 +30,13 @@ export const EyeIcon = (p: SVGProps<SVGSVGElement>) => (
   </svg>
 );
 
+export const BookIcon = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...base(p)}>
+    <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+    <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
+  </svg>
+);
+
 export const PulseIcon = (p: SVGProps<SVGSVGElement>) => (
   <svg {...base(p)}>
     <path d="M3 12h4l3 8 4-16 3 8h4" />
