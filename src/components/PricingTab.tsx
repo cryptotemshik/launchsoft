@@ -3,9 +3,9 @@ import { goTab } from "../lib/nav";
 
 /**
  * What you get free, and what Pro adds. Public — a visitor can read it without
- * a wallet. The call to action sends a signed-in user to their Profile, where
- * the working "Get Pro" button charges the balance; a signed-out visitor is
- * told to connect first.
+ * a wallet. The price and the buy button lead, up top and large; the table
+ * below is the detail. The CTA sends a signed-in user to their Profile (where
+ * the working charge lives) and a signed-out visitor to connect first.
  */
 
 interface Row {
@@ -33,8 +33,37 @@ export default function PricingTab() {
 
   return (
     <div>
+      {/* ── Price hero — the price and the buy button, up top and loud ─────── */}
+      <div className="panel pro-hero">
+        <div className="pro-hero-left">
+          <span className="pill ok">PRO</span>
+          <div className="pro-price">
+            $29.99<span className="pro-per">/mo</span>
+          </div>
+          <div className="dim" style={{ fontSize: 13 }}>
+            billed in ETH from your balance · cancel anytime
+          </div>
+        </div>
+        <div className="pro-hero-right">
+          {isPro ? (
+            <span className="pill ok" style={{ fontSize: 14, padding: "8px 16px" }}>
+              You&apos;re on Pro — thank you 🎉
+            </span>
+          ) : (
+            <button className="primary pro-buy" onClick={() => goTab(me ? "profile" : "snipe")}>
+              {me ? "Buy Pro" : "Connect wallet to buy"}
+            </button>
+          )}
+          <div className="dim" style={{ fontSize: 12, textAlign: "center" }}>
+            {me
+              ? "Charged from your balance on the Profile tab."
+              : "$2 per live snipe · refunded if it doesn't mint"}
+          </div>
+        </div>
+      </div>
+
       <div className="panel">
-        <h2>Pricing</h2>
+        <h2>What Pro unlocks</h2>
         <p className="dim" style={{ marginTop: 0 }}>
           Everything shared and read-only is free — even without a wallet. Pro
           unlocks the whale signal, the full scanner window, and higher limits.
@@ -69,20 +98,11 @@ export default function PricingTab() {
           doesn&apos;t mint). Pro is <b>$29.99/mo</b>, paid from your balance in ETH.
         </p>
 
-        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginTop: 8 }}>
-          {isPro ? (
-            <span className="pill ok">You&apos;re on Pro — thank you.</span>
-          ) : (
-            <>
-              <button className="primary" onClick={() => goTab(me ? "profile" : "snipe")}>
-                {me ? "Get Pro — $29.99/mo" : "Connect wallet to get Pro"}
-              </button>
-              <span className="dim" style={{ fontSize: 12 }}>
-                {me ? "Charged from your balance on the Profile tab." : "Sign in first, then subscribe from Profile."}
-              </span>
-            </>
-          )}
-        </div>
+        {!isPro ? (
+          <button className="primary pro-buy" style={{ marginTop: 4 }} onClick={() => goTab(me ? "profile" : "snipe")}>
+            {me ? "Buy Pro — $29.99/mo" : "Connect wallet to buy"}
+          </button>
+        ) : null}
       </div>
     </div>
   );
