@@ -103,7 +103,7 @@ function make(params: {
   };
 }
 
-export const CHAINS: ChainInfo[] = [
+const ALL_CHAINS: ChainInfo[] = [
   make({
     id: 4663,
     label: "Robinhood Chain",
@@ -321,6 +321,13 @@ export const CHAINS: ChainInfo[] = [
     blockscoutApi: "https://evm.flowscan.io/api/v2",
   }),
 ];
+
+/**
+ * The chains Orvex actually runs on. For now that is Robinhood alone — the rest
+ * stay defined above (verified on-chain) so switching them back on is a one-line
+ * change to this filter, not a re-derivation.
+ */
+export const CHAINS: ChainInfo[] = ALL_CHAINS.filter((c) => c.id === 4663);
 
 export const CHAINS_BY_ID = new Map(CHAINS.map((c) => [c.id, c]));
 export const DEFAULT_CHAIN_ID = 4663;

@@ -3,7 +3,7 @@ import GasBlock from "./GasBlock";
 import AccountBadge from "./AccountBadge";
 import { setSoundEnabled, soundEnabled } from "../lib/sound";
 import { useAccount, useConnect, useDisconnect } from "wagmi";
-import { CHAINS } from "../chains";
+import { DEFAULT_CHAIN_ID } from "../chains";
 import { useChainSwitcher, useSigner, useSignerControls } from "../signer";
 import { OrvexMark } from "./icons";
 
@@ -22,7 +22,7 @@ export default function ConnectBar({ onHome }: { onHome?: () => void }) {
   const injectedConnector = connectors.find((c) => c.type === "injected") ?? connectors[0];
   const walletConnectConnector = connectors.find((c) => c.type === "walletConnect");
   const { chainInfo, wrongNetwork } = useSigner();
-  const { select, switching, activeId } = useChainSwitcher();
+  const { select, switching } = useChainSwitcher();
 
   const { mode, setMode, locals, active, addLocalKey, removeLocal, clearLocals, selectLocal } =
     useSignerControls();
@@ -90,24 +90,20 @@ export default function ConnectBar({ onHome }: { onHome?: () => void }) {
             </button>
           </div>
 
-          {/* Network selector — works in both modes. */}
-          <select
-            className={`net-select ${wrongNetwork ? "bad" : ""}`}
-            value={CHAINS.some((c) => c.id === activeId) ? activeId : ""}
-            disabled={switching}
-            onChange={(e) => select(Number(e.target.value))}
-          >
-            {!CHAINS.some((c) => c.id === activeId) ? (
-              <option value="">
-                {wrongNetwork ? "unsupported — pick a network" : "select network"}
-              </option>
-            ) : null}
-            {CHAINS.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.label}
-              </option>
-            ))}
-          </select>
+          {/* One chain for now — Robinhood. No picker: a static badge when the
+              wallet is on it, and a one-tap switch when it isn't. */}
+          {wrongNetwork ? (
+            <button
+              className="net-select bad"
+              disabled={switching}
+              onClick={() => select(DEFAULT_CHAIN_ID)}
+              title="switch your wallet to Robinhood Chain"
+            >
+              {switching ? "switching…" : "switch to Robinhood ⚠"}
+            </button>
+          ) : (
+            <span className="pill">Robinhood Chain</span>
+          )}
 
           {mode === "wallet" ? (
             !isConnected ? (
