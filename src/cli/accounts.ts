@@ -29,6 +29,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { resolve } from "node:path";
+import { genReferralCode } from "./referrals";
 
 /** What a wallet may reveal about itself. All optional, all self-served. */
 export interface AccountProfile {
@@ -57,6 +58,14 @@ export interface AccountRecord {
    */
   proUntil?: number;
   profile: AccountProfile;
+  /** This account's own referral code — assigned once, on first sight. */
+  referralCode?: string;
+  /** The referrer who brought this account, bound once and never changed. */
+  referredBy?: `0x${string}`;
+  /** True once this account has paid for Pro at least once — the "paying" a
+   *  referrer's tier counts, and the guard that stops the first-Pro discount
+   *  from being taken twice. */
+  paidEver?: boolean;
 }
 
 export type Tier = "free" | "pro";
@@ -113,6 +122,12 @@ export function readRegistry(root: string): Map<string, AccountRecord> {
         createdAt: r.createdAt,
         proUntil: typeof r.proUntil === "number" ? r.proUntil : undefined,
         profile: sanitiseProfile(r.profile),
+        referralCode: typeof r.referralCode === "string" ? r.referralCode : undefined,
+        referredBy:
+          typeof r.referredBy === "string" && ADDRESS.test(r.referredBy)
+            ? (r.referredBy as `0x${string}`)
+            : undefined,
+        paidEver: r.paidEver === true ? true : undefined,
       });
     }
   }
@@ -192,10 +207,58 @@ export function ensureAccount(
   const existing = registry.get(addr);
   if (existing) return existing;
 
-  const record: AccountRecord = { address: addr, createdAt: nowMs, profile: {} };
+  const record: AccountRecord = {
+    address: addr,
+    createdAt: nowMs,
+    profile: {},
+    referralCode: freshReferralCode(registry),
+  };
   registry.set(addr, record);
   writeRegistry(root, registry);
   return record;
+}
+
+/** A referral code not already taken by any account in the registry. */
+function freshReferralCode(registry: Map<string, AccountRecord>): string {
+  const taken = new Set(
+    [...registry.values()].map((r) => r.referralCode?.toLowerCase()).filter(Boolean),
+  );
+  for (let i = 0; i < 50; i++) {
+    const code = genReferralCode();
+    if (!taken.has(code)) return code;
+  }
+  return genReferralCode(8); // vanishingly unlikely; longer code as a fallback
+}
+
+/**
+ * The code for an account, assigning one if it predates the referral programme.
+ * Returns the (possibly newly saved) code.
+ */
+export function ensureReferralCode(root: string, address: string): string {
+  const addr = normAddress(address);
+  const registry = readRegistry(root);
+  const current = registry.get(addr) ?? ensureAccount(root, addr);
+  if (current.referralCode) return current.referralCode;
+  const code = freshReferralCode(registry);
+  registry.set(addr, { ...current, referralCode: code });
+  writeRegistry(root, registry);
+  return code;
+}
+
+/** The account that owns a referral code, or null. Case-insensitive. */
+export function findByReferralCode(root: string, code: string): AccountRecord | null {
+  const want = code.toLowerCase();
+  if (!want) return null;
+  for (const r of readRegistry(root).values()) {
+    if (r.referralCode?.toLowerCase() === want) return r;
+  }
+  return null;
+}
+
+/** Every account referred by this address. */
+export function referralsOf(root: string, address: string): AccountRecord[] {
+  const ref = normAddress(address);
+  return [...readRegistry(root).values()].filter((r) => r.referredBy === ref);
 }
 
 /** One account's record, or null when it has never logged in. */
@@ -216,11 +279,23 @@ export function listAccounts(root: string): AccountRecord[] {
 export function updateAccount(
   root: string,
   address: string,
-  patch: { proUntil?: number | null; profile?: AccountProfile },
+  patch: {
+    proUntil?: number | null;
+    profile?: AccountProfile;
+    /** Bind the referrer. Ignored if already set (a referral is permanent) or
+     *  if it would point the account at itself. */
+    referredBy?: `0x${string}`;
+    paidEver?: boolean;
+  },
 ): AccountRecord {
   const addr = normAddress(address);
   const registry = readRegistry(root);
   const current = registry.get(addr) ?? ensureAccount(root, addr);
+  const referredBy =
+    current.referredBy ?? // never re-bind
+    (patch.referredBy && normAddress(patch.referredBy) !== addr
+      ? normAddress(patch.referredBy)
+      : undefined);
   const next: AccountRecord = {
     ...current,
     proUntil:
@@ -232,6 +307,8 @@ export function updateAccount(
     profile: patch.profile
       ? sanitiseProfile({ ...current.profile, ...patch.profile })
       : current.profile,
+    referredBy,
+    paidEver: patch.paidEver === true ? true : current.paidEver,
   };
   registry.set(addr, next);
   writeRegistry(root, registry);

@@ -32,7 +32,8 @@ export type EntryKind =
   | "funding"
   | "withdrawal"
   | "admin-credit"
-  | "admin-debit";
+  | "admin-debit"
+  | "referral";
 
 export interface LedgerEntry {
   at: number;
@@ -116,6 +117,28 @@ function append(configPath: string, entry: LedgerEntry): BillingState {
 export function deposit(configPath: string, wei: bigint, note?: string, nowMs = Date.now()): BillingState {
   if (wei <= 0n) throw new Error("a deposit must be positive");
   return append(configPath, { at: nowMs, kind: "deposit", wei: wei.toString(), note });
+}
+
+/**
+ * Referral commission credited to a referrer's balance. A positive entry like a
+ * deposit, but tagged so it can be summed as "referral earnings" and told apart
+ * from money the referrer put in themselves.
+ */
+export function referralCredit(
+  configPath: string,
+  wei: bigint,
+  note?: string,
+  nowMs = Date.now(),
+): BillingState {
+  if (wei <= 0n) throw new Error("a referral credit must be positive");
+  return append(configPath, { at: nowMs, kind: "referral", wei: wei.toString(), note });
+}
+
+/** Total referral commission ever credited to this account, in wei. */
+export function referralEarnedWei(configPath: string): bigint {
+  return loadBilling(configPath)
+    .entries.filter((e) => e.kind === "referral")
+    .reduce((s, e) => s + BigInt(e.wei), 0n);
 }
 
 export interface ChargeResult {

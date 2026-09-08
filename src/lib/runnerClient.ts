@@ -120,6 +120,10 @@ export interface Me {
   tier: "free" | "pro";
   proUntil: number | null;
   profile: { nickname?: string; avatarUrl?: string; twitter?: string; telegram?: string };
+  /** This account's own referral code (null before it's assigned/operator). */
+  referralCode?: string | null;
+  /** The referrer who brought this account, if any — bound once. */
+  referredBy?: string | null;
 }
 
 /**

@@ -42,6 +42,14 @@ export const OrvexMark = (p: SVGProps<SVGSVGElement>) => (
   </svg>
 );
 
+export const GiftIcon = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...base(p)}>
+    <rect x="3" y="8" width="18" height="4" rx="1" />
+    <path d="M12 8v13M5 12v9h14v-9" />
+    <path d="M12 8S10.5 3 7.5 4.5 9 8 12 8zM12 8s1.5-5 4.5-3.5S15 8 12 8z" />
+  </svg>
+);
+
 export const BookIcon = (p: SVGProps<SVGSVGElement>) => (
   <svg {...base(p)}>
     <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />

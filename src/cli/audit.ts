@@ -62,7 +62,11 @@ export type AuditEvent =
   /** An admin handed out free snipes. */
   | "admin.grantSnipes"
   /** An admin adjusted an account's balance by hand. */
-  | "admin.adjust";
+  | "admin.adjust"
+  /** An account was bound to the referrer who brought it. */
+  | "referral.bind"
+  /** A referrer was credited their cut of a referral's spend. */
+  | "referral.credit";
 
 export interface AuditLine {
   /** ISO 8601, in UTC. Local time in an audit trail is an argument waiting. */

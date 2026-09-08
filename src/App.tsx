@@ -15,6 +15,7 @@ import WalletInspectTab from "./components/WalletInspectTab";
 import FeedTab from "./components/FeedTab";
 import PricingTab from "./components/PricingTab";
 import DocsTab from "./components/DocsTab";
+import ReferralsTab from "./components/ReferralsTab";
 import SnipeTab from "./components/SnipeTab";
 import StatusTab from "./components/StatusTab";
 import WalletsTab from "./components/WalletsTab";
@@ -22,7 +23,8 @@ import ProfileTab from "./components/ProfileTab";
 import AdminTab from "./components/AdminTab";
 import WhaleAlertTab from "./components/WhaleAlertTab";
 import { installClickSound } from "./lib/sound";
-import { useRunnerApi } from "./lib/runnerClient";
+import { useRunnerApi, useMe } from "./lib/runnerClient";
+import { captureRefFromUrl, clearRefCode, pendingRefCode } from "./lib/referral";
 import { useActiveChain } from "./signer";
 import { CHAINS_BY_ID, DEFAULT_CHAIN_ID } from "./chains";
 import {
@@ -44,6 +46,7 @@ import {
   WhaleIcon,
   StarIcon,
   BookIcon,
+  GiftIcon,
 } from "./components/icons";
 
 type Tab =
@@ -67,6 +70,7 @@ type Tab =
   | "feed"
   | "pricing"
   | "docs"
+  | "referrals"
 ;
 
 const TAB_ICON = {
@@ -90,6 +94,7 @@ const TAB_ICON = {
   feed: PulseIcon,
   pricing: StarIcon,
   docs: BookIcon,
+  referrals: GiftIcon,
 } as const;
 
 export default function App() {
@@ -107,7 +112,22 @@ export default function App() {
   // all. Checked against the server, which is the only authority — the tab is
   // gated on its own routes too, so this only hides a button, never trusts one.
   const { base, token, call } = useRunnerApi();
+  const { me } = useMe();
   const [isAdmin, setIsAdmin] = useState(false);
+
+  // Referral attribution: grab ?ref= on first paint; once signed in and not yet
+  // bound, tell the server who referred this account (once).
+  useEffect(() => captureRefFromUrl(), []);
+  useEffect(() => {
+    if (!base || !token || !me?.address || me.referredBy) return;
+    const code = pendingRefCode();
+    if (!code) return;
+    void call("/api/referrals/bind", { method: "POST", body: JSON.stringify({ code }) })
+      .then(() => clearRefCode())
+      .catch(() => {
+        /* leave the code in place to retry on next load */
+      });
+  }, [base, token, me, call]);
   useEffect(() => {
     let live = true;
     if (!base || !token) {
@@ -201,6 +221,7 @@ export default function App() {
               ["serverwallets", "WALLETS"],
               ["funding", "FUNDING"],
               ["pnl", "PNL"],
+              ["referrals", "REFERRALS"],
               ["profile", "PROFILE"],
               ...(isAdmin ? [["admin", "ADMIN"]] : []),
             ],
@@ -275,6 +296,7 @@ export default function App() {
       {tab === "feed" ? <FeedTab /> : null}
       {tab === "pricing" ? <PricingTab /> : null}
       {tab === "docs" ? <DocsTab /> : null}
+      {tab === "referrals" ? <ReferralsTab /> : null}
       <div className="footer">
         {info.label} · explorer:{" "}
         <a href={info.explorerUrl} target="_blank" rel="noreferrer">

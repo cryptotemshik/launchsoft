@@ -129,9 +129,12 @@ import {
   accountDirs,
   accountsRoot,
   ensureAccount,
+  ensureReferralCode,
+  findByReferralCode,
   getAccount,
   isPro,
   listAccounts,
+  referralsOf,
   tierOf,
   updateAccount,
   type AccountProfile,
@@ -145,10 +148,20 @@ import {
   grantFreeSnipes,
   InsufficientBalance,
   loadBilling,
+  referralCredit,
+  referralEarnedWei,
   refund as refundBalance,
   spendForFunding,
   withdraw as withdrawBalance,
 } from "./billing";
+import {
+  commissionWei,
+  normRefCode,
+  refereeDiscountedWei,
+  REFEREE_DISCOUNT_PCT,
+  REFERRAL_TIERS,
+  tierForPaying,
+} from "./referrals";
 import {
   addCredited,
   addSwept,
@@ -1299,6 +1312,41 @@ function notifyAccount(cfgPath: string, html: string): void {
   const chatId = tgChatId(cfgPath);
   if (!token || !chatId) return;
   void sendTelegram({ botToken: token, chatId }, html).catch(() => {});
+}
+
+/**
+ * Pay a referrer their tier's cut when one of their referrals spends money —
+ * a Pro payment or a snipe fee. The percentage is set by how many *paying*
+ * referrals they have (the tiers). A no-op when the account has no referrer or
+ * the referrer hasn't reached tier 1. Never throws: crediting a third party
+ * must not be able to break the paying user's own action.
+ */
+function creditReferrer(refereeAddress: string, amountWei: bigint, label: string): void {
+  try {
+    if (amountWei <= 0n) return;
+    const referrer = getAccount(ACCOUNTS_ROOT, refereeAddress)?.referredBy;
+    if (!referrer) return;
+    const paying = referralsOf(ACCOUNTS_ROOT, referrer).filter((r) => r.paidEver).length;
+    const { pct } = tierForPaying(paying);
+    if (pct <= 0) return;
+    const cut = commissionWei(amountWei, pct);
+    if (cut <= 0n) return;
+    const cfg = accountConfigPath(ACCOUNTS_ROOT, referrer);
+    referralCredit(cfg, cut, `${pct}% of ${label} · ${refereeAddress.slice(0, 10)}…`);
+    notifyAccount(
+      cfg,
+      `💸 <b>Referral earnings</b>\n+${formatEther(cut)} ETH — your ${pct}% of a referral's ${escapeHtml(label)}.`,
+    );
+    audit("referral.credit", {
+      referrer,
+      referee: refereeAddress.toLowerCase(),
+      pct,
+      cutWei: cut.toString(),
+      label,
+    });
+  } catch {
+    /* referral crediting is best-effort — never let it fail the payer's action */
+  }
 }
 
 /**
@@ -3311,6 +3359,8 @@ const server = createServer(async (req, res) => {
       tier: tierOf(acct),
       proUntil: acct.proUntil ?? null,
       profile: acct.profile,
+      referralCode: acct.referralCode ?? null,
+      referredBy: acct.referredBy ?? null,
     });
     return;
   }
@@ -3754,6 +3804,70 @@ const server = createServer(async (req, res) => {
     return;
   }
 
+  // ── Referrals: your code, tier, earnings, and the people you brought ────────
+  if (url.pathname === "/api/referrals" && req.method === "GET") {
+    const a = acting(req);
+    if (!a || !a.address) {
+      json(res, 401, { error: "sign in with your wallet first" });
+      return;
+    }
+    const code = ensureReferralCode(ACCOUNTS_ROOT, a.address);
+    const list = referralsOf(ACCOUNTS_ROOT, a.address);
+    const paying = list.filter((r) => r.paidEver).length;
+    const standing = tierForPaying(paying);
+    const earnedWei = referralEarnedWei(a.cfgPath);
+    json(res, 200, {
+      code,
+      tier: standing.tier,
+      pct: standing.pct,
+      next: standing.next,
+      tiers: REFERRAL_TIERS,
+      refereeDiscountPct: REFEREE_DISCOUNT_PCT,
+      total: list.length,
+      paying,
+      earnedWei: earnedWei.toString(),
+      earnedEth: formatEther(earnedWei),
+      referrals: list
+        .sort((x, y) => y.createdAt - x.createdAt)
+        .slice(0, 200)
+        .map((r) => ({ address: r.address, joinedAt: r.createdAt, paying: r.paidEver === true })),
+    });
+    return;
+  }
+
+  // Bind the referrer who brought this account. Once only, never yourself.
+  if (url.pathname === "/api/referrals/bind" && req.method === "POST") {
+    const a = acting(req);
+    if (!a || !a.address) {
+      json(res, 401, { error: "sign in with your wallet first" });
+      return;
+    }
+    const body = await readBody(req);
+    const code = normRefCode(String(body.code ?? ""));
+    if (!code) {
+      json(res, 400, { error: "no referral code given" });
+      return;
+    }
+    const mine = getAccount(ACCOUNTS_ROOT, a.address);
+    if (mine?.referredBy) {
+      json(res, 200, { ok: true, already: true, referredBy: mine.referredBy });
+      return;
+    }
+    const owner = findByReferralCode(ACCOUNTS_ROOT, code);
+    if (!owner) {
+      json(res, 404, { error: "that referral code doesn't exist" });
+      return;
+    }
+    if (owner.address === a.address.toLowerCase()) {
+      json(res, 400, { error: "you can't refer yourself" });
+      return;
+    }
+    const rec = updateAccount(ACCOUNTS_ROOT, a.address, { referredBy: owner.address });
+    audit("referral.bind", { account: a.address.toLowerCase(), referrer: owner.address });
+    json(res, 200, { ok: Boolean(rec.referredBy), referredBy: rec.referredBy ?? null });
+    return;
+  }
+
   // Pay for a month of Pro from the balance, priced in dollars, debited in ETH.
   if (url.pathname === "/api/subscribe" && req.method === "POST") {
     const a = acting(req);
@@ -3762,20 +3876,31 @@ const server = createServer(async (req, res) => {
       return;
     }
     try {
-      const wei = await centsToWei(PRO_PRICE_CENTS);
-      if (!wei) {
+      const fullWei = await centsToWei(PRO_PRICE_CENTS);
+      if (!fullWei) {
         json(res, 503, { error: "the ETH price is unavailable right now — try again in a moment" });
         return;
       }
+      // A referred account gets a one-time discount on its first Pro payment.
+      const before = getAccount(ACCOUNTS_ROOT, a.address);
+      const firstPro = before?.referredBy && !before?.paidEver;
+      const wei = firstPro ? refereeDiscountedWei(fullWei) : fullWei;
+      const cents = firstPro
+        ? Math.round((PRO_PRICE_CENTS * (100 - REFEREE_DISCOUNT_PCT)) / 100)
+        : PRO_PRICE_CENTS;
       chargeSubscription(a.cfgPath, wei, {
-        usdCents: PRO_PRICE_CENTS,
-        note: `Pro — ${PRO_DAYS} days`,
+        usdCents: cents,
+        note: firstPro ? `Pro — ${PRO_DAYS} days (referral -${REFEREE_DISCOUNT_PCT}%)` : `Pro — ${PRO_DAYS} days`,
       });
       const now = Date.now();
-      const current = getAccount(ACCOUNTS_ROOT, a.address)?.proUntil ?? now;
+      const current = before?.proUntil ?? now;
       const proUntil = Math.max(now, current) + PRO_DAYS * 86_400_000;
-      const rec = updateAccount(ACCOUNTS_ROOT, a.address, { proUntil });
+      // paidEver makes this account count toward its referrer's tier and closes
+      // the one-time discount.
+      const rec = updateAccount(ACCOUNTS_ROOT, a.address, { proUntil, paidEver: true });
       audit("admin.grantPro", { address: a.address, days: PRO_DAYS, proUntil, paid: true });
+      // Pay the referrer their cut of what was actually charged.
+      creditReferrer(a.address, wei, "Pro subscription");
       json(res, 200, { ok: true, proUntil: rec.proUntil ?? null, tier: tierOf(rec) });
     } catch (e) {
       if (e instanceof InsufficientBalance) {
@@ -4279,6 +4404,9 @@ const server = createServer(async (req, res) => {
                 note: `snipe ${request.collection.slice(0, 10)}`,
               });
               chargedWei = r.charged === "balance" ? feeWei.toString() : undefined;
+              // A referrer earns their cut only on a fee actually paid from
+              // balance — a free snipe costs nothing, so it pays nothing.
+              if (r.charged === "balance" && a.address) creditReferrer(a.address, feeWei, "snipe fee");
             } catch (e) {
               if (e instanceof InsufficientBalance) {
                 json(res, 402, {
