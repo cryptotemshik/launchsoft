@@ -77,9 +77,9 @@ export function drawShareCard(
 
   ctx.fillStyle = text;
   ctx.font = `700 30px ${mono}`;
-  ctx.fillText("LAUNCHPAD", 80, 105);
+  ctx.fillText("ORVEX", 80, 105);
   ctx.fillStyle = green;
-  ctx.fillText("_", 80 + ctx.measureText("LAUNCHPAD").width, 105);
+  ctx.fillText("_", 80 + ctx.measureText("ORVEX").width, 105);
 
   ctx.fillStyle = dim;
   ctx.font = `500 20px ${mono}`;
@@ -147,5 +147,5 @@ export function drawShareCard(
 }
 
 export function cardFileName(rangeLabel: string): string {
-  return `launchpad-${rangeLabel.toLowerCase().replace(/[^a-z0-9]+/g, "-")}.png`;
+  return `orvex-${rangeLabel.toLowerCase().replace(/[^a-z0-9]+/g, "-")}.png`;
 }

@@ -62,7 +62,7 @@ export function isAdmin(address: string, env = process.env): boolean {
  */
 export function loginMessage(address: string, nonce: string, issuedAt: number): string {
   return [
-    "LaunchPad — sign in",
+    "Orvex — sign in",
     "",
     `Wallet: ${address}`,
     `Nonce: ${nonce}`,

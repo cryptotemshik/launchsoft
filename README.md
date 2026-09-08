@@ -1,4 +1,4 @@
-# LaunchPad — one-click NFT drop launcher for Robinhood Chain
+# Orvex — one-click NFT drop launcher & sniper for Robinhood Chain
 
 A single-page static web app for launching a complete, OpenSea-indexed NFT drop
 on **Robinhood Chain** in one sitting: fill a form, upload a pre-reveal image,

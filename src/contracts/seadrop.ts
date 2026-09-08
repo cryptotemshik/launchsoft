@@ -1,7 +1,7 @@
 import artifact from "./ERC721SeaDrop.json";
 import factoryArtifact from "./PaidSeaDropCloneFactory.json";
 
-/** PaidSeaDropCloneFactory — LaunchPad's on-chain launch-fee wrapper. */
+/** PaidSeaDropCloneFactory — Orvex's on-chain launch-fee wrapper. */
 export const launchFactoryAbi = factoryArtifact.abi;
 export const launchFactoryBytecode = factoryArtifact.bytecode as `0x${string}`;
 
@@ -14,7 +14,7 @@ export const launchFactoryBytecode = factoryArtifact.bytecode as `0x${string}`;
 export const erc721SeaDropAbi = artifact.abi;
 export const erc721SeaDropBytecode = artifact.bytecode as `0x${string}`;
 
-/** Minimal ABI for the read/write calls LaunchPad makes on the token. */
+/** Minimal ABI for the read/write calls Orvex makes on the token. */
 export const tokenAbi = [
   {
     type: "function",

@@ -158,7 +158,7 @@ export function CollectionDetail({
 
 /**
  * Click tallies for the collection's outbound links. Honest about scope: these
- * are clicks made through LaunchPad in this browser — opensea.io can't report
+ * are clicks made through Orvex in this browser — opensea.io can't report
  * its own link clicks to a static site.
  */
 function LinkClicks({ contract, tick }: { contract: string; tick: number }) {
@@ -184,7 +184,7 @@ function LinkClicks({ contract, tick }: { contract: string; tick: number }) {
       <div className="dim" style={{ fontSize: 11, marginTop: 4 }}>
         {total === 0
           ? "No clicks counted yet — these count clicks on the links above, made in this browser."
-          : "Counts clicks on the links above, made through LaunchPad in this browser."}{" "}
+          : "Counts clicks on the links above, made through Orvex in this browser."}{" "}
         Clicks that happen on opensea.io can&apos;t reach a static site; to count
         every visitor, put a tracked short link (Bitly, Dub, etc.) in the
         collection&apos;s website/X field and read the numbers there.

@@ -2,7 +2,7 @@
  * Click counters for a collection's outbound links (X/Twitter, website,
  * OpenSea), stored per contract in localStorage.
  *
- * Scope, stated plainly: this counts clicks made **through LaunchPad, in this
+ * Scope, stated plainly: this counts clicks made **through Orvex, in this
  * browser**. It cannot see clicks on the link as it appears on opensea.io or
  * anywhere else — a static site has no server to receive those hits. To count
  * every click from every visitor, point the collection's website/X field at a

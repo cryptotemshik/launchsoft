@@ -159,7 +159,7 @@ export default function SecondaryMarketPanel() {
         </>
       ) : (
         <p className="warn">
-          LaunchPad doesn&apos;t have a verified WETH address for{" "}
+          Orvex doesn&apos;t have a verified WETH address for{" "}
           {chainInfo.label}, so the approval helper is hidden here rather than
           risk pointing at a lookalike token. Approve WETH from OpenSea when it
           asks.

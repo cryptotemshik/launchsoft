@@ -24,7 +24,7 @@ if (WC_PROJECT_ID) {
       projectId: WC_PROJECT_ID,
       showQrModal: true,
       metadata: {
-        name: "LaunchPad",
+        name: "Orvex",
         description: "NFT drop launcher & sniper",
         url: "https://app.theregulators.xyz",
         icons: ["https://app.theregulators.xyz/favicon.svg"],

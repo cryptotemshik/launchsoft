@@ -95,6 +95,14 @@ h1 .cursor {
   animation: blink 1.2s steps(1) infinite;
   margin-left: 1px;
 }
+/* The logo glyph sits before the wordmark; both the top bar and the landing
+   cover render their brand in an h1, so one rule centres it against either. */
+h1 .brand-mark {
+  color: var(--green-bright);
+  align-self: center;
+  margin-right: 0.4em;
+  flex: none;
+}
 @keyframes blink {
   50% {
     opacity: 0;

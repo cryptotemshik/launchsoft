@@ -6,7 +6,7 @@
  * different mental model: a duration only becomes a window once you say what
  * it counts from. Editing there re-derives `endTime`, so a stage that has
  * already been running can come back shorter than it was. These helpers let
- * LaunchPad speak both languages and spot a window that has collapsed.
+ * Orvex speak both languages and spot a window that has collapsed.
  */
 
 export interface Duration {

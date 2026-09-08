@@ -30,6 +30,18 @@ export const EyeIcon = (p: SVGProps<SVGSVGElement>) => (
   </svg>
 );
 
+/**
+ * The Orvex mark: a hexagonal ring — the "O", an orbit — with an upward
+ * chevron inside for ascent (and a nod to the launch heritage). Stroke only,
+ * currentColor, so it takes the accent wherever it sits.
+ */
+export const OrvexMark = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...base(p)}>
+    <path d="M12 2.5l8.2 4.75v9.5L12 21.5l-8.2-4.75v-9.5z" />
+    <path d="M7.7 14.2 12 9.6l4.3 4.6" />
+  </svg>
+);
+
 export const BookIcon = (p: SVGProps<SVGSVGElement>) => (
   <svg {...base(p)}>
     <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />

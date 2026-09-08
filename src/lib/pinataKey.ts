@@ -3,7 +3,7 @@
  *
  * The key is kept in THIS browser's localStorage only, so the Launch and
  * Reveal tabs prefill it instead of asking every session. It is deliberately
- * never compiled into the app: LaunchPad ships as a public static site, so a
+ * never compiled into the app: Orvex ships as a public static site, so a
  * hard-coded key would be readable by every visitor in the JS bundle and let
  * anyone pin files to that Pinata account.
  */

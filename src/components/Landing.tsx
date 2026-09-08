@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ArrowRight } from "./icons";
+import { ArrowRight, OrvexMark } from "./icons";
 
 /**
  * The cover — styled as a boot screen, because that is what it is.
@@ -23,20 +23,20 @@ export default function Landing({ onEnter }: { onEnter: () => void }) {
 
       <div className="landing-center">
         <h1 className="landing-title">
-          LAUNCH
-          <span className="brand-dim">PAD</span>
+          <OrvexMark className="brand-mark" width={40} height={40} aria-hidden />
+          ORVEX
           <span className="cursor" aria-hidden>
             _
           </span>
         </h1>
         <p className="landing-tag">
-          Launch NFT drops on <b>OpenSea</b>. On any EVM chain. In one sitting.
+          Snipe and launch NFT drops on <b>Robinhood Chain</b>. Before anyone else.
         </p>
 
         <div className="landing-chips">
-          <span className="chip">20 OpenSea chains</span>
-          <span className="chip">One-click SeaDrop</span>
-          <span className="chip">Live profit</span>
+          <span className="chip">Scanner + whale signal</span>
+          <span className="chip">One-click snipe</span>
+          <span className="chip">Live PnL</span>
         </div>
 
         <button className="landing-enter" onClick={enter}>

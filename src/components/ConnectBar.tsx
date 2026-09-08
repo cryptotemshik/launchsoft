@@ -5,6 +5,7 @@ import { setSoundEnabled, soundEnabled } from "../lib/sound";
 import { useAccount, useConnect, useDisconnect } from "wagmi";
 import { CHAINS } from "../chains";
 import { useChainSwitcher, useSigner, useSignerControls } from "../signer";
+import { OrvexMark } from "./icons";
 
 export function shortAddress(addr: string): string {
   return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
@@ -55,8 +56,8 @@ export default function ConnectBar({ onHome }: { onHome?: () => void }) {
           role={onHome ? "button" : undefined}
           title={onHome ? "back to cover" : undefined}
         >
-          LAUNCH
-          <span className="brand-dim">PAD</span>
+          <OrvexMark className="brand-mark" width={20} height={20} aria-hidden />
+          ORVEX
           <span className="cursor" aria-hidden>_</span>
         </h1>
         <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
@@ -187,7 +188,7 @@ export default function ConnectBar({ onHome }: { onHome?: () => void }) {
             selected as active. Keys stay in this tab&apos;s memory only — never
             saved, never sent anywhere — and are gone on refresh. Anyone who can
             run script in this page (a browser extension, a bad dependency, an
-            XSS bug) can read them. For real funds, run LaunchPad locally
+            XSS bug) can read them. For real funds, run Orvex locally
             (<span className="mono-break">git clone … &amp;&amp; npm run dev</span>)
             rather than on the public URL, and use wallets that hold only what
             this session needs.

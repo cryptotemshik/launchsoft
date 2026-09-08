@@ -728,7 +728,7 @@ export default function LaunchTab() {
         <h2>Select a network</h2>
         <p className="dim">
           {isConnected
-            ? "Your wallet is on a network LaunchPad doesn't support. Pick a supported OpenSea EVM chain from the selector in the top bar."
+            ? "Your wallet is on a network Orvex doesn't support. Pick a supported OpenSea EVM chain from the selector in the top bar."
             : "Connect a wallet, or switch to fast mode, and pick a network in the top bar to launch."}
         </p>
       </div>

@@ -156,7 +156,7 @@ export default function DocsTab() {
       <div className="panel">
         <h2>Docs</h2>
         <p className="dim" style={{ marginTop: 0 }}>
-          LaunchPad is a launcher and sniper for NFT drops on Robinhood Chain.
+          Orvex is a launcher and sniper for NFT drops on Robinhood Chain.
           It finds drops before they are announced, watches the wallets and
           whales that move markets, and fires a mint the instant it opens — from
           wallets the service holds and you fund. Everything shared and
