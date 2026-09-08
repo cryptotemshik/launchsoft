@@ -104,6 +104,39 @@ const SERVICES: Service[] = [
   },
 ];
 
+/**
+ * A free/Pro badge that wraps. The app's `.pill` is `white-space: nowrap` —
+ * fine for short labels, but a full sentence like "Pro: every article in full…"
+ * would then overflow the viewport and force a phone to zoom the whole page out.
+ * This one wraps and never exceeds the column.
+ */
+function Badge({
+  children,
+  pro,
+  muted,
+}: {
+  children: React.ReactNode;
+  pro?: boolean;
+  muted?: boolean;
+}) {
+  return (
+    <span
+      style={{
+        display: "inline-block",
+        maxWidth: "100%",
+        whiteSpace: "normal",
+        border: `1px solid ${pro ? "var(--green, #37d67a)" : "var(--border, #20281f)"}`,
+        color: pro ? "var(--green-bright, var(--green))" : muted ? "var(--dim)" : "var(--text)",
+        borderRadius: 6,
+        padding: "3px 9px",
+        lineHeight: 1.4,
+      }}
+    >
+      {children}
+    </span>
+  );
+}
+
 function Anchor({ id, children }: { id: string; children: React.ReactNode }) {
   return (
     <button
@@ -201,10 +234,8 @@ export default function DocsTab() {
             </div>
             <p style={{ margin: "6px 0" }}>{s.what}</p>
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap", fontSize: 12 }}>
-              <span className={s.free === "—" ? "pill dim" : "pill"}>
-                Free: {s.free}
-              </span>
-              {s.pro ? <span className="pill ok">Pro: {s.pro}</span> : null}
+              <Badge muted={s.free === "—"}>Free: {s.free}</Badge>
+              {s.pro ? <Badge pro>Pro: {s.pro}</Badge> : null}
             </div>
           </div>
         ))}
