@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Landing from "./components/Landing";
 import ConnectBar from "./components/ConnectBar";
 import DashboardTab from "./components/DashboardTab";
@@ -94,6 +94,10 @@ const TAB_ICON = {
 
 export default function App() {
   const [tab, setTab] = useState<Tab>("dashboard");
+  // Which nav group's menu is open, if any. One at a time; a tap toggles it,
+  // hover opens it on a mouse, and a tap outside or picking a tab closes it.
+  const [openGroup, setOpenGroup] = useState<string | null>(null);
+  const navRef = useRef<HTMLDivElement>(null);
   const [entered, setEntered] = useState(
     () => localStorage.getItem("launchpad.entered") === "1",
   );
@@ -135,19 +139,25 @@ export default function App() {
   useEffect(() => {
     const h = (e: Event) => {
       const t = (e as CustomEvent).detail;
-      if (typeof t === "string") setTab(t as Tab);
+      if (typeof t === "string") {
+        setTab(t as Tab);
+        setOpenGroup(null);
+      }
     };
     window.addEventListener("lp-nav", h);
     return () => window.removeEventListener("lp-nav", h);
   }, []);
 
-  // On a phone the nav scrolls sideways — keep the selected tab in view.
+  // A tap or click outside the nav closes an open group menu. Only armed while
+  // one is open, so it costs nothing the rest of the time.
   useEffect(() => {
-    if (!window.matchMedia("(max-width: 640px)").matches) return;
-    document
-      .querySelector(".tabs button.active")
-      ?.scrollIntoView({ inline: "center", block: "nearest", behavior: "smooth" });
-  }, [tab]);
+    if (!openGroup) return;
+    const onDown = (e: PointerEvent) => {
+      if (navRef.current && !navRef.current.contains(e.target as Node)) setOpenGroup(null);
+    };
+    document.addEventListener("pointerdown", onDown);
+    return () => document.removeEventListener("pointerdown", onDown);
+  }, [openGroup]);
 
   if (!entered) {
     return (
@@ -168,125 +178,76 @@ export default function App() {
           setEntered(false);
         }}
       />
-      <div className="tabs">
+      <div className="tabs" ref={navRef}>
+        {/* Five groups, not twenty flat tabs: DISCOVER and SIGNALS gather the
+            read-only views, INFO the docs, and the two accent actions — LAUNCH
+            and SNIPE — sit at the right with their later stages beneath them.
+            Each group's button jumps to its primary tab and toggles a menu;
+            picking a child (or tapping outside) closes it. This is the same on
+            desktop and phone — no flattened ribbon. */}
         {([
-          ["wallets", "TRACKER"],
-          ["whales", "WHALES"],
-          ["feed", "FEED"],
-          ["inspect", "INSPECT"],
-          ["docs", "DOCS"],
-          ["pricing", "PRICING"],
-          ["scanner", "SCANNER"],
-          ["live", "LIVE"],
-          ["calendar", "CALENDAR"],
-          ["upcoming", "WATCHLIST"],
-        ] as const).map(([t, label]) => {
-          const Icon = TAB_ICON[t];
+          { key: "discover", label: "DISCOVER", Icon: RadarIcon, tabs: [["scanner", "SCANNER"], ["live", "LIVE"], ["calendar", "CALENDAR"], ["upcoming", "WATCHLIST"]] },
+          { key: "signals", label: "SIGNALS", Icon: WhaleIcon, tabs: [["wallets", "TRACKER"], ["whales", "WHALES"], ["inspect", "INSPECT"], ["feed", "FEED"]] },
+          { key: "info", label: "INFO", Icon: BookIcon, tabs: [["docs", "DOCS"], ["pricing", "PRICING"]] },
+          { key: "launch", label: "LAUNCH", Icon: RocketIcon, mint: true, tabs: [["launch", "LAUNCH"], ["reveal", "REVEAL"], ["status", "STATUS"]] },
+          {
+            key: "snipe",
+            label: "SNIPE",
+            Icon: CrosshairIcon,
+            mint: true,
+            tabs: [
+              ["snipe", "SNIPE"],
+              ["dashboard", "DASHBOARD"],
+              ["serverwallets", "WALLETS"],
+              ["funding", "FUNDING"],
+              ["pnl", "PNL"],
+              ["profile", "PROFILE"],
+              ...(isAdmin ? [["admin", "ADMIN"]] : []),
+            ],
+          },
+        ] as { key: string; label: string; Icon: typeof RadarIcon; mint?: boolean; tabs: [Tab, string][] }[]).map((g) => {
+          const primary = g.tabs[0][0];
+          const inGroup = g.tabs.some(([t]) => t === tab);
+          const open = openGroup === g.key;
           return (
-            <button
-              key={t}
-              className={tab === t ? "active" : ""}
-              onClick={() => setTab(t)}
+            <div
+              key={g.key}
+              className={`tab-group ${g.mint ? "mint-group" : ""} ${g.key === "launch" ? "mint-lead" : ""} ${open ? "open" : ""}`}
+              onMouseEnter={() => setOpenGroup(g.key)}
+              onMouseLeave={() => setOpenGroup((k) => (k === g.key ? null : k))}
             >
-              <Icon />
-              {label}
-            </button>
+              <button
+                className={`${g.mint ? "tab-mint " : ""}${inGroup ? "active" : ""}`}
+                onClick={() => {
+                  setTab(primary);
+                  setOpenGroup(open ? null : g.key);
+                }}
+              >
+                <g.Icon />
+                {g.label}
+                <ChevronDownIcon className="tab-chevron" width={13} height={13} />
+              </button>
+              <div className="tab-menu">
+                {g.tabs.map(([t, label]) => {
+                  const Icon = TAB_ICON[t];
+                  return (
+                    <button
+                      key={t}
+                      className={tab === t ? "active" : ""}
+                      onClick={() => {
+                        setTab(t);
+                        setOpenGroup(null);
+                      }}
+                    >
+                      <Icon />
+                      {label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
           );
         })}
-        {/* The two things this app is for — starting a drop and taking one —
-            sit together at the right, both painted as actions rather than as
-            destinations. Their later stages hang beneath them. */}
-        <div className="tab-group launch-group">
-          <button
-            // `group-active` marks "a child of mine is open": the desktop
-            // dropdown paints it like active, the mobile bar — where the
-            // children are visible as their own tabs — leaves it alone, so
-            // two tabs never look selected at once.
-            className={`tab-mint ${
-              tab === "launch" ? "active" : tab === "reveal" || tab === "status" ? "group-active" : ""
-            }`}
-            onClick={() => setTab("launch")}
-          >
-            <RocketIcon />
-            LAUNCH
-            <ChevronDownIcon className="tab-chevron" width={13} height={13} />
-          </button>
-          <div className="tab-menu">
-            {(["reveal", "status"] as const).map((t) => {
-              const Icon = TAB_ICON[t];
-              return (
-                <button
-                  key={t}
-                  className={tab === t ? "active" : ""}
-                  onClick={() => setTab(t)}
-                >
-                  <Icon />
-                  {t.toUpperCase()}
-                </button>
-              );
-            })}
-          </div>
-        </div>
-        {/* Snipe is the entry point; the server's wallets belong with it, and
-            so does the dashboard that reports what they did. */}
-        <div className="tab-group snipe-group">
-          <button
-            className={`tab-mint ${
-              tab === "snipe" ? "active" : tab === "serverwallets" || tab === "funding" || tab === "pnl" || tab === "profile" || tab === "admin" ? "group-active" : ""
-            }`}
-            onClick={() => setTab("snipe")}
-          >
-            <CrosshairIcon />
-            SNIPE
-            <ChevronDownIcon className="tab-chevron" width={13} height={13} />
-          </button>
-          <div className="tab-menu">
-            <button
-              className={tab === "dashboard" ? "active" : ""}
-              onClick={() => setTab("dashboard")}
-            >
-              <GridIcon />
-              DASHBOARD
-            </button>
-            <button
-              className={tab === "serverwallets" ? "active" : ""}
-              onClick={() => setTab("serverwallets")}
-            >
-              <KeyIcon />
-              WALLETS
-            </button>
-            <button
-              className={tab === "funding" ? "active" : ""}
-              onClick={() => setTab("funding")}
-            >
-              <CoinsIcon />
-              FUNDING
-            </button>
-            <button
-              className={tab === "pnl" ? "active" : ""}
-              onClick={() => setTab("pnl")}
-            >
-              <ActivityIcon />
-              PNL
-            </button>
-            <button
-              className={tab === "profile" ? "active" : ""}
-              onClick={() => setTab("profile")}
-            >
-              <UserIcon />
-              PROFILE
-            </button>
-            {isAdmin ? (
-              <button
-                className={tab === "admin" ? "active" : ""}
-                onClick={() => setTab("admin")}
-              >
-                <ShieldIcon />
-                ADMIN
-              </button>
-            ) : null}
-          </div>
-        </div>
       </div>
       {tab === "dashboard" ? <DashboardTab /> : null}
       {tab === "launch" ? <LaunchTab /> : null}
