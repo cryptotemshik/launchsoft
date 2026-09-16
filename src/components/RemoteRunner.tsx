@@ -6,7 +6,7 @@ import {
   openSeaCollectionUrl,
   type ChainInfo,
 } from "../chains";
-import { useAccount, useConnect } from "wagmi";
+import { useAccount, useConnect, useSignMessage } from "wagmi";
 import { useActiveChain, useSigner } from "../signer";
 import { formatEthShort } from "../lib/profit";
 import {
@@ -169,6 +169,11 @@ export default function RemoteRunner(props: RemoteRunnerProps) {
   const { me } = useMe();
   const { isConnected: walletConnected } = useAccount();
   const { connect: connectWallet, connectors } = useConnect();
+  // Chain-independent signing: signer.walletClient only exists for the
+  // configured chains (Robinhood alone), so a wallet on any other network has
+  // none. The challenge is a personal_sign that works on any chain — go through
+  // wagmi so sign-in never depends on the wallet's current network.
+  const { signMessageAsync } = useSignMessage();
   // The server URL, token and node internals are the operator's: a normal
   // visitor signs in with their wallet and never sees any of it.
   const admin = Boolean(me?.admin);
@@ -283,7 +288,7 @@ export default function RemoteRunner(props: RemoteRunnerProps) {
     }
     // One button does both steps: if no wallet is connected to the browser
     // yet, connect it first, then the user presses sign-in once more to sign.
-    if (!walletConnected || !signer.address || !signer.walletClient) {
+    if (!walletConnected || !signer.address) {
       setError(null);
       setLoginNote("connecting your wallet — approve it, then press sign in again");
       if (connectors[0]) connectWallet({ connector: connectors[0] });
@@ -296,7 +301,7 @@ export default function RemoteRunner(props: RemoteRunnerProps) {
     setLoginNote(null);
     try {
       const result = await signInWithWallet(base, address, (message) =>
-        signer.walletClient!.signMessage({ account, message }),
+        signMessageAsync({ account, message }),
       );
       setToken(result.token);
       setRememberToken(true);
@@ -323,6 +328,14 @@ export default function RemoteRunner(props: RemoteRunnerProps) {
     void connect();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connectAfterLogin, token]);
+
+  // Already signed in at the top of the app? Then this panel needs no second
+  // sign-in. Adopt that session and connect on its own — an admin who used the
+  // top-bar sign-in should not have to prove their wallet again down here.
+  useEffect(() => {
+    if (admin && token && base && !connected && !busy) void connect();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [admin, token, base]);
 
   /**
    * Hand the server the endpoints typed into this page. Without it the box
@@ -500,20 +513,22 @@ export default function RemoteRunner(props: RemoteRunnerProps) {
             {busy ? <span className="spin">BUSY</span> : connected ? "refresh" : "connect"}
           </button>
         ) : null}
-        <button
-          className={admin ? "secondary" : "primary"}
-          onClick={() => void signIn()}
-          disabled={signingIn || !base}
-          title="prove your wallet to get in — no token to paste"
-        >
-          {signingIn ? (
-            <span className="spin">SIGNING</span>
-          ) : !walletConnected ? (
-            "connect wallet"
-          ) : (
-            "sign in with wallet"
-          )}
-        </button>
+        {!me ? (
+          <button
+            className={admin ? "secondary" : "primary"}
+            onClick={() => void signIn()}
+            disabled={signingIn || !base}
+            title="prove your wallet to get in — no token to paste"
+          >
+            {signingIn ? (
+              <span className="spin">SIGNING</span>
+            ) : !walletConnected ? (
+              "connect wallet"
+            ) : (
+              "sign in with wallet"
+            )}
+          </button>
+        ) : null}
         {admin ? (
           <label className="dim" style={{ display: "flex", alignItems: "center", gap: 6 }}>
             <input
