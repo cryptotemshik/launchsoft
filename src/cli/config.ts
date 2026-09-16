@@ -11,6 +11,12 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { normalizePrivateKey } from "../lib/convert";
 import { keystorePassphrase, readKeysText } from "./keystore";
+import {
+  DEFAULT_AFTER,
+  DEFAULT_BEFORE,
+  DEFAULT_STEP_MS,
+  type MintStyle,
+} from "../lib/spread";
 
 export interface SnipeConfig {
   /** Chain id from the registry (4663 = Robinhood Chain). */
@@ -32,6 +38,18 @@ export interface SnipeConfig {
   };
   /** "wait" holds until the stage opens; "now" fires immediately. */
   timing: "now" | "wait";
+  /**
+   * How the shots sit on the clock. "single" is one burst at the start;
+   * "spread" streams several transactions per wallet either side of the start
+   * so one is already queued when the stage turns valid. See lib/spread.ts for
+   * why a stream beats a burst on this chain — it is the only thing that wins a
+   * contested drop here.
+   */
+  style: MintStyle;
+  /** Spread only: shots before the start, shots after it, and the gap between. */
+  before: number;
+  after: number;
+  stepMs: number;
   /** Optional Telegram bot for run summaries. Server-side only. */
   telegram?: { botToken: string; chatId: string };
   /**
@@ -47,6 +65,10 @@ const DEFAULTS = {
   extraRpcs: [] as string[],
   gas: { maxFeeGwei: "2", tipGwei: "0.05", limit: 500_000 },
   timing: "wait" as const,
+  style: "single" as const,
+  before: DEFAULT_BEFORE,
+  after: DEFAULT_AFTER,
+  stepMs: DEFAULT_STEP_MS,
 };
 
 function fail(msg: string): never {
@@ -81,6 +103,15 @@ export function loadConfig(path: string): SnipeConfig {
   const quantity = c.quantity ?? DEFAULTS.quantity;
   if (!Number.isInteger(quantity) || quantity < 1) fail("quantity must be a whole number ≥ 1");
 
+  const style = (c.style ?? DEFAULTS.style) as MintStyle;
+  if (style !== "single" && style !== "spread") fail('style must be "single" or "spread"');
+  const before = c.before ?? DEFAULTS.before;
+  const after = c.after ?? DEFAULTS.after;
+  const stepMs = c.stepMs ?? DEFAULTS.stepMs;
+  for (const [k, v] of [["before", before], ["after", after], ["stepMs", stepMs]] as const) {
+    if (!Number.isInteger(v) || v < 0) fail(`${k} must be a whole number ≥ 0`);
+  }
+
   const gas = { ...DEFAULTS.gas, ...(c.gas ?? {}) };
   if (!Number.isInteger(gas.limit) || gas.limit <= 0) fail("gas.limit must be a positive integer");
 
@@ -106,6 +137,10 @@ export function loadConfig(path: string): SnipeConfig {
     extraRpcs: Array.isArray(c.extraRpcs) ? c.extraRpcs.filter((x) => typeof x === "string") : DEFAULTS.extraRpcs,
     gas,
     timing,
+    style,
+    before,
+    after,
+    stepMs,
   };
 }
 

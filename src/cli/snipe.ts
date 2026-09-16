@@ -26,12 +26,30 @@ function fail(msg: string): never {
   process.exit(1);
 }
 
+interface SpreadOverride {
+  style?: "single" | "spread";
+  before?: number;
+  after?: number;
+  stepMs?: number;
+}
+
 function parseArgs(argv: string[]) {
   let config = "snipe.config.json";
   let yes = false;
+  const spread: SpreadOverride = {};
+  const int = (raw: string, flag: string): number => {
+    const n = Number(raw);
+    if (!Number.isInteger(n) || n < 0) fail(`${flag} needs a whole number ≥ 0, got "${raw}"`);
+    return n;
+  };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--config" && argv[i + 1]) config = argv[++i];
     else if (argv[i] === "--yes" || argv[i] === "-y") yes = true;
+    else if (argv[i] === "--spread") spread.style = "spread";
+    else if (argv[i] === "--single") spread.style = "single";
+    else if (argv[i] === "--before" && argv[i + 1]) spread.before = int(argv[++i], "--before");
+    else if (argv[i] === "--after" && argv[i + 1]) spread.after = int(argv[++i], "--after");
+    else if (argv[i] === "--step" && argv[i + 1]) spread.stepMs = int(argv[++i], "--step");
     else if (argv[i] === "--help" || argv[i] === "-h") {
       console.log(
         [
@@ -40,18 +58,31 @@ function parseArgs(argv: string[]) {
           "  --config <path>   config file (default: snipe.config.json)",
           "  --yes, -y         actually broadcast; without it this is a dry run",
           "",
+          "  Shot timing (overrides the config; see lib/spread.ts):",
+          "  --spread          stream several shots per wallet around the start",
+          "  --single          one burst at the start (default)",
+          "  --before <n>      shots before the start   (spread only)",
+          "  --after <n>       shots after the start    (spread only)",
+          "  --step <ms>       gap between shots in ms   (spread only)",
+          "",
           "Keys live in the file named by `keysFile`, one per line.",
         ].join("\n"),
       );
       process.exit(0);
     }
   }
-  return { config, yes };
+  return { config, yes, spread };
 }
 
 async function main() {
-  const { config: configPath, yes } = parseArgs(process.argv.slice(2));
+  const { config: configPath, yes, spread } = parseArgs(process.argv.slice(2));
   const cfg: SnipeConfig = loadConfig(configPath);
+  // Flags win over the file, so the same config can dry-run single and fire
+  // spread without an edit.
+  const style = spread.style ?? cfg.style;
+  const before = spread.before ?? cfg.before;
+  const after = spread.after ?? cfg.after;
+  const stepMs = spread.stepMs ?? cfg.stepMs;
   // The standalone CLI holds its own keys, so it signs in-process. Same seam
   // as the server, just without a socket — the runner does not know the
   // difference.
@@ -87,6 +118,10 @@ async function main() {
       extraRpcs: cfg.extraRpcs,
       gas: cfg.gas,
       timing: cfg.timing,
+      style,
+      before,
+      after,
+      stepMs,
       dryRun: !yes,
     },
     { onLog: log, signal: abort.signal },

@@ -12,6 +12,15 @@
   },
   "timing": "wait",
 
+  "_style": "How the shots sit on the clock. \"single\" is one burst at the start. \"spread\" streams several transactions per wallet either side of the start so one is already queued when the stage turns valid — the only thing that wins a contested drop on this chain. See src/lib/spread.ts. Override at run time with --spread / --single / --before / --after / --step.",
+  "style": "single",
+  "_before": "Spread only: shots before the start.",
+  "before": 8,
+  "_after": "Spread only: shots after the start.",
+  "after": 8,
+  "_stepMs": "Spread only: gap between shots, in milliseconds. A block here is ~100-200ms under load, so ~150ms puts a shot in each block across the window.",
+  "stepMs": 100,
+
   "_consolidateTo": "Optional. After every successful mint, move the tokens just minted to this address, so a twenty-wallet mint ends up listable from one wallet. It uses the token ids from the receipt, so it moves exactly what was minted and nothing else. The CONSOLIDATE_TO env var wins over this.",
   "consolidateTo": "",
 
