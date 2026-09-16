@@ -13,6 +13,7 @@ import {
 import { useActiveChain } from "../signer";
 import { CHAINS_BY_ID, DEFAULT_CHAIN_ID } from "../chains";
 import { seaDropAbi, tokenAbi } from "../contracts/seadrop";
+import { readMintedCount } from "../lib/collectionData";
 import { checkEligibility, type Eligibility, type MintParams } from "../lib/allowlist";
 import {
   fetchAllowListSource,
@@ -334,9 +335,13 @@ export default function SnipeTab() {
           abi: tokenAbi,
           functionName,
         } as never) as Promise<T>;
+      // Minted count via readMintedCount, not a bare totalSupply(): SeaDrop's
+      // ERC721A tokens revert totalSupply() but answer totalMinted()/getMintStats.
+      // A bare call here made the READ fail on exactly those drops (e.g. Rare
+      // Friends Genesis) even though the snipe runner reads them fine.
       const [name, totalSupply, maxSupply] = await Promise.all([
         read<string>("name"),
-        read<bigint>("totalSupply"),
+        readMintedCount(publicClient, parsed),
         read<bigint>("maxSupply"),
       ]);
       const [publicDrop, allowedFeeRecipients] = await Promise.all([
