@@ -1,4 +1,10 @@
 # Cloudflare Pages config — makes `npx wrangler pages deploy` work with no flags.
 name = "launchpad"
+# The account that owns this Pages project. Not a secret (it's an identifier, not
+# a credential), so it lives here to spare every deploy the account lookup — a
+# token scoped to Pages:Edit can't enumerate accounts, so without this wrangler
+# fails with "Failed to automatically retrieve account IDs". The API token stays
+# out of the repo: pass it as CLOUDFLARE_API_TOKEN at deploy time.
+account_id = "fa5ae3ac62aebb4f2770386cf90cc55f"
 pages_build_output_dir = "dist"
 compatibility_date = "2026-08-19"
