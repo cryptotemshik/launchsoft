@@ -260,8 +260,40 @@ export function waveGapMs(): number {
   return envNumber(process.env.SNIPE_WAVE_GAP_MS, 40);
 }
 
-/** How often the public stage is re-read while a run holds for it to open. */
-const RECHECK_MS = 5_000;
+/**
+ * How often the public stage is re-read while a run holds for it to open.
+ *
+ * Adaptive, not fixed: a creator who moves the start does it against a stage we
+ * are already holding against, so the whole point of holding is to notice. Far
+ * from the boundary a slow cadence is enough and spares a metered RPC hours of
+ * reads; in the final window the cost of a stale read is the drop, so it
+ * tightens. Unlike the old fixed interval it also keeps reading in the last
+ * seconds — a start pulled *earlier* at the boundary is the case that loses a
+ * mint, and a poll that stopped 3s out would miss exactly that.
+ */
+export interface RecheckCadence {
+  /** Re-read gap while the start is more than `nearWindowMs` away. */
+  farMs: number;
+  /** Re-read gap once inside the final window. */
+  nearMs: number;
+  /** How close to the start counts as "near". */
+  nearWindowMs: number;
+}
+
+export function recheckCadence(): RecheckCadence {
+  return {
+    // Floors keep a misconfigured env from spinning a metered endpoint.
+    farMs: Math.max(500, envNumber(process.env.SNIPE_RECHECK_MS, 5_000)),
+    nearMs: Math.max(200, envNumber(process.env.SNIPE_RECHECK_NEAR_MS, 1_000)),
+    nearWindowMs: Math.max(0, envNumber(process.env.SNIPE_RECHECK_NEAR_WINDOW_MS, 60_000)),
+  };
+}
+
+/** How long until the next stage re-read, given the time left until the target. */
+export function recheckDelayMs(msLeft: number, c: RecheckCadence): number {
+  return msLeft <= c.nearWindowMs ? c.nearMs : c.farMs;
+}
+
 /** How long the fire moment will wait for a re-sign that is still in flight. */
 const RESIGN_GRACE_MS = 1_500;
 
@@ -659,7 +691,11 @@ export async function runSnipe(opts: RunOptions, hooks: RunHooks): Promise<RunRe
   // the start would fire them all late and lose the point of them.
   const firstShotAt = () => startTime * 1000 + shotPlan.offsets[0];
   if (opts.timing === "wait" && firstShotAt() > Date.now()) {
-    log("waiting    holding until the stage opens…");
+    const cadence = recheckCadence();
+    log(
+      `waiting    holding until the stage opens… (re-reading every ${cadence.farMs / 1000}s, ` +
+        `every ${cadence.nearMs / 1000}s in the final ${cadence.nearWindowMs / 1000}s, right up to the start)`,
+    );
     let watching = true;
     let stopReason: string | null = null;
     // Rechecks are chained rather than run in parallel: two overlapping
@@ -755,7 +791,19 @@ export async function runSnipe(opts: RunOptions, hooks: RunHooks): Promise<RunRe
       const target = firstShotAt();
       if (target <= Date.now()) break;
       retimed = new AbortController();
-      const ticker = setInterval(queueRecheck, RECHECK_MS);
+      // Self-rescheduling rather than a fixed setInterval: the gap to the next
+      // read is recomputed from how far the start still is, so the cadence
+      // tightens on its own approaching the boundary and keeps firing in the
+      // last seconds. `target` is fixed for this iteration — a retime aborts the
+      // wait and starts a fresh one with the new target and its own ticker.
+      let ticking = true;
+      let recheckTimer: ReturnType<typeof setTimeout> | null = null;
+      const tick = () => {
+        if (!ticking) return;
+        queueRecheck();
+        recheckTimer = setTimeout(tick, recheckDelayMs(target - Date.now(), cadence));
+      };
+      recheckTimer = setTimeout(tick, recheckDelayMs(target - Date.now(), cadence));
       const outcome = await waitUntil(target, {
         signal: eitherSignal(hooks.signal, retimed.signal),
         onApproach: () => {
@@ -764,7 +812,8 @@ export async function runSnipe(opts: RunOptions, hooks: RunHooks): Promise<RunRe
           queueRecheck();
         },
       });
-      clearInterval(ticker);
+      ticking = false;
+      if (recheckTimer) clearTimeout(recheckTimer);
       if (outcome === "aborted" && !retimed.signal.aborted) {
         cancelled = true;
         break;
