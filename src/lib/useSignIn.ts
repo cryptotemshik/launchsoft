@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useState } from "react";
-import { useAccount, useConnect } from "wagmi";
+import { useAccount, useConnect, useSignMessage } from "wagmi";
 import { useSigner } from "../signer";
 import { saveRunnerCreds, signInWithWallet, useRunnerApi } from "./runnerClient";
 
@@ -41,6 +41,13 @@ export function useSignIn() {
   const signer = useSigner();
   const { isConnected } = useAccount();
   const { connect, connectors } = useConnect();
+  // Signing the challenge is a `personal_sign`, which is chain-independent — so
+  // it goes through wagmi's own signer rather than `signer.walletClient`. That
+  // client is built from the *configured* chains (only Robinhood here), so a
+  // wallet sitting on any other network — Ethereum mainnet, where most wallets
+  // open — has no walletClient at all. Gating sign-in on it meant a connected
+  // user on the wrong network silently never got a signature prompt.
+  const { signMessageAsync } = useSignMessage();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -59,7 +66,7 @@ export function useSignIn() {
       setError("the service address isn't configured yet");
       return;
     }
-    if (!isConnected || !signer.address || !signer.walletClient) {
+    if (!isConnected || !signer.address) {
       // Connect the wallet first; the user presses sign in once more to sign.
       // "auto" is what every button uses: an injected provider if the page has
       // one, else WalletConnect (which itself shows a QR on desktop and a deep
@@ -85,7 +92,7 @@ export function useSignIn() {
     setBusy(true);
     try {
       const { token } = await signInWithWallet(base, address, (message) =>
-        signer.walletClient!.signMessage({ account, message }),
+        signMessageAsync({ account, message }),
       );
       saveRunnerCreds(base, token, true);
       // Everything keys off the stored token on load — reload to adopt it.
@@ -95,7 +102,7 @@ export function useSignIn() {
     } finally {
       setBusy(false);
     }
-  }, [base, isConnected, signer, connect, injectedConnector, walletConnectConnector]);
+  }, [base, isConnected, signer, connect, injectedConnector, walletConnectConnector, signMessageAsync]);
 
   return {
     signIn,
