@@ -88,7 +88,9 @@ export default function WatchButton({
   return (
     <button
       className={done ? "secondary active-chip" : "secondary"}
-      style={{ padding: "2px 9px", fontSize: 11, width: "auto" }}
+      // Fixed width so the label going "watch" → "watching" doesn't resize the
+      // button and shove the snipe button next to it around the row.
+      style={{ padding: "2px 9px", fontSize: 11, width: "auto", minWidth: 68, textAlign: "center" }}
       disabled={state === "adding" || done || !base || !token}
       title={
         why ??

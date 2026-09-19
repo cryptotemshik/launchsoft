@@ -16,7 +16,8 @@ export default function SnipeButton({ contract }: { contract: string }) {
   return (
     <button
       className={parked ? "secondary active-chip" : "secondary"}
-      style={{ padding: "2px 10px", fontSize: 11, width: "auto" }}
+      // Fixed width so "snipe" → "sent ✓" doesn't resize and nudge the row.
+      style={{ padding: "2px 10px", fontSize: 11, width: "auto", minWidth: 56, textAlign: "center" }}
       title={
         parked
           ? "Waiting in the Snipe tab — mark as many as you like, they queue up"

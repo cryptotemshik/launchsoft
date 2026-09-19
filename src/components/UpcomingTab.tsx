@@ -541,25 +541,31 @@ export default function UpcomingTab() {
                     onPick={(c) => void annotate(m, { color: c })}
                   />
                   <NoteBox value={m.note} onSave={(note) => annotate(m, { note })} />
-                  {/* Removal lives here rather than in the row.
-                      Two words do not fit the 132px the actions column has —
-                      "remove" was being clipped mid-letter — and the one
-                      action that loses data is better a click in than a
-                      mis-tap away. */}
-                  <button
-                    className="secondary danger-btn note-btn"
-                    disabled={busy}
-                    onClick={(ev) => {
-                      ev.stopPropagation();
-                      void remove(m);
-                    }}
-                  >
-                    remove
-                  </button>
                 </div>
               );
             }}
-            actions={(d) => (isReal(d.contract) ? <SnipeButton contract={d.contract} /> : null)}
+            actions={(d) => {
+              const m = entryFor(d.contract);
+              return (
+                <>
+                  {isReal(d.contract) ? <SnipeButton contract={d.contract} /> : null}
+                  {m ? (
+                    <button
+                      className="secondary danger-btn"
+                      title={`Remove ${m.name} from the watchlist`}
+                      disabled={busy}
+                      style={{ padding: "2px 9px", fontSize: 13, width: "auto", minWidth: 0, lineHeight: 1 }}
+                      onClick={(ev) => {
+                        ev.stopPropagation();
+                        void remove(m);
+                      }}
+                    >
+                      ✕
+                    </button>
+                  ) : null}
+                </>
+              );
+            }}
           />
         ) : null}
 

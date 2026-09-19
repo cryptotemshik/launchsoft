@@ -412,10 +412,13 @@ export default function ScannerTab() {
    * answer for yet. The server replies immediately with what it has cached and
    * reads the rest in the background, which is what the second ask collects.
    */
+  // Every row that still lacks a handle — not just the first 40. The request
+  // itself is chunked below, so a "later" view eight days deep enriches all of
+  // its rows over a few rounds rather than showing Twitter only for the nearest
+  // handful. Each answer is cached server-side, so this cost is paid once.
   const wanted = useMemo(
     () =>
       rows
-        .slice(0, 40)
         .map((d) => d.contract)
         .filter((c) => {
           const have = info[c.toLowerCase()];
@@ -425,6 +428,9 @@ export default function ScannerTab() {
         }),
     [rows, info],
   );
+  // One request stays bounded; merging its answers shrinks `wanted`, which
+  // re-runs the effect for the next slice until every row is covered.
+  const WANTED_BATCH = 40;
 
   useEffect(() => {
     if (!base || wanted.length === 0) return;
@@ -433,7 +439,7 @@ export default function ScannerTab() {
     const ask = async (round: number) => {
       try {
         const r = (await call(
-          `/api/collection-info?contracts=${wanted.join(",")}`,
+          `/api/collection-info?contracts=${wanted.slice(0, WANTED_BATCH).join(",")}`,
         )) as unknown as {
           known?: Record<string, CollectionInfo>;
           pending?: string[];
