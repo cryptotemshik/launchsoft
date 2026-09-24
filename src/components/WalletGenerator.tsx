@@ -4,7 +4,7 @@
  *
  * Keys are made here, in the browser, and go to the server the same way pasted
  * keys do — the server seals them into its keystore and never hands them back.
- * So the page offers the one copy you can keep, before or after adding.
+ * The page offers a copy to keep (.xlsx: address, key), before or after adding.
  *
  * A pattern is a brute-force search (see lib/vanity.ts) spread over the
  * machine's cores in workers, so the page stays usable while it runs.
@@ -18,6 +18,7 @@ import {
   normalizePattern,
   randomWallet,
 } from "../lib/vanity";
+import { XLSX_TYPE, downloadBytes, stampedName, walletsXlsx } from "../lib/xlsx";
 
 type Call = (path: string, init?: RequestInit) => Promise<Record<string, unknown>>;
 
@@ -150,14 +151,7 @@ export default function WalletGenerator({
   }
 
   function download() {
-    const lines = ["address,privateKey", ...made.map((m) => `${m.address},${m.key}`)];
-    const blob = new Blob([`${lines.join("\n")}\n`], { type: "text/csv" });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-");
-    a.download = `orvex-wallets-${stamp}.csv`;
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    downloadBytes(walletsXlsx(made), stampedName("orvex-generated-wallets"), XLSX_TYPE);
     setSavedCopy(true);
   }
 
@@ -294,7 +288,7 @@ export default function WalletGenerator({
               )}
             </button>
             <button className="secondary" onClick={download}>
-              {savedCopy ? "DOWNLOADED ✓" : "DOWNLOAD KEYS (.csv)"}
+              {savedCopy ? "DOWNLOADED ✓" : "DOWNLOAD KEYS (.xlsx)"}
             </button>
             <button className="secondary" onClick={clear}>
               CLEAR
@@ -335,8 +329,9 @@ export default function WalletGenerator({
       ) : null}
       <p className="hint dim" style={{ marginBottom: 0 }}>
         The keys stay in this tab until you add them or clear. The server stores
-        what you add encrypted and never shows a key again — the .csv is the only
-        copy you can keep. Treat it like cash.
+        what you add encrypted. The .xlsx has the address in the left column and
+        the private key in the right; all wallets together can be exported below
+        with your wallet&apos;s approval. Treat the file like cash.
       </p>
     </div>
   );

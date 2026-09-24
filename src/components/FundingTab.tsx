@@ -14,6 +14,7 @@ import StaleServer from "./StaleServer";
 import { AddrLink, TxLink } from "./Bits";
 import WalletPicker from "./WalletPicker";
 import WalletGenerator from "./WalletGenerator";
+import KeyExport from "./KeyExport";
 import WithdrawAddresses, { DestinationStatus, useWithdrawRegistry } from "./WithdrawAddresses";
 
 /**
@@ -570,6 +571,7 @@ export default function FundingTab() {
       ) : (
         <>
           <WalletGenerator call={call} onAdded={refresh} />
+          <KeyExport call={call} walletCount={wallets.length} />
 
           <div className="panel">
             <h2>Send out — one source → {fundTo.size} of {wallets.length}</h2>

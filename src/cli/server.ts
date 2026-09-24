@@ -127,12 +127,14 @@ import {
   endSession,
   exportSessions,
   importSessions,
+  adminAddresses,
   isAdmin,
   sessionOf,
   sweepExpired,
   verifyLogin,
   type Session,
 } from "./auth";
+import { issueExport, redeemExport } from "./keyExport";
 import {
   accountConfigPath,
   accountDirs,
@@ -4591,6 +4593,61 @@ const server = createServer(async (req, res) => {
     }
     const body = await build;
     json(res, 200, { ...body, cachedAt: walletReportCache.get(addr)?.at });
+    return;
+  }
+
+  // ── Private key export: the owner's wallet must sign for it ─────────────
+  // Any world — admin or account — exports only its own wallets, and only
+  // with a fresh signature from the wallet that owns it (see keyExport.ts).
+  // The session or token alone is never enough.
+  if (
+    (url.pathname === "/api/wallets/export-challenge" || url.pathname === "/api/wallets/export") &&
+    req.method === "POST"
+  ) {
+    const a = acting(req);
+    if (!a) {
+      json(res, 401, { error: "sign in first" });
+      return;
+    }
+    if (SIGNER_SOCKET) {
+      json(res, 409, { error: "the keys live in the signer process — export them there" });
+      return;
+    }
+    try {
+      const body = await readBody(req);
+      const entries = loadKeyEntries(a.cfgPath, loadConfig(a.cfgPath).keysFile);
+      if (url.pathname === "/api/wallets/export-challenge") {
+        const signers = a.address ? [a.address.toLowerCase()] : [...adminAddresses()];
+        json(res, 200, issueExport({ cfgPath: a.cfgPath, signers, wallets: entries.length }));
+        return;
+      }
+      const { signer } = await redeemExport({
+        nonce: typeof body.nonce === "string" ? body.nonce : "",
+        signature: (typeof body.signature === "string" ? body.signature : "0x") as `0x${string}`,
+        cfgPath: a.cfgPath,
+      });
+      audit("wallets.exported", { count: entries.length, signer, account: a.admin ? undefined : a.address });
+      log(`wallets: ${entries.length} private key(s) exported, approved by ${signer}`);
+      const tg = loadConfig(CONFIG_PATH).telegram;
+      if (tg) {
+        void sendTelegram(
+          tg,
+          `🔑 Private keys of ${entries.length} wallet(s) were just exported` +
+            `${a.admin ? "" : ` from account ${a.address}`}, approved by ${signer}.\n` +
+            `If this wasn't you, move the funds to fresh wallets now.`,
+        ).catch(() => {});
+      }
+      res.setHeader("cache-control", "no-store");
+      json(res, 200, {
+        wallets: entries.map((e) => ({
+          address: privateKeyToAccount(e.key).address,
+          key: e.key,
+          label: e.label ?? null,
+        })),
+      });
+    } catch (e) {
+      json(res, 400, { error: e instanceof Error ? e.message : String(e) });
+    }
     return;
   }
 

@@ -39,7 +39,7 @@ const nonces = new Map<string, Nonce>();
 const sessions = new Map<string, Session>();
 
 /** The admin addresses, lower-case, from the environment. */
-function adminAddresses(env = process.env): Set<string> {
+export function adminAddresses(env = process.env): Set<string> {
   return new Set(
     (env.SNIPE_ADMIN_ADDRESS ?? "")
       .split(",")

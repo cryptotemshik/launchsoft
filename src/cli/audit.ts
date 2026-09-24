@@ -31,6 +31,7 @@ import { resolve } from "node:path";
 export type AuditEvent =
   /** Wallets appeared on the box. */
   | "wallets.added"
+  | "wallets.exported"
   /** Wallets were struck off. The keys go with them — this is irreversible. */
   | "wallets.removed"
   /** ETH sent out of stored wallets. */
