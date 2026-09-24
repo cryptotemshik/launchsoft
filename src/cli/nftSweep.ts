@@ -15,7 +15,7 @@
  * one wallet moving five tokens sends five transactions on sequential nonces,
  * different wallets are independent, and all of it goes out together.
  */
-import { createPublicClient, encodeFunctionData, parseGwei, type Hex, type PublicClient } from "viem";
+import { createPublicClient, encodeFunctionData, type Hex, type PublicClient } from "viem";
 import { getChainInfo } from "../chains";
 import { mapWithLimit, readTransport } from "../lib/rpcRead";
 import {
@@ -35,6 +35,7 @@ import {
 import { nodeSender } from "./nodeSender";
 import type { Signer, UnsignedTx } from "./signer";
 import type { FundingGas } from "./funding";
+import { transferFees } from "./transferFee";
 
 /** An ERC-721 transferFrom costs well under this; unused gas is refunded. */
 export const NFT_TRANSFER_GAS = 150_000n;
@@ -209,10 +210,6 @@ export async function sweepNfts(
     ...opts.extraRpcs,
   ]);
 
-  const maxFeePerGas = parseGwei(opts.gas.maxFeeGwei);
-  const maxPriorityFeePerGas = parseGwei(opts.gas.tipGwei);
-  if (maxPriorityFeePerGas > maxFeePerGas) throw new Error("tip cannot exceed max fee");
-
   const senders = opts.holdings
     .map((h) => ({ address: h.wallet, items: h.items }))
     .filter((s) => s.items.length > 0);
@@ -238,6 +235,15 @@ export async function sweepNfts(
       ),
     };
   }
+
+  // The fee a transfer needs now, capped by the mint settings — not the mint
+  // settings themselves, which made every wallet need 0.00075 ETH on hand per
+  // transfer at a 5 gwei cap. See transferFee.ts.
+  const { maxFeePerGas, maxPriorityFeePerGas } = await transferFees(
+    client,
+    opts.gas.maxFeeGwei,
+    opts.gas.tipGwei,
+  );
 
   // One wallet moving several tokens needs sequential nonces; wallets are
   // independent of each other, so those run in parallel.

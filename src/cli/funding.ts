@@ -17,7 +17,6 @@
 import {
   createPublicClient,
   formatEther,
-  parseGwei,
   type PublicClient,
 } from "viem";
 import { getChainInfo } from "../chains";
@@ -32,6 +31,7 @@ import {
 } from "../lib/rpcBlast";
 import { nodeSender } from "./nodeSender";
 import type { Signer, UnsignedTx } from "./signer";
+import { transferFees } from "./transferFee";
 
 /** A plain ETH transfer costs 21000; the margin covers chain-specific extras. */
 export const TRANSFER_GAS = 30_000n;
@@ -72,16 +72,9 @@ async function context(chainId: number, extraRpcs: string[], gas: FundingGas, si
     ...info.chain.rpcUrls.default.http,
     ...extraRpcs,
   ]);
-  const maxFeePerGas = parseGwei(gas.maxFeeGwei);
-  const maxPriorityFeePerGas = parseGwei(gas.tipGwei);
-  if (maxPriorityFeePerGas > maxFeePerGas) throw new Error("tip cannot exceed max fee");
-  const block = await client.getBlock();
-  const baseFee = block.baseFeePerGas ?? 0n;
-  if (maxFeePerGas < baseFee) {
-    throw new Error(
-      `max fee (${gas.maxFeeGwei} gwei) is below the current base fee — every node would reject it`,
-    );
-  }
+  // What the chain charges now, not the mint's race-to-the-block settings —
+  // those stay the ceiling. See transferFee.ts.
+  const { maxFeePerGas, maxPriorityFeePerGas } = await transferFees(client, gas.maxFeeGwei, gas.tipGwei);
   return { client, endpoints, chainId, maxFeePerGas, maxPriorityFeePerGas, signer };
 }
 
