@@ -59,6 +59,11 @@ const fmtDate = (ms, withYear = false) =>
   new Date(ms).toLocaleString("ru-RU", {
     day: "2-digit", month: "2-digit", ...(withYear ? { year: "2-digit" } : {}), hour: "2-digit", minute: "2-digit",
   });
+/** Date and time in the viewer's own timezone: "24.09.2026, 20:30". */
+const fmtDateTime = (ms) =>
+  new Date(ms).toLocaleString("ru-RU", {
+    day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit",
+  });
 function fmtAgo(ms) {
   const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
   if (s < 45) return "только что";
@@ -516,13 +521,26 @@ function renderProfit() {
     return;
   }
   const floors = p.floors || {};
+  // When each collection was minted: its first and last mint on chain, in ms.
+  // The chain sees mints this server never made; the local ledger's time is
+  // the fallback for a run the chain scan has not picked up.
+  const mintSpan = new Map();
+  for (const e of p.events || []) {
+    if (e.kind !== "mint" || !e.at) continue;
+    const ms = e.at * 1000;
+    const cur = mintSpan.get(e.collection);
+    mintSpan.set(e.collection, cur ? { first: Math.min(cur.first, ms), last: Math.max(cur.last, ms) } : { first: ms, last: ms });
+  }
   const cols = (p.collections || []).map((c) => {
     const spent = weiToEth(c.cost?.gasWei) + weiToEth(c.cost?.priceWei);
     const revenue = weiToEth(c.revenueWei);
     const net = weiToEth(c.netWei);
     const fl = floorEth(floors[String(c.collection).toLowerCase()]);
     const heldValue = fl !== null ? fl * (c.heldTokens || 0) : null;
-    return { ...c, spent, revenue, net, fl, heldValue, withFloor: net + (heldValue ?? 0) };
+    const span = mintSpan.get(String(c.collection).toLowerCase());
+    const mintAt = span?.first ?? (c.lastAt || null);
+    const mintLast = span?.last ?? (c.lastAt || null);
+    return { ...c, spent, revenue, net, fl, heldValue, withFloor: net + (heldValue ?? 0), mintAt, mintLast };
   });
 
   const { key: sortKey, dir } = state.collSort;
@@ -568,6 +586,7 @@ function renderProfit() {
     .map(
       (c) => `<tr>
         <td class="name" data-label="Коллекция">${collLink(c.collection, c.collectionName)}</td>
+        <td class="nowrap" data-label="Минт"${c.mintAt && c.mintLast - c.mintAt > 3600_000 ? ` title="первый минт ${fmtDateTime(c.mintAt)}, последний ${fmtDateTime(c.mintLast)}"` : ""}>${c.mintAt ? fmtDateTime(c.mintAt) : `<span class="muted">—</span>`}</td>
         <td class="r" data-label="Запусков">${c.runs || 0}</td>
         <td class="r" data-label="Заминчено">${c.cost?.tokens ?? 0}</td>
         <td class="r" data-label="Потрачено">${fmtEth(c.spent, { unit: false })}</td>
@@ -587,6 +606,7 @@ function renderProfit() {
 /** What each sortable collections column sorts by. Unknowns sink to the bottom. */
 const COLL_SORT = {
   name: (c) => String(c.collectionName || c.collection).toLowerCase(),
+  mintAt: (c) => c.mintAt ?? -Infinity,
   runs: (c) => c.runs || 0,
   minted: (c) => c.cost?.tokens ?? 0,
   spent: (c) => c.spent,
