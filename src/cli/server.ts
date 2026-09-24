@@ -2676,6 +2676,24 @@ function audit(event: AuditEvent, detail: Record<string, unknown> = {}): void {
  * the API. That is the entire distinction between it and the registry.
  */
 /**
+ * The instant tier, lower-case: `consolidateTo` and, for the main world only,
+ * SNIPE_WITHDRAW_TO. Shared by the policy and the panel that lists what is
+ * allowed, so the two cannot disagree.
+ */
+function instantWithdrawTargets(cfgPath = CONFIG_PATH, account: string | null = null): string[] {
+  const out = new Set<string>();
+  const cfg = loadConfig(cfgPath);
+  if (cfg.consolidateTo) out.add(cfg.consolidateTo.toLowerCase());
+  if (!account) {
+    for (const a of (process.env.SNIPE_WITHDRAW_TO ?? "").split(",")) {
+      const t = a.trim().toLowerCase();
+      if (/^0x[0-9a-f]{40}$/.test(t)) out.add(t);
+    }
+  }
+  return [...out];
+}
+
+/**
  * The signing policy for a world. Mirrors the daemon's policyFor (signerd.ts)
  * so the in-process path and the socket path enforce the same rules: an
  * account may withdraw instantly to the address it signed in with plus what it
@@ -2687,13 +2705,7 @@ function policyContext(cfgPath = CONFIG_PATH, account: string | null = null): Po
   const info = getChainInfo(cfg.chainId);
   const withdrawTo = maturedAddresses(cfgPath, Date.now());
   if (account) withdrawTo.add(account.toLowerCase());
-  if (cfg.consolidateTo) withdrawTo.add(cfg.consolidateTo.toLowerCase());
-  if (!account) {
-    for (const a of (process.env.SNIPE_WITHDRAW_TO ?? "").split(",")) {
-      const t = a.trim().toLowerCase();
-      if (/^0x[0-9a-f]{40}$/.test(t)) withdrawTo.add(t);
-    }
-  }
+  for (const a of instantWithdrawTargets(cfgPath, account)) withdrawTo.add(a);
   return {
     ownWallets: new Set(
       walletBook(cfgPath).map((w) => w.address.toLowerCase()),
@@ -2767,7 +2779,7 @@ function enforcePolicy(
     audit("policy.refused", { what, to: tx.to, reason: verdict.reason });
     throw new Error(
       `${verdict.reason}. Withdrawals go to the configured address or one registered ` +
-        `an hour ago — see the funding tab.`,
+        `an hour ago — register it under "Allowed destinations" on the funding tab.`,
     );
   }
 }
@@ -5142,7 +5154,12 @@ const server = createServer(async (req, res) => {
 
     // ── Withdrawal addresses: the only doors money may leave through ──────
     if (url.pathname === "/api/withdraw-addresses" && req.method === "GET") {
-      json(res, 200, { addresses: registryView(CONFIG_PATH, Date.now()), matureMs: MATURE_MS });
+      json(res, 200, {
+        addresses: registryView(CONFIG_PATH, Date.now()),
+        matureMs: MATURE_MS,
+        // What needs no wait at all — set on the box, not over the API.
+        instant: instantWithdrawTargets(CONFIG_PATH),
+      });
       return;
     }
 

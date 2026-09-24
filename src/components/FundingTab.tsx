@@ -13,6 +13,7 @@ import {
 import StaleServer from "./StaleServer";
 import { AddrLink, TxLink } from "./Bits";
 import WalletPicker from "./WalletPicker";
+import WithdrawAddresses, { DestinationStatus, useWithdrawRegistry } from "./WithdrawAddresses";
 
 /**
  * Move ETH across the server's wallet set: fan it out before a mint, sweep it
@@ -169,6 +170,8 @@ export default function FundingTab() {
   const [nftSortDesc, setNftSortDesc] = useState(true);
   const [onlyCollection, setOnlyCollection] = useState<string | null>(null);
   const [nftError, setNftError] = useState<string | null>(null);
+  // Where sends may go. Operator-only on the server, so only asked for then.
+  const withdrawReg = useWithdrawRegistry(call, admin && connected);
 
   const refresh = useCallback(async () => {
     try {
@@ -743,6 +746,8 @@ export default function FundingTab() {
 
           {admin ? (
           <>
+          <WithdrawAddresses registry={withdrawReg} />
+
           <div className="panel">
             <h2>Collect back — {collectFrom.size} of {wallets.length} → one address</h2>
             <p className="dim" style={{ marginTop: 0 }}>
@@ -753,6 +758,11 @@ export default function FundingTab() {
             <div className="field">
               <label>destination address</label>
               <input value={dest} onChange={(e) => setDest(e.target.value)} placeholder="0x…" />
+              <DestinationStatus
+                address={dest}
+                registry={withdrawReg}
+                ownWallets={wallets.map((w) => w.address)}
+              />
             </div>
 
             <WalletPicker
@@ -937,6 +947,11 @@ export default function FundingTab() {
             <div className="field" style={{ marginTop: 12 }}>
               <label>send every token to</label>
               <input value={nftDest} onChange={(e) => setNftDest(e.target.value)} placeholder="0x…" />
+              <DestinationStatus
+                address={nftDest}
+                registry={withdrawReg}
+                ownWallets={wallets.map((w) => w.address)}
+              />
             </div>
             {/* Say out loud what is about to move. The failure this replaces
                 was silent: the chips narrowed the table, the sweep ignored
