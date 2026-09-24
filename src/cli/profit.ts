@@ -40,7 +40,7 @@ import { mapWithLimit } from "../lib/rpcRead";
  * they are far above a realistic drop's worth of blocks.
  */
 const blockTimeCache = new Map<string, number>();
-const txCostCache = new Map<string, { valueWei: bigint; gasWei: bigint }>();
+const txCostCache = new Map<string, { valueWei: bigint; gasWei: bigint; from: string }>();
 const balanceRiseCache = new Map<string, { rise: bigint; priced: boolean }>();
 const CACHE_CAP = 50_000;
 
@@ -246,6 +246,14 @@ export interface MintTx {
 export async function readMintTxs(
   client: PublicClient,
   mints: readonly MintTransfer[],
+  /**
+   * Our addresses. A token that arrived from the zero address in a
+   * transaction someone else sent is an airdrop, not our mint: counting it
+   * put a stranger's gas on our bill and their date on our mint history.
+   * Such tokens still count as held — they are ours now — just not as minted.
+   * Omitted, every mint counts (the old behaviour).
+   */
+  senders?: readonly string[],
 ): Promise<MintTx[]> {
   if (mints.length === 0) return [];
 
@@ -260,21 +268,37 @@ export async function readMintTxs(
         client.getTransactionReceipt({ hash: hash as `0x${string}` }),
       ]);
       const gasPrice = receipt.effectiveGasPrice ?? tx.gasPrice ?? 0n;
-      return { valueWei: tx.value ?? 0n, gasWei: receipt.gasUsed * gasPrice, ok: true };
+      return {
+        valueWei: tx.value ?? 0n,
+        gasWei: receipt.gasUsed * gasPrice,
+        from: (tx.from ?? "").toLowerCase(),
+        ok: true,
+      };
     } catch {
       // A pruned node may not have the transaction any more. Counting it as
       // free would overstate profit, but inventing a number is worse — so it
       // contributes nothing and the token still counts as minted.
-      return { valueWei: 0n, gasWei: 0n, ok: false };
+      return { valueWei: 0n, gasWei: 0n, from: "", ok: false };
     }
   });
   missing.forEach((h, i) => {
-    if (costs[i].ok) txCostCache.set(h, { valueWei: costs[i].valueWei, gasWei: costs[i].gasWei });
+    if (costs[i].ok) {
+      txCostCache.set(h, { valueWei: costs[i].valueWei, gasWei: costs[i].gasWei, from: costs[i].from });
+    }
   });
   trim(txCostCache);
   const byHash = new Map(
-    hashes.map((h) => [h, txCostCache.get(h) ?? { valueWei: 0n, gasWei: 0n }]),
+    hashes.map((h) => [h, txCostCache.get(h) ?? { valueWei: 0n, gasWei: 0n, from: "" }]),
   );
+  // Airdrops out. An unknown sender (unreadable transaction) stays in, as
+  // before: dropping a real mint would be worse than keeping a doubtful one.
+  if (senders) {
+    const ours = new Set(senders.map((a) => a.toLowerCase()));
+    mints = mints.filter((m) => {
+      const from = byHash.get(m.txHash)?.from ?? "";
+      return !from || ours.has(from);
+    });
+  }
 
   // Group by transaction and collection: one row per (tx, collection).
   const rows = new Map<string, MintTx>();

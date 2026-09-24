@@ -746,7 +746,7 @@ async function buildProfitReport(cfgPath = CONFIG_PATH): Promise<Record<string, 
     // What the mints cost, read from their own transactions. The ledger
     // only covers runs this server made, so on its own it left every
     // earlier drop showing no mints and no spend at all.
-    readMintTxs(client as never, scan.minted),
+    readMintTxs(client as never, scan.minted, addresses),
   ]);
   const minted = costByMintTx(mintTxs);
   const salesByCollection = new Map<string, typeof sales>();
@@ -884,7 +884,7 @@ async function buildWalletReport(address: `0x${string}`): Promise<Record<string,
   ]);
   const [sales, mintTxs] = await Promise.all([
     priceTransfers(client as never, scan.sent, [address]),
-    readMintTxs(client as never, scan.minted),
+    readMintTxs(client as never, scan.minted, [address]),
   ]);
   const minted = costByMintTx(mintTxs);
   const salesByCollection = new Map<string, typeof sales>();

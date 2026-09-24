@@ -4,6 +4,7 @@ import {
   clearProfitCaches,
   eth,
   priceMints,
+  readMintTxs,
   priceTransfers,
   summarise,
   type MintTransfer,
@@ -215,6 +216,24 @@ describe("priceMints", () => {
     expect(c.gasWei).toBe(1_000_000n);
     expect(c.tokens).toBe(1);
     expect(c.wallets).toBe(1);
+  });
+
+  it("leaves out airdrops: tokens from the zero address in someone else's transaction", async () => {
+    const stranger = "0x9999999999999999999999999999999999999999";
+    const client = {
+      getTransaction: async ({ hash }: { hash: string }) =>
+        hash === "0xdrop"
+          ? { from: stranger, value: 0n, gasPrice: 10n }
+          : { from: W1, value: 1n * ETH, gasPrice: 10n },
+      getTransactionReceipt: async () => ({ gasUsed: 100_000n, effectiveGasPrice: 10n }),
+    } as never;
+    const txs = await readMintTxs(
+      client,
+      [mint({ txHash: "0xdrop", tokenId: "7" }), mint({ txHash: "0xtx1", tokenId: "1" })],
+      [W1],
+    );
+    expect(txs.map((t) => t.txHash)).toEqual(["0xtx1"]);
+    expect(txs[0].priceWei).toBe(1n * ETH);
   });
 
   it("reads one transaction once however many tokens it minted", async () => {
