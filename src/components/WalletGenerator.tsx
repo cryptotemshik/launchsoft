@@ -40,10 +40,13 @@ function fmtDuration(s: number): string {
 export default function WalletGenerator({
   call,
   onAdded,
+  labels = [],
 }: {
   call: Call;
   /** The server has new wallets: reload the list. */
   onAdded: () => void | Promise<void>;
+  /** Labels already on the server, with how many wallets carry each. */
+  labels?: { name: string; count: number }[];
 }) {
   const [count, setCount] = useState("10");
   const [prefix, setPrefix] = useState("");
@@ -181,6 +184,28 @@ export default function WalletGenerator({
     }
   }
 
+  const [renaming, setRenaming] = useState<string | null>(null);
+  async function rename(from: string) {
+    const to = window.prompt(`New name for "${from}" (empty removes the label):`, from);
+    if (to === null || to.trim() === from) return;
+    setRenaming(from);
+    setError(null);
+    try {
+      const r = (await call("/api/wallets/label", {
+        method: "PATCH",
+        body: JSON.stringify({ from, to: to.trim() }),
+      })) as { renamed?: number };
+      setNotice(`Renamed "${from}" → "${to.trim() || "no label"}" on ${r.renamed ?? 0} wallet(s).`);
+      if (label === from) setLabel(to.trim());
+      await onAdded();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setError(/404|405/.test(msg) ? "The server is too old for renaming — update it (git pull, restart)." : msg);
+    } finally {
+      setRenaming(null);
+    }
+  }
+
   function clear() {
     if (!savedCopy && addedCount < made.length && !window.confirm("These keys are not saved or added anywhere. Discard them?")) {
       return;
@@ -248,7 +273,20 @@ export default function WalletGenerator({
         </div>
         <div className="field" style={{ flex: 1, minWidth: 120 }}>
           <label>label (optional)</label>
-          <input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="batch name" maxLength={60} />
+          <input
+            value={label}
+            onChange={(e) => setLabel(e.target.value)}
+            placeholder={labels.length ? "new, or pick an existing one" : "batch name"}
+            maxLength={60}
+            list="wallet-labels"
+          />
+          <datalist id="wallet-labels">
+            {labels.map((l) => (
+              <option key={l.name} value={l.name}>
+                {l.count} wallet(s)
+              </option>
+            ))}
+          </datalist>
         </div>
       </div>
 
@@ -327,6 +365,37 @@ export default function WalletGenerator({
           </table>
         </div>
       ) : null}
+      {labels.length > 0 ? (
+        <div style={{ marginTop: 14 }}>
+          <div className="dim" style={{ fontSize: 11, marginBottom: 6 }}>
+            LABELS ON THE SERVER — click one to add the new wallets to it, ✎ to rename
+          </div>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            {labels.map((l) => (
+              <span key={l.name} style={{ display: "inline-flex", gap: 2 }}>
+                <button
+                  className={label === l.name ? "secondary active-chip" : "secondary"}
+                  style={{ padding: "3px 10px", fontSize: 11, width: "auto" }}
+                  onClick={() => setLabel(l.name)}
+                  title="Label the new wallets with this"
+                >
+                  {l.name} ({l.count})
+                </button>
+                <button
+                  className="secondary"
+                  style={{ padding: "3px 7px", fontSize: 11, width: "auto" }}
+                  title={`Rename "${l.name}" on all ${l.count} wallet(s)`}
+                  disabled={renaming !== null}
+                  onClick={() => void rename(l.name)}
+                >
+                  {renaming === l.name ? <span className="spin">…</span> : "✎"}
+                </button>
+              </span>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
       <p className="hint dim" style={{ marginBottom: 0 }}>
         The keys stay in this tab until you add them or clear. The server stores
         what you add encrypted. The .xlsx has the address in the left column and

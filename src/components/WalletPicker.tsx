@@ -77,6 +77,21 @@ export default function WalletPicker({
   const pick = (addresses: string[]) => setChosen(new Set(addresses));
 
   /**
+   * Categories combine: each click adds that label's wallets to the ticked
+   * set, a lit one takes them back out. From "all" or "none" the first click
+   * starts fresh with just that category — adding to "all" would do nothing.
+   */
+  const toggleLabel = (members: string[], on: boolean) => {
+    if (on) {
+      setChosen(new Set([...chosen].filter((a) => !members.includes(a))));
+    } else if (all || chosen.size === 0) {
+      pick(members);
+    } else {
+      setChosen(new Set([...chosen, ...members]));
+    }
+  };
+
+  /**
    * Narrow what is already ticked, rather than always drawing from everything.
    *
    * This is what makes the chips compose: press "funded only", then draw, and
@@ -141,16 +156,22 @@ export default function WalletPicker({
         >
           funded only ({fundedWallets.length})
         </button>
-        {labels.map((l) => (
-          <button
-            key={l}
-            className="secondary"
-            style={{ padding: "3px 12px", fontSize: 11 }}
-            onClick={() => pick(wallets.filter((w) => w.label === l).map((w) => w.address))}
-          >
-            {l} ({wallets.filter((w) => w.label === l).length})
-          </button>
-        ))}
+        {labels.map((l) => {
+          const members = wallets.filter((w) => w.label === l).map((w) => w.address);
+          const on = !all && members.every((a) => chosen.has(a));
+          return (
+            <button
+              key={l}
+              className={on ? "secondary active-chip" : "secondary"}
+              style={{ padding: "3px 12px", fontSize: 11 }}
+              title="Click several to combine them; click a lit one to take it back out"
+              onClick={() => toggleLabel(members, on)}
+            >
+              {on ? "✓ " : ""}
+              {l} ({members.length})
+            </button>
+          );
+        })}
       </div>
 
       {/* Taking a handful without ticking them one at a time. The slider is for

@@ -432,6 +432,11 @@ export default function FundingTab() {
   }
 
   const wallets = view?.wallets ?? [];
+  const walletLabels = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const w of wallets) if (w.label) m.set(w.label, (m.get(w.label) ?? 0) + 1);
+    return [...m].map(([name, count]) => ({ name, count }));
+  }, [wallets]);
 
   /**
    * The wallets a sweep could gather from, each showing how many tokens it is
@@ -570,7 +575,7 @@ export default function FundingTab() {
         </div>
       ) : (
         <>
-          <WalletGenerator call={call} onAdded={refresh} />
+          <WalletGenerator call={call} onAdded={refresh} labels={walletLabels} />
           <KeyExport call={call} walletCount={wallets.length} />
 
           <div className="panel">

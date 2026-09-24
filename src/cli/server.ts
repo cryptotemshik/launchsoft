@@ -2805,6 +2805,26 @@ ${address}
   ).catch(() => {});
 }
 
+/**
+ * Rename a wallet label across a world's keystore. Returns how many wallets
+ * carry the new name now. An empty `to` clears the label.
+ */
+function renameLabel(cfgPath: string, from: string, to: string): number {
+  const cfg = loadConfig(cfgPath);
+  const entries = loadKeyEntries(cfgPath, cfg.keysFile);
+  const next = to.trim().slice(0, 60) || undefined;
+  let n = 0;
+  for (const e of entries) {
+    if ((e.label ?? "") === from) {
+      e.label = next;
+      n += 1;
+    }
+  }
+  if (n === 0) throw new Error(`no wallets are labelled "${from}"`);
+  writeKeys(entries, cfgPath);
+  return n;
+}
+
 function writeKeys(entries: KeyEntry[], cfgPath = CONFIG_PATH) {
   const cfg = loadConfig(cfgPath);
   const abs = keysPath(cfgPath, cfg.keysFile);
@@ -4710,6 +4730,21 @@ const server = createServer(async (req, res) => {
           return;
         }
 
+        if (url.pathname === "/api/wallets/label" && req.method === "PATCH") {
+          if (SIGNER_SOCKET) {
+            json(res, 409, { error: "wallet management runs on the signer process" });
+            return;
+          }
+          const body = await readBody(req);
+          const from = typeof body.from === "string" ? body.from : "";
+          const to = typeof body.to === "string" ? body.to : "";
+          if (!from) throw new Error("which label? (from)");
+          const renamed = renameLabel(a.cfgPath, from, to);
+          log(`wallets: label "${from}" → "${to.trim()}" on ${renamed} wallet(s)`);
+          json(res, 200, { renamed, ...(await walletsView(a.cfgPath)) });
+          return;
+        }
+
         if (url.pathname === "/api/wallets" && req.method === "DELETE") {
           if (SIGNER_SOCKET) {
             json(res, 409, { error: "wallet management runs on the signer process" });
@@ -5305,6 +5340,21 @@ const server = createServer(async (req, res) => {
 
     // Removes one wallet (?address=) or a batch (JSON body {addresses:[…]}),
     // so clearing out a set doesn't mean one request per wallet.
+    if (url.pathname === "/api/wallets/label" && req.method === "PATCH") {
+      if (SIGNER_SOCKET) {
+        json(res, 409, { error: "wallet management runs on the signer process" });
+        return;
+      }
+      const body = await readBody(req);
+      const from = typeof body.from === "string" ? body.from : "";
+      const to = typeof body.to === "string" ? body.to : "";
+      if (!from) throw new Error("which label? (from)");
+      const renamed = renameLabel(CONFIG_PATH, from, to);
+      log(`wallets: label "${from}" → "${to.trim()}" on ${renamed} wallet(s)`);
+      json(res, 200, { renamed, ...(await walletsView(CONFIG_PATH)) });
+      return;
+    }
+
     if (url.pathname === "/api/wallets" && req.method === "DELETE") {
       // Managing wallets writes the encrypted key file, which needs the
       // passphrase this process deliberately does not have when the signer
