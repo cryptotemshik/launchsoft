@@ -1,0 +1,8 @@
+# Cloudflare Pages config for the team dashboard — separate from the main site.
+# Deploy from this folder:
+#   CLOUDFLARE_API_TOKEN=<Pages:Edit token> \
+#   CLOUDFLARE_ACCOUNT_ID=fa5ae3ac62aebb4f2770386cf90cc55f \
+#   npx wrangler pages deploy --branch main
+name = "orvex-team"
+pages_build_output_dir = "public"
+compatibility_date = "2026-09-24"

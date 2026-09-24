@@ -66,6 +66,15 @@ const PUBLIC_DROP_ABI = [
 ] as const;
 import { costByCollection, loadMints, recordMint } from "./ledger";
 import {
+  DASHBOARD_TOKEN_MIN,
+  appendBalancePoint,
+  dashboardTokenOk,
+  downsample,
+  loadBalanceHistory,
+  parseDashboardWallets,
+  summariseRuns,
+} from "./dashboard";
+import {
   blockTimes,
   clearProfitCaches,
   costByMintTx,
@@ -232,6 +241,17 @@ const TOKEN = process.env.SNIPE_TOKEN ?? "";
  * it the operator's master token. Unset means the feature is off.
  */
 const UPDATE_TOKEN = (process.env.SNIPE_UPDATE_TOKEN ?? "").trim();
+/**
+ * The team dashboard's read-only key. It opens `/api/dashboard/*` and nothing
+ * else — no queue, no wallets management, no withdrawals — so it can be handed
+ * to a partner without handing them the box. Off when unset or shorter than
+ * the operator token's own floor.
+ */
+const DASHBOARD_TOKEN = (process.env.SNIPE_DASHBOARD_TOKEN ?? "").trim();
+/** Wallets the dashboard names outright: `Main:0x…,Funding:0x…`. */
+const DASHBOARD_WALLETS = parseDashboardWallets(process.env.SNIPE_DASHBOARD_WALLETS);
+/** How often the balance line gets a new point. */
+const DASHBOARD_SNAPSHOT_MS = envNumber(process.env.SNIPE_DASHBOARD_SNAPSHOT_MS, 30 * 60_000, 60_000);
 /**
  * Read-only, shared, cached endpoints anyone may GET without a wallet — the
  * free public surface (scanner, live board, calendar drops, collection lookups).
@@ -2829,6 +2849,174 @@ async function walletsView(cfgPath = CONFIG_PATH) {
   };
 }
 
+// ── Team dashboard ────────────────────────────────────────────────────────
+// Read-only views of the main world for the dashboard key. They assemble what
+// the panels already compute — wallets, queue, watchlist, ledger, profit — and
+// add nothing that could act.
+
+/** The named dashboard wallets with their balances; a failed read leaves null. */
+async function dashboardMainWallets(): Promise<
+  { label: string; address: `0x${string}`; balance: string | null }[]
+> {
+  const out = DASHBOARD_WALLETS.map((w) => ({ ...w, balance: null as string | null }));
+  if (out.length === 0) return out;
+  try {
+    const cfg = loadConfig(CONFIG_PATH);
+    const info = getChainInfo(cfg.chainId);
+    if (!info) return out;
+    const client = makeReadClient(info.chain, readRpcs(cfg));
+    const got = await Promise.all(out.map((w) => client.getBalance({ address: w.address })));
+    return out.map((w, i) => ({ ...w, balance: formatEther(got[i]) }));
+  } catch (e) {
+    log(`dashboard: main wallet balances unavailable (${e instanceof Error ? e.message.split("\n")[0] : e})`);
+    return out;
+  }
+}
+
+/** Sum a list of formatted ETH balances as wei, ignoring the unknown ones. */
+function sumEth(values: readonly (string | null)[]): bigint {
+  let total = 0n;
+  for (const v of values) {
+    if (!v) continue;
+    try {
+      total += parseEther(v);
+    } catch {
+      /* a malformed figure is left out of the total, not allowed to break it */
+    }
+  }
+  return total;
+}
+
+/** Everything the dashboard shows that is cheap to read, in one reply. */
+async function dashboardSummary(): Promise<Record<string, unknown>> {
+  const cfg = loadConfig(CONFIG_PATH);
+  const info = getChainInfo(cfg.chainId);
+  const [view, main, ethUsd] = await Promise.all([
+    walletsView(CONFIG_PATH),
+    dashboardMainWallets(),
+    usdPerEth(),
+  ]);
+  const mine = jobs.filter((j) => j.cfgPath === CONFIG_PATH);
+  const queue = mine
+    .filter((j) => j.status === "queued" || j.status === "armed")
+    .map((j) => ({
+      id: j.id,
+      label: j.label,
+      status: j.status,
+      active: j.id === activeJobId,
+      collection: j.request.collection,
+      name: j.drop?.name ?? j.label,
+      startTime: j.startTime ?? j.drop?.startTime ?? null,
+      priceWei: j.drop?.priceWei ?? null,
+      maxSupply: j.drop?.maxSupply ?? null,
+      totalSupply: j.drop?.totalSupply ?? null,
+      quantity: j.request.quantity,
+      wallets: j.wallets?.length ?? view.wallets.length,
+      style: j.request.style ?? "single",
+      shots: planFor(
+        j.request.style ?? "single",
+        j.request.before ?? DEFAULT_BEFORE,
+        j.request.after ?? DEFAULT_AFTER,
+        j.request.stepMs ?? DEFAULT_STEP_MS,
+      ).shots,
+      dryRun: j.request.dryRun,
+    }))
+    .sort((a, b) => (a.startTime ?? Infinity) - (b.startTime ?? Infinity));
+  // Runs that ended without a result never reach the ledger, so the ones
+  // still in memory are the only record of them.
+  const failures = mine
+    .filter((j) => j.status === "error" || j.status === "aborted")
+    .map((j) => ({
+      id: j.id,
+      name: j.drop?.name ?? j.label,
+      collection: j.request.collection,
+      status: j.status,
+      error: j.error ?? null,
+      at: j.addedAt,
+    }));
+  return {
+    chain: info?.label ?? null,
+    chainId: cfg.chainId,
+    explorerUrl: info?.explorerUrl ?? null,
+    openSeaSlug: info?.openSeaSlug ?? null,
+    now: Math.floor(Date.now() / 1000),
+    ethUsd,
+    mainWallets: main,
+    wallets: view.wallets,
+    queue,
+    failures,
+    runs: summariseRuns(loadMints(CONFIG_PATH), 100),
+    watchlist: sortByDate(loadUpcoming(CONFIG_PATH)),
+    balanceHistory: downsample(loadBalanceHistory(CONFIG_PATH), 400),
+  };
+}
+
+/**
+ * The profit report for the main world, plus floors for what is still held.
+ * Same build and cache as the panel's own report; never forces a rebuild, so
+ * the dashboard key cannot be used to run up the node bill.
+ */
+async function dashboardProfit(): Promise<{ status: 200 | 202; body: Record<string, unknown> }> {
+  let status: 200 | 202 = 200;
+  let body: Record<string, unknown>;
+  const cached = profitCache.get(CONFIG_PATH);
+  if (cached && Date.now() - cached.at < PROFIT_TTL_MS) {
+    body = { ...cached.body, cachedAt: cached.at };
+  } else {
+    const building = startProfitBuild(CONFIG_PATH);
+    let why: string | null = null;
+    const quick = await Promise.race([
+      building.then(() => "done" as const).catch((e) => {
+        why = e instanceof Error ? e.message : String(e);
+        return "failed" as const;
+      }),
+      new Promise<"slow">((r) => setTimeout(() => r("slow"), PROFIT_WAIT_MS)),
+    ]);
+    const now = profitCache.get(CONFIG_PATH);
+    if (quick === "done" && now) {
+      body = { ...now.body, cachedAt: now.at };
+    } else if (quick === "failed") {
+      throw new Error(`couldn't read the chain: ${why ?? "no reason given"}`);
+    } else {
+      status = 202;
+      body = { building: true, ...(now ? { ...now.body, cachedAt: now.at, stale: true } : {}) };
+    }
+  }
+  const collections = Array.isArray(body.collections)
+    ? (body.collections as { collection: string; heldTokens?: number }[])
+    : [];
+  const held = collections.filter((c) => (c.heldTokens ?? 0) > 0).map((c) => c.collection);
+  let floors: Record<string, unknown> = {};
+  let floorsPending = 0;
+  if (held.length > 0) {
+    const info = getChainInfo(loadConfig(CONFIG_PATH).chainId);
+    const found = lookupCollections(info?.openSeaSlug ?? "ethereum", held.slice(0, 120), 60, (n) =>
+      log(n),
+    );
+    floors = Object.fromEntries(Object.entries(found.known).map(([c, m]) => [c, m.floor]));
+    floorsPending = found.pending.length;
+  }
+  return { status, body: { ...body, floors, floorsPending } };
+}
+
+/** Add one point to the balance line. Never throws. */
+async function snapshotBalances(): Promise<void> {
+  try {
+    const [view, main] = await Promise.all([walletsView(CONFIG_PATH), dashboardMainWallets()]);
+    const walletsWei = sumEth(view.wallets.map((w) => w.balance));
+    const mainWei = sumEth(main.map((w) => w.balance));
+    // A read that came back empty is not a balance of zero.
+    if (view.wallets.length > 0 && view.wallets.every((w) => w.balance === null)) return;
+    appendBalancePoint(CONFIG_PATH, {
+      at: Date.now(),
+      walletsWei: walletsWei.toString(),
+      mainWei: mainWei.toString(),
+    });
+  } catch (e) {
+    log(`dashboard: balance snapshot skipped (${e instanceof Error ? e.message.split("\n")[0] : e})`);
+  }
+}
+
 /** Send the run summary to Telegram, if configured. Never throws. */
 /**
  * After a live mint, tell the owner to get what they won off the sniping
@@ -3199,6 +3387,18 @@ await resolveKeystorePassphrase().catch((e) => {
 loadSessionsFromDisk();
 // Expired nonces and sessions cost nothing to hold but should not accumulate.
 setInterval(() => sweepExpired(), 10 * 60 * 1000).unref?.();
+
+// The dashboard's balance line needs a point even when nobody has the page open,
+// so it samples on its own clock — only when the dashboard is switched on, so a
+// box that never uses it never pays for the reads.
+if (DASHBOARD_TOKEN.length >= DASHBOARD_TOKEN_MIN) {
+  setTimeout(() => void snapshotBalances(), 60_000).unref?.();
+  setInterval(() => void snapshotBalances(), DASHBOARD_SNAPSHOT_MS).unref?.();
+} else if (DASHBOARD_TOKEN) {
+  console.error(
+    `SNIPE_DASHBOARD_TOKEN is set but shorter than ${DASHBOARD_TOKEN_MIN} characters — the dashboard stays off`,
+  );
+}
 restoreQueue();
 
 /**
@@ -3288,6 +3488,36 @@ const server = createServer(async (req, res) => {
       json(res, 200, result);
     } catch (e) {
       json(res, 400, { error: e instanceof Error ? e.message : String(e) });
+    }
+    return;
+  }
+
+  // ── Team dashboard: read-only, its own key ──────────────────────────────
+  // Before the operator gate so the dashboard key works, and GET-only so that
+  // key can only ever read. The owner's own token or admin session also opens
+  // it. Nothing here reaches acting(): the key is not an identity.
+  if (url.pathname.startsWith("/api/dashboard/")) {
+    if (req.method !== "GET") {
+      json(res, 405, { error: "the dashboard only reads" });
+      return;
+    }
+    if (!dashboardTokenOk(req.headers.authorization, DASHBOARD_TOKEN) && !isAdminReq(req)) {
+      json(res, 401, { error: "bad or missing dashboard key" });
+      return;
+    }
+    try {
+      if (url.pathname === "/api/dashboard/summary") {
+        json(res, 200, await dashboardSummary());
+        return;
+      }
+      if (url.pathname === "/api/dashboard/profit") {
+        const { status, body } = await dashboardProfit();
+        json(res, status, body);
+        return;
+      }
+      json(res, 404, { error: "no such dashboard view" });
+    } catch (e) {
+      json(res, 500, { error: e instanceof Error ? e.message : String(e) });
     }
     return;
   }
@@ -5633,6 +5863,11 @@ const server = createServer(async (req, res) => {
 server.listen(PORT, HOST, () => {
   log(`control server on http://${HOST}:${PORT}`);
   log(`config ${CONFIG_PATH} · origins ${ORIGINS.join(", ")} · arm lead ${ARM_LEAD_MS / 1000}s`);
+  log(
+    DASHBOARD_TOKEN.length >= DASHBOARD_TOKEN_MIN
+      ? `dashboard on · ${DASHBOARD_WALLETS.length} named wallet(s) · balance sample every ${DASHBOARD_SNAPSHOT_MS / 60_000}m`
+      : "dashboard off (set SNIPE_DASHBOARD_TOKEN to enable)",
+  );
   try {
     const cfg = loadConfig(CONFIG_PATH);
     // Which endpoint reads go through, said out loud at startup. A box quietly

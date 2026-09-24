@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="robots" content="noindex, nofollow" />
+  <title>Orvex Team</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='5' fill='%230a0d0b'/%3E%3Cpath d='M12 3.2l7.6 4.4v8.8L12 20.8l-7.6-4.4V7.6z' fill='none' stroke='%235bf39a' stroke-width='1.9' stroke-linejoin='round'/%3E%3Cpath d='M8 14.2 12 9.8l4 4.4' fill='none' stroke='%235bf39a' stroke-width='1.9' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600;700;800&display=swap" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <!--
+    Orvex team dashboard — a read-only view of the main snipe world.
+    Talks to the Orvex server's /api/dashboard/* routes with the dashboard key,
+    which can only read: no keys, no snipes, no withdrawals.
+  -->
+
+  <!-- Sign-in gate -->
+  <section id="gate" class="gate" hidden>
+    <form id="gate-form" class="gate-card" autocomplete="off">
+      <div class="brand">
+        <svg class="mark" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.4l8.3 4.8v9.6L12 21.6l-8.3-4.8V7.2z"/><path d="M7.6 14.3 12 9.5l4.4 4.8"/></svg>
+        <span class="word">ORVEX</span><span class="tag">TEAM</span>
+      </div>
+      <p class="gate-lead">Командный дашборд. Введи ключ доступа — он сохранится в этом браузере.</p>
+      <label class="field">
+        <span>Ключ доступа</span>
+        <input id="gate-key" type="password" required minlength="16" placeholder="••••••••••••••••" />
+      </label>
+      <details class="adv">
+        <summary>Сервер</summary>
+        <label class="field">
+          <span>API URL</span>
+          <input id="gate-api" type="url" placeholder="https://api.orvex.cash" />
+        </label>
+      </details>
+      <p id="gate-error" class="gate-error" role="alert" hidden></p>
+      <button type="submit" class="btn primary">Войти</button>
+      <p class="gate-note">Только просмотр: этим ключом нельзя запускать снайпы, трогать кошельки или выводить средства.</p>
+    </form>
+  </section>
+
+  <!-- Dashboard -->
+  <div id="app" hidden>
+    <header class="topbar">
+      <div class="brand">
+        <svg class="mark" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.4l8.3 4.8v9.6L12 21.6l-8.3-4.8V7.2z"/><path d="M7.6 14.3 12 9.5l4.4 4.8"/></svg>
+        <span class="word">ORVEX</span><span class="tag">TEAM</span>
+      </div>
+      <div class="topbar-meta">
+        <span id="live" class="live"><i></i><span id="live-text">загрузка…</span></span>
+        <span id="eth-price" class="pill mono">ETH —</span>
+        <button id="refresh" class="btn ghost" type="button" title="Обновить сейчас">↻</button>
+        <button id="logout" class="btn ghost" type="button" title="Выйти">Выйти</button>
+      </div>
+    </header>
+
+    <div id="banner" class="banner" role="status" hidden></div>
+
+    <main class="wrap">
+      <!-- KPIs -->
+      <section class="kpis" aria-label="Итоги">
+        <article class="kpi">
+          <h3>Общий баланс</h3>
+          <div class="kpi-val" id="k-total">—</div>
+          <div class="kpi-sub" id="k-total-sub">&nbsp;</div>
+        </article>
+        <article class="kpi">
+          <h3>Основные кошельки</h3>
+          <div class="kpi-val" id="k-main">—</div>
+          <div class="kpi-sub" id="k-main-sub">&nbsp;</div>
+        </article>
+        <article class="kpi">
+          <h3>Снайп-кошельки</h3>
+          <div class="kpi-val" id="k-wallets">—</div>
+          <div class="kpi-sub" id="k-wallets-sub">&nbsp;</div>
+        </article>
+        <article class="kpi">
+          <h3>PnL (реализованный)</h3>
+          <div class="kpi-val" id="k-pnl">—</div>
+          <div class="kpi-sub" id="k-pnl-sub">&nbsp;</div>
+        </article>
+        <article class="kpi">
+          <h3>NFT по floor</h3>
+          <div class="kpi-val" id="k-held">—</div>
+          <div class="kpi-sub" id="k-held-sub">&nbsp;</div>
+        </article>
+        <article class="kpi">
+          <h3>Успешность снайпов</h3>
+          <div class="kpi-val" id="k-win">—</div>
+          <div class="kpi-sub" id="k-win-sub">&nbsp;</div>
+        </article>
+      </section>
+
+      <!-- Next up -->
+      <section class="panel next" aria-label="Следующий дроп">
+        <div class="next-left">
+          <h2>Следующий дроп</h2>
+          <div class="next-name" id="next-name">—</div>
+          <div class="next-meta" id="next-meta">&nbsp;</div>
+        </div>
+        <div class="next-timer mono" id="next-timer" aria-live="off">—</div>
+      </section>
+
+      <!-- Charts -->
+      <section class="charts">
+        <article class="panel chart-panel">
+          <header class="panel-head">
+            <h2>PnL во времени</h2>
+            <span class="hint" id="pnl-hint">реализованный: минты − газ + продажи</span>
+          </header>
+          <div class="chart" id="chart-pnl" role="img" aria-label="Накопленный реализованный PnL"></div>
+        </article>
+        <article class="panel chart-panel">
+          <header class="panel-head">
+            <h2>Баланс во времени</h2>
+            <span class="hint" id="bal-hint">основные + снайп-кошельки, снимок раз в 30 мин</span>
+          </header>
+          <div class="chart" id="chart-bal" role="img" aria-label="Общий баланс во времени"></div>
+        </article>
+      </section>
+
+      <div class="cols">
+        <!-- Queue -->
+        <section class="panel">
+          <header class="panel-head">
+            <h2>Очередь снайпа</h2>
+            <span class="count" id="queue-count"></span>
+          </header>
+          <div class="table-wrap">
+            <table class="tbl cards" id="queue-table">
+              <thead><tr><th>Коллекция</th><th>Старт</th><th class="r">Кошельки × шт</th><th>Режим</th><th>Статус</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <p class="empty" id="queue-empty" hidden>Очередь пуста.</p>
+        </section>
+
+        <!-- Feed -->
+        <section class="panel">
+          <header class="panel-head">
+            <h2>Уведомления</h2>
+            <span class="count" id="feed-count"></span>
+          </header>
+          <ol class="feed" id="feed"></ol>
+          <p class="empty" id="feed-empty" hidden>Запусков ещё не было.</p>
+        </section>
+      </div>
+
+      <!-- Collections -->
+      <section class="panel">
+        <header class="panel-head">
+          <h2>По коллекциям</h2>
+          <span class="hint" id="coll-hint"></span>
+        </header>
+        <div class="table-wrap">
+          <table class="tbl cards" id="coll-table">
+            <thead>
+              <tr>
+                <th>Коллекция</th><th class="r">Запусков</th><th class="r">Заминчено</th><th class="r">Потрачено</th>
+                <th class="r">Продажи</th><th class="r">Держим</th><th class="r">Floor</th><th class="r">Стоимость</th>
+                <th class="r">PnL реал.</th><th class="r">PnL c floor</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p class="empty" id="coll-empty" hidden>Отчёт собирается…</p>
+      </section>
+
+      <!-- Watchlist -->
+      <section class="panel">
+        <header class="panel-head">
+          <h2>Watch-лист</h2>
+          <span class="count" id="watch-count"></span>
+        </header>
+        <div class="table-wrap">
+          <table class="tbl cards" id="watch-table">
+            <thead><tr><th>Дроп</th><th>Когда</th><th class="r">Через</th><th class="r">Сапплай</th><th>Контракт</th><th>Twitter</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p class="empty" id="watch-empty" hidden>Watch-лист пуст.</p>
+      </section>
+
+      <!-- Wallets -->
+      <section class="panel">
+        <header class="panel-head">
+          <h2>Кошельки</h2>
+          <span class="count" id="wallet-count"></span>
+        </header>
+        <div class="main-wallets" id="main-wallets"></div>
+        <div class="wallet-tools">
+          <input id="wallet-filter" type="search" placeholder="Фильтр по адресу или метке" aria-label="Фильтр кошельков" />
+          <label class="check"><input id="wallet-funded" type="checkbox" /> только с балансом</label>
+        </div>
+        <div class="table-wrap">
+          <table class="tbl" id="wallet-table">
+            <thead><tr><th class="hide-sm">#</th><th>Метка</th><th>Адрес</th><th class="r sortable" id="sort-bal" aria-sort="none">Баланс ↕</th><th class="r hide-sm">USD</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p class="empty" id="wallet-empty" hidden>Нет кошельков.</p>
+      </section>
+
+      <footer class="foot">
+        <span>Только просмотр · данные с сервера Orvex</span>
+        <span id="foot-updated"></span>
+      </footer>
+    </main>
+  </div>
+
+  <div id="tip" class="tip" role="tooltip" hidden></div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
