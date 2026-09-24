@@ -15,6 +15,7 @@ import { AddrLink, TxLink } from "./Bits";
 import WalletPicker from "./WalletPicker";
 import WalletGenerator from "./WalletGenerator";
 import KeyExport from "./KeyExport";
+import SolanaGenerator from "./SolanaGenerator";
 import WithdrawAddresses, { DestinationStatus, useWithdrawRegistry } from "./WithdrawAddresses";
 
 /**
@@ -1036,6 +1037,9 @@ export default function FundingTab() {
           ) : null}
         </>
       )}
+
+      {/* No server involved, so it is here whether or not one is connected. */}
+      <SolanaGenerator />
     </div>
   );
 }

@@ -85,7 +85,7 @@ export default function WalletGenerator({
   const n = Math.floor(Number(count));
   const countOk = Number.isFinite(n) && n >= 1 && n <= MAX_COUNT;
   const tries = expectedTries(pre, suf);
-  const cores = Math.max(1, Math.min(8, (navigator.hardwareConcurrency || 4) - 1));
+  const cores = Math.max(1, Math.min(32, (navigator.hardwareConcurrency || 4) - 1));
   // A first guess until the search reports its real speed: ~25k keys/s a core.
   const guessRate = rate || cores * 25_000;
   const eta = pre || suf ? ((countOk ? n : 1) - made.length) * (tries / guessRate) : 0;
