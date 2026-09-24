@@ -13,6 +13,7 @@ import {
 import StaleServer from "./StaleServer";
 import { AddrLink, TxLink } from "./Bits";
 import WalletPicker from "./WalletPicker";
+import WalletGenerator from "./WalletGenerator";
 import WithdrawAddresses, { DestinationStatus, useWithdrawRegistry } from "./WithdrawAddresses";
 
 /**
@@ -568,6 +569,8 @@ export default function FundingTab() {
         </div>
       ) : (
         <>
+          <WalletGenerator call={call} onAdded={refresh} />
+
           <div className="panel">
             <h2>Send out — one source → {fundTo.size} of {wallets.length}</h2>
             <p className="dim" style={{ marginTop: 0 }}>
