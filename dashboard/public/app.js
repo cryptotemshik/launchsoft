@@ -184,6 +184,18 @@ async function start() {
   return true;
 }
 
+// Back on the tab (e.g. after changing the queue in the app): refresh now
+// rather than showing up to half a minute of what was there before.
+let lastFocusLoad = 0;
+function refreshOnReturn() {
+  if (document.visibilityState !== "visible" || !state.summary) return;
+  if (Date.now() - lastFocusLoad < 5_000) return;
+  lastFocusLoad = Date.now();
+  void loadSummary();
+}
+document.addEventListener("visibilitychange", refreshOnReturn);
+window.addEventListener("focus", refreshOnReturn);
+
 async function loadSummary(throwOnError = false) {
   try {
     const { body } = await api("/api/dashboard/summary");
@@ -275,34 +287,51 @@ function setKpi(id, value, sub, cls = "") {
   $(`${id}-sub`).textContent = sub || " ";
 }
 
+/**
+ * What the countdown points at. The snipe queue decides: it is what the bot
+ * will actually fire on, so taking a job out of it must take it off the timer
+ * even while the same collection is still on the watchlist. The watchlist only
+ * fills the timer when nothing is queued, and says so.
+ */
 function nextCandidates(s) {
   const nowS = Date.now() / 1000;
-  const out = [];
+  const snipes = [];
   for (const q of s.queue || []) {
     if (q.startTime && q.startTime > nowS - 60) {
-      out.push({ at: q.startTime, name: q.name, meta: `в очереди снайпа · ${q.wallets} кошельков`, contract: q.collection });
+      snipes.push({ at: q.startTime, name: q.name, meta: `снайп в очереди · ${q.wallets} кошельков`, contract: q.collection });
     }
   }
+  const watch = [];
   for (const w of s.watchlist || []) {
     const at = watchStart(w);
     if (at && at > nowS - 60) {
-      out.push({ at, name: w.name, meta: `watch-лист${w.supply ? ` · сапплай ${w.supply}` : ""}`, contract: w.contract });
+      watch.push({ at, name: w.name, meta: `только watch-лист, снайп не поставлен${w.supply ? ` · сапплай ${w.supply}` : ""}`, contract: w.contract });
     }
   }
-  return out.sort((a, b) => a.at - b.at);
+  const byAt = (a, b) => a.at - b.at;
+  return { snipes: snipes.sort(byAt), watch: watch.sort(byAt) };
 }
 function renderNext(s) {
-  const next = nextCandidates(s)[0];
+  const { snipes, watch } = nextCandidates(s);
+  const next = snipes[0] || watch[0];
   const timer = $("next-timer");
+  $("next-title").textContent = snipes[0] ? "Следующий снайп" : "Следующий дроп";
+  $("next-timer").classList.toggle("watch-only", !snipes[0] && !!next);
   if (!next) {
     $("next-name").textContent = "Ничего не запланировано";
-    $("next-meta").textContent = "добавь дроп в watch-лист или очередь";
+    $("next-meta").textContent = "поставь снайп в очередь или добавь дроп в watch-лист";
     timer.textContent = "—";
     timer.dataset.at = "";
     return;
   }
   $("next-name").textContent = next.name || short(next.contract);
-  $("next-meta").textContent = `${fmtDate(next.at * 1000)} · ${next.meta}`;
+  // A watchlist drop that opens before the next snipe is worth a mention, but
+  // not the timer: nothing will fire on it.
+  const queued = new Set(snipes.map((q) => String(q.contract || "").toLowerCase()));
+  const sooner = snipes[0] && watch.find((w) => w.at < next.at && !queued.has(String(w.contract || "").toLowerCase()));
+  $("next-meta").textContent =
+    `${fmtDate(next.at * 1000)} · ${next.meta}` +
+    (sooner ? ` · раньше в watch-листе: ${sooner.name || short(sooner.contract)} (${fmtDate(sooner.at * 1000)}), без снайпа` : "");
   timer.dataset.at = String(next.at);
 }
 

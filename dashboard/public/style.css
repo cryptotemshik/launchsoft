@@ -122,6 +122,8 @@ h2 { margin: 0; font-size: 13px; font-family: var(--mono); font-weight: 700; let
 .next { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
 .next-name { font-size: 20px; font-weight: 700; color: var(--bright); margin-top: 6px; }
 .next-meta { font-size: 13px; color: var(--dim); margin-top: 2px; }
+/* Nothing will fire on a watchlist-only drop — dim its timer. */
+.next-timer.watch-only { opacity: .55; }
 .next-timer { font-size: 34px; font-weight: 800; color: var(--brand-2); letter-spacing: 0.04em; }
 
 /* Charts */
