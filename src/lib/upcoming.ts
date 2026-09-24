@@ -451,6 +451,21 @@ export function describe(m: UpcomingMint, tzOffsetMin = DEFAULT_TZ_OFFSET): stri
   return `<b>${escape(m.name)}</b> — ${bits.join(" · ")}\n${escape(m.twitter)}`;
 }
 
+/**
+ * A unix time as the `when` string `buildUpcoming` parses back to the same
+ * instant: `dd.mm.yyyy hh:mm`, written in the timezone the parser assumes.
+ *
+ * Built from the offset, never from the machine's clock: the watch button runs
+ * in a browser that may sit in any timezone, and formatting with local hours
+ * sent the server a wall time it then read as Moscow's — an hour early for a
+ * browser at UTC+2, two for UTC+1.
+ */
+export function whenForParser(at: number, tzOffsetMin = DEFAULT_TZ_OFFSET): string {
+  const d = new Date((at + tzOffsetMin * 60) * 1000);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${p(d.getUTCDate())}.${p(d.getUTCMonth() + 1)}.${d.getUTCFullYear()} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}`;
+}
+
 /** A date as a person writes it, in the timezone the bot reads dates in. */
 export function formatWhen(at: number, dayOnly?: boolean, tzOffsetMin = DEFAULT_TZ_OFFSET): string {
   const d = new Date((at + tzOffsetMin * 60) * 1000);

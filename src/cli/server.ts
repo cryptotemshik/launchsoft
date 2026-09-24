@@ -2887,16 +2887,62 @@ function sumEth(values: readonly (string | null)[]): bigint {
   return total;
 }
 
+/**
+ * The public stage's start per contract, read off SeaDrop in one multicall.
+ *
+ * The chain is the authority on when a drop opens: a saved watchlist time can
+ * be off (older entries were written through a browser-timezone bug) and a
+ * queued job's snapshot goes stale when the creator moves the stage. Missing
+ * or unset stages are simply absent, and callers fall back to what they had.
+ */
+async function publicStarts(contracts: readonly string[]): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+  const list = [
+    ...new Set(contracts.filter((c) => /^0x[0-9a-fA-F]{40}$/.test(c)).map((c) => c.toLowerCase())),
+  ].slice(0, 200) as `0x${string}`[];
+  if (list.length === 0) return out;
+  try {
+    const cfg = loadConfig(CONFIG_PATH);
+    const info = getChainInfo(cfg.chainId);
+    if (!info) return out;
+    const client = makeReadClient(info.chain, scanRpcs(cfg));
+    const stages = (await client.multicall({
+      multicallAddress: "0xcA11bde05977b3631167028862bE2a173976CA11",
+      allowFailure: true,
+      contracts: list.map((c) => ({
+        address: SEADROP as `0x${string}`,
+        abi: PUBLIC_DROP_ABI,
+        functionName: "getPublicDrop",
+        args: [c],
+      })) as never,
+    })) as { status: string; result?: unknown }[];
+    list.forEach((c, i) => {
+      const r = stages[i];
+      if (r?.status !== "success") return;
+      const start = Number((r.result as Record<string, unknown>).startTime ?? 0);
+      if (start > 0) out.set(c, start);
+    });
+  } catch (e) {
+    log(`dashboard: couldn't read stage starts (${e instanceof Error ? e.message.split("\n")[0] : e})`);
+  }
+  return out;
+}
+
 /** Everything the dashboard shows that is cheap to read, in one reply. */
 async function dashboardSummary(): Promise<Record<string, unknown>> {
   const cfg = loadConfig(CONFIG_PATH);
   const info = getChainInfo(cfg.chainId);
-  const [view, main, ethUsd] = await Promise.all([
+  const mine = jobs.filter((j) => j.cfgPath === CONFIG_PATH);
+  const watch = sortByDate(loadUpcoming(CONFIG_PATH));
+  const [view, main, ethUsd, starts] = await Promise.all([
     walletsView(CONFIG_PATH),
     dashboardMainWallets(),
     usdPerEth(),
+    publicStarts([
+      ...watch.map((m) => m.contract ?? ""),
+      ...mine.map((j) => j.request.collection),
+    ]),
   ]);
-  const mine = jobs.filter((j) => j.cfgPath === CONFIG_PATH);
   const queue = mine
     .filter((j) => j.status === "queued" || j.status === "armed")
     .map((j) => ({
@@ -2906,7 +2952,7 @@ async function dashboardSummary(): Promise<Record<string, unknown>> {
       active: j.id === activeJobId,
       collection: j.request.collection,
       name: j.drop?.name ?? j.label,
-      startTime: j.startTime ?? j.drop?.startTime ?? null,
+      startTime: starts.get(j.request.collection.toLowerCase()) ?? j.startTime ?? j.drop?.startTime ?? null,
       priceWei: j.drop?.priceWei ?? null,
       maxSupply: j.drop?.maxSupply ?? null,
       totalSupply: j.drop?.totalSupply ?? null,
@@ -2946,7 +2992,12 @@ async function dashboardSummary(): Promise<Record<string, unknown>> {
     queue,
     failures,
     runs: summariseRuns(loadMints(CONFIG_PATH), 100),
-    watchlist: sortByDate(loadUpcoming(CONFIG_PATH)),
+    // `chainStart` is the public stage's start when the contract has one; the
+    // page shows it over the saved `at`, which it keeps for drops with no stage.
+    watchlist: watch.map((m) => ({
+      ...m,
+      chainStart: m.contract ? (starts.get(m.contract.toLowerCase()) ?? null) : null,
+    })),
     balanceHistory: downsample(loadBalanceHistory(CONFIG_PATH), 400),
   };
 }

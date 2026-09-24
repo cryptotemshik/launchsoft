@@ -10,6 +10,7 @@ import {
   sortByDate,
   step,
   twitterHandle,
+  whenForParser,
   type Session,
   type UpcomingMint,
 } from "./upcoming";
@@ -342,5 +343,26 @@ describe("a note on a watched drop", () => {
 
   it("caps a note that would fill a disk", () => {
     expect(cleanNote("x".repeat(MAX_NOTE + 500))).toHaveLength(MAX_NOTE);
+  });
+});
+
+describe("whenForParser", () => {
+  // The watch button runs in browsers in every timezone; whatever it sends must
+  // parse back to the exact instant it came from, or saved drops land hours off.
+  const cases = [
+    Date.UTC(2026, 8, 24, 14, 0) / 1000, // Robinos' public start
+    Date.UTC(2026, 8, 24, 13, 0, 0) / 1000,
+    Date.UTC(2026, 11, 31, 22, 30) / 1000, // crosses midnight and the year in Moscow
+    Date.UTC(2027, 1, 28, 21, 5) / 1000, // crosses into March in Moscow
+  ];
+
+  it.each(cases)("round-trips %i through buildUpcoming to the same minute", (at) => {
+    const now = at - 86400;
+    const built = buildUpcoming({ name: "X", twitter: "@x", when: whenForParser(at) }, now);
+    expect("mint" in built && built.mint.at).toBe(at);
+  });
+
+  it("writes the parser's wall time, not the machine's", () => {
+    expect(whenForParser(Date.UTC(2026, 8, 24, 14, 0) / 1000)).toBe("24.09.2026 17:00");
   });
 });

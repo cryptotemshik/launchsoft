@@ -16,7 +16,7 @@ import { createTabStore } from "../lib/tabStore";
 import { notifyWatchlistChanged, onWatchlistChanged } from "../lib/watchlistSignal";
 import { ColorPicker, NoteBox } from "./DropNote";
 import { isPickable, type Pickable } from "../lib/calendarColor";
-import type { UpcomingMint } from "../lib/upcoming";
+import { whenForParser, type UpcomingMint } from "../lib/upcoming";
 import type { ScannedDrop } from "../lib/dropScan";
 import { larpReport, type LarpReport } from "../lib/larp";
 import type { CollectionInfo } from "../lib/collectionInfo";
@@ -28,11 +28,12 @@ import { openSeaCollectionUrlBySlug } from "../chains";
 import StaleServer from "./StaleServer";
 
 
-/** A start time in the format the date parser reads back. */
+/**
+ * A start time in the format the date parser reads back — in the parser's own
+ * timezone, not the browser's, or the saved time lands off by the difference.
+ */
 function whenInput(at: number): string {
-  const d = new Date(at * 1000);
-  const p = (n: number) => String(n).padStart(2, "0");
-  return `${p(d.getDate())}.${p(d.getMonth() + 1)}.${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`;
+  return whenForParser(at);
 }
 
 /**
@@ -432,7 +433,7 @@ export default function UpcomingTab() {
                 />
               </div>
               <div className="field">
-                <label>when</label>
+                <label>when (Moscow time)</label>
                 <input
                   value={draft.when}
                   onChange={(e) => setDraft({ ...draft, when: e.target.value })}

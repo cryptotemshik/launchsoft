@@ -234,3 +234,6 @@ h2 { margin: 0; font-size: 13px; font-family: var(--mono); font-weight: 700; let
   .tbl.cards td.name::before { display: none; }
   .table-wrap:has(.tbl.cards) { overflow: visible; margin: 0; padding: 0; }
 }
+.sub-h { margin: 4px 0 10px; font: 600 11px var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--dim); }
+.tbl th[data-arrow]::after { content: attr(data-arrow); color: var(--brand-2); }
+.tbl th.sortable[aria-sort="ascending"], .tbl th.sortable[aria-sort="descending"] { color: var(--dim); }

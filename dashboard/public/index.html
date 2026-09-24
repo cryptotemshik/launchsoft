@@ -69,7 +69,7 @@
           <div class="kpi-sub" id="k-total-sub">&nbsp;</div>
         </article>
         <article class="kpi">
-          <h3>Основные кошельки</h3>
+          <h3>Фандинг-кошелёк</h3>
           <div class="kpi-val" id="k-main">—</div>
           <div class="kpi-sub" id="k-main-sub">&nbsp;</div>
         </article>
@@ -160,10 +160,7 @@
           <table class="tbl cards" id="coll-table">
             <thead>
               <tr>
-                <th>Коллекция</th><th class="r">Запусков</th><th class="r">Заминчено</th><th class="r">Потрачено</th>
-                <th class="r">Продажи</th><th class="r">Держим</th><th class="r">Floor</th><th class="r">Стоимость</th>
-                <th class="r">PnL реал.</th><th class="r">PnL c floor</th>
-              </tr>
+                <th class="sortable" data-sort="name" aria-sort="none">Коллекция</th><th class="r sortable" data-sort="runs" aria-sort="none">Запусков</th><th class="r sortable" data-sort="minted" aria-sort="none">Заминчено</th><th class="r sortable" data-sort="spent" aria-sort="none">Потрачено</th><th class="r sortable" data-sort="revenue" aria-sort="none">Продажи</th><th class="r sortable" data-sort="held" aria-sort="none">Держим</th><th class="r sortable" data-sort="floor" aria-sort="none">Floor</th><th class="r sortable" data-sort="value" aria-sort="none">Стоимость</th><th class="r sortable" data-sort="net" aria-sort="none">PnL реал.</th><th class="r sortable" data-sort="withFloor" aria-sort="none">PnL c floor</th></tr>
             </thead>
             <tbody></tbody>
           </table>
@@ -189,10 +186,11 @@
       <!-- Wallets -->
       <section class="panel">
         <header class="panel-head">
-          <h2>Кошельки</h2>
+          <h2>Кошельки — фандинг и снайп</h2>
           <span class="count" id="wallet-count"></span>
         </header>
         <div class="main-wallets" id="main-wallets"></div>
+        <h3 class="sub-h">Снайп-кошельки (метки как на сервере)</h3>
         <div class="wallet-tools">
           <input id="wallet-filter" type="search" placeholder="Фильтр по адресу или метке" aria-label="Фильтр кошельков" />
           <label class="check"><input id="wallet-funded" type="checkbox" /> только с балансом</label>

@@ -85,6 +85,8 @@ const state = {
   ethUsd: null,
   lastOk: 0,
   sortBalance: "desc",
+  /** Collections table order; key null keeps the server's (biggest position first). */
+  collSort: { key: null, dir: -1 },
   timers: [],
 };
 
@@ -242,7 +244,7 @@ function renderSummary() {
   const funded = wallets.filter((w) => (w.eth ?? 0) > 0).length;
 
   setKpi("k-total", fmtEth(mainSum + walletSum), fmtUsd(usdOf(mainSum + walletSum)));
-  setKpi("k-main", main.length ? fmtEth(mainSum) : "—", main.length ? `${fmtUsd(usdOf(mainSum))} · ${main.length} шт` : "не заданы на сервере");
+  setKpi("k-main", main.length ? fmtEth(mainSum) : "—", main.length ? `${fmtUsd(usdOf(mainSum))} · ${main.length} шт` : "задай SNIPE_DASHBOARD_WALLETS на сервере");
   setKpi("k-wallets", fmtEth(walletSum), `${wallets.length} кошельков · ${funded} с балансом`);
 
   const runs = s.runs || [];
@@ -282,8 +284,9 @@ function nextCandidates(s) {
     }
   }
   for (const w of s.watchlist || []) {
-    if (w.at && w.at > nowS - 60) {
-      out.push({ at: w.at, name: w.name, meta: `watch-лист${w.supply ? ` · сапплай ${w.supply}` : ""}`, contract: w.contract });
+    const at = watchStart(w);
+    if (at && at > nowS - 60) {
+      out.push({ at, name: w.name, meta: `watch-лист${w.supply ? ` · сапплай ${w.supply}` : ""}`, contract: w.contract });
     }
   }
   return out.sort((a, b) => a.at - b.at);
@@ -307,10 +310,18 @@ function explorer(path) {
   const base = state.summary?.explorerUrl;
   return base ? `${base}${path}` : "#";
 }
+/** A collection opens on OpenSea — where it is traded — not on the explorer. */
 function collLink(addr, label) {
   if (!isAddr(addr)) return esc(label || "—");
-  return `<a href="${explorer(`/token/${addr}`)}" target="_blank" rel="noopener">${esc(label || short(addr))}</a>`;
+  const slug = state.summary?.openSeaSlug || state.profit?.openSeaSlug || "robinhood";
+  return `<a href="https://opensea.io/assets/${encodeURIComponent(slug)}/${addr}" target="_blank" rel="noopener" title="Открыть на OpenSea">${esc(label || short(addr))}</a>`;
 }
+
+/**
+ * When a watchlist drop opens: the chain's public start when the contract has
+ * one (what the snipe fires on), else the time saved with the entry.
+ */
+const watchStart = (w) => w.chainStart || w.at || null;
 function addrLink(addr, text) {
   if (!isAddr(addr)) return esc(text || addr || "—");
   return `<a class="addr" href="${explorer(`/address/${addr}`)}" target="_blank" rel="noopener" title="${esc(addr)}">${esc(text || short(addr))}</a>`;
@@ -378,18 +389,24 @@ function twitterHandle(v) {
   return m ? m[1] : null;
 }
 function renderWatch(s) {
-  const rows = s.watchlist || [];
+  const rows = [...(s.watchlist || [])].sort((a, b) => (watchStart(a) ?? Infinity) - (watchStart(b) ?? Infinity));
   $("watch-count").textContent = rows.length ? `${rows.length}` : "";
   $("watch-empty").hidden = rows.length > 0;
   $("watch-table").hidden = rows.length === 0;
   $("watch-table").querySelector("tbody").innerHTML = rows
     .map((w) => {
       const h = twitterHandle(w.twitter);
-      const when = w.at ? fmtDate(w.at * 1000) : `<span class="muted">не объявлено</span>`;
+      const at = watchStart(w);
+      // Flag a saved time the chain disagrees with, so a wrong entry is visible.
+      const moved = w.chainStart && w.at && Math.abs(w.chainStart - w.at) > 60;
+      const when = at
+        ? `${w.dayOnly && !w.chainStart ? new Date(at * 1000).toLocaleDateString("ru-RU") : fmtDate(at * 1000)}` +
+          (moved ? ` <span class="muted" title="В watch-листе сохранено ${esc(fmtDate(w.at * 1000))}, в контракте — это время">· по контракту</span>` : "")
+        : `<span class="muted">не объявлено</span>`;
       return `<tr>
-        <td class="name" data-label="Дроп">${esc(w.name)}</td>
-        <td data-label="Когда">${w.dayOnly && w.at ? new Date(w.at * 1000).toLocaleDateString("ru-RU") : when}</td>
-        <td class="r muted" data-label="Через">${w.at ? `<span data-cd="${w.at}"></span>` : "—"}</td>
+        <td class="name" data-label="Дроп">${w.contract && isAddr(w.contract) ? collLink(w.contract, w.name) : esc(w.name)}</td>
+        <td data-label="Когда">${when}</td>
+        <td class="r muted" data-label="Через">${at ? `<span data-cd="${at}"></span>` : "—"}</td>
         <td class="r" data-label="Сапплай">${w.supply ? esc(w.supply) : "—"}</td>
         <td data-label="Контракт">${w.contract && isAddr(w.contract) ? collLink(w.contract, short(w.contract)) : `<span class="muted">—</span>`}</td>
         <td data-label="Twitter">${h ? `<a href="https://x.com/${h}" target="_blank" rel="noopener">@${esc(h)}</a>` : `<span class="muted">—</span>`}</td>
@@ -424,7 +441,12 @@ function renderWallets(wallets) {
   }
   const max = Math.max(0, ...wallets.map((w) => w.eth ?? 0));
   const funded = wallets.filter((w) => (w.eth ?? 0) > 0).length;
-  $("wallet-count").textContent = `${wallets.length} · ${funded} с балансом`;
+  const total = wallets.reduce((n, w) => n + (w.eth ?? 0), 0);
+  const shown = rows.reduce((n, w) => n + (w.eth ?? 0), 0);
+  const filtered = rows.length !== wallets.length;
+  $("wallet-count").textContent =
+    `${wallets.length} кошельков · ${funded} с балансом · всего ${fmtEth(total)} ${fmtUsd(usdOf(total))}` +
+    (filtered ? ` · в фильтре ${rows.length}: ${fmtEth(shown)}` : "");
   $("wallet-empty").hidden = rows.length > 0;
   const th = $("sort-bal");
   th.setAttribute("aria-sort", state.sortBalance === "desc" ? "descending" : state.sortBalance === "asc" ? "ascending" : "none");
@@ -474,6 +496,21 @@ function renderProfit() {
     return { ...c, spent, revenue, net, fl, heldValue, withFloor: net + (heldValue ?? 0) };
   });
 
+  const { key: sortKey, dir } = state.collSort;
+  if (sortKey) {
+    const val = COLL_SORT[sortKey];
+    cols.sort((a, b) => {
+      const x = val(a);
+      const y = val(b);
+      return (typeof x === "string" ? x.localeCompare(y) : x - y) * dir;
+    });
+  }
+  document.querySelectorAll("#coll-table th[data-sort]").forEach((th) => {
+    const on = th.dataset.sort === sortKey;
+    th.setAttribute("aria-sort", on ? (dir < 0 ? "descending" : "ascending") : "none");
+    th.dataset.arrow = on ? (dir < 0 ? " ↓" : " ↑") : "";
+  });
+
   const realized = cols.reduce((n, c) => n + c.net, 0);
   const heldTokens = cols.reduce((n, c) => n + (c.heldTokens || 0), 0);
   const heldValue = cols.reduce((n, c) => n + (c.heldValue ?? 0), 0);
@@ -517,6 +554,29 @@ function renderProfit() {
 
   renderPnlChart(p);
 }
+
+/** What each sortable collections column sorts by. Unknowns sink to the bottom. */
+const COLL_SORT = {
+  name: (c) => String(c.collectionName || c.collection).toLowerCase(),
+  runs: (c) => c.runs || 0,
+  minted: (c) => c.cost?.tokens ?? 0,
+  spent: (c) => c.spent,
+  revenue: (c) => c.revenue,
+  held: (c) => c.heldTokens || 0,
+  floor: (c) => c.fl ?? -Infinity,
+  value: (c) => c.heldValue ?? -Infinity,
+  net: (c) => c.net,
+  withFloor: (c) => c.withFloor,
+};
+// Click a header: biggest first; again: smallest first. Names start A→Z.
+$("coll-table").querySelector("thead").addEventListener("click", (e) => {
+  const th = e.target.closest("th[data-sort]");
+  if (!th) return;
+  const key = th.dataset.sort;
+  const s = state.collSort;
+  state.collSort = s.key === key ? { key, dir: -s.dir } : { key, dir: key === "name" ? 1 : -1 };
+  renderProfit();
+});
 
 // ── charts ─────────────────────────────────────────────────────────────────
 function niceTicks(min, max, count = 4) {

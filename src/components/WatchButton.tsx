@@ -12,6 +12,7 @@
  */
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { useRunnerApi } from "../lib/runnerClient";
+import { whenForParser } from "../lib/upcoming";
 import {
   ensureWatchedLoaded,
   isWatched,
@@ -33,10 +34,7 @@ type State = "idle" | "adding" | "added" | "error";
 
 /** The date format `buildUpcoming` reads, in the timezone the bot assumes. */
 function whenField(startTime: number | undefined): string | undefined {
-  if (!startTime) return undefined;
-  const d = new Date(startTime * 1000);
-  const p = (n: number) => String(n).padStart(2, "0");
-  return `${p(d.getDate())}.${p(d.getMonth() + 1)}.${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`;
+  return startTime ? whenForParser(startTime) : undefined;
 }
 
 export default function WatchButton({
