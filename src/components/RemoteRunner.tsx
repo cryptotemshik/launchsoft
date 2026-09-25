@@ -151,6 +151,17 @@ export interface RemoteRunnerProps {
   timing: "now" | "wait";
 }
 
+const SHOT_PREFS_KEY = "orvex.snipe.shots";
+function loadShotPrefs(): { style?: string; before?: number; after?: number; stepMs?: number } {
+  try {
+    const v = JSON.parse(localStorage.getItem(SHOT_PREFS_KEY) ?? "{}");
+    const num = (x: unknown) => (typeof x === "number" && Number.isFinite(x) && x >= 0 ? Math.floor(x) : undefined);
+    return { style: typeof v.style === "string" ? v.style : undefined, before: num(v.before), after: num(v.after), stepMs: num(v.stepMs) };
+  } catch {
+    return {};
+  }
+}
+
 export default function RemoteRunner(props: RemoteRunnerProps) {
   const api = useRunnerApi();
   const {
@@ -193,10 +204,19 @@ export default function RemoteRunner(props: RemoteRunnerProps) {
    * drop: a contested free mint wants the spread, a quiet one does not need
    * the extra transactions.
    */
-  const [style, setStyle] = useState<MintStyle>("single");
-  const [before, setBefore] = useState(DEFAULT_BEFORE);
-  const [after, setAfter] = useState(DEFAULT_AFTER);
-  const [stepMs, setStepMs] = useState(DEFAULT_STEP_MS);
+  // Remembered across reloads: a style that silently fell back to "single"
+  // after a refresh is how a spread run went out as one shot per wallet.
+  const [style, setStyle] = useState<MintStyle>(() => (loadShotPrefs().style === "spread" ? "spread" : "single"));
+  const [before, setBefore] = useState(() => loadShotPrefs().before ?? DEFAULT_BEFORE);
+  const [after, setAfter] = useState(() => loadShotPrefs().after ?? DEFAULT_AFTER);
+  const [stepMs, setStepMs] = useState(() => loadShotPrefs().stepMs ?? DEFAULT_STEP_MS);
+  useEffect(() => {
+    try {
+      localStorage.setItem(SHOT_PREFS_KEY, JSON.stringify({ style, before, after, stepMs }));
+    } catch {
+      /* private mode: the defaults will do */
+    }
+  }, [style, before, after, stepMs]);
   const [status, setStatus] = useState<StatusView | null>(null);
   const [openJob, setOpenJob] = useState<string | null>(null);
   /** Which queued job's funding drawer is open, by id. */
