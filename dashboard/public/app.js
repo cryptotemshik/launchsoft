@@ -1,7 +1,7 @@
 // Orvex team dashboard — read-only client for /api/dashboard/*.
 // No build step: plain ES module, served as-is from Cloudflare Pages.
 
-const MIN_API_VERSION = 51;
+const MIN_API_VERSION = 52;
 const DEFAULT_API = "https://api.orvex.cash";
 const KEY_STORE = "orvex.team.key";
 const API_STORE = "orvex.team.api";
@@ -32,7 +32,6 @@ function apiBase() {
 const weiToEth = (w) => {
   try { return Number(BigInt(String(w ?? "0"))) / 1e18; } catch { return 0; }
 };
-const ethNum = (s) => (s === null || s === undefined || s === "" ? null : Number(s));
 function fmtEth(n, { signed = false, unit = true } = {}) {
   if (n === null || n === undefined || !Number.isFinite(n)) return "—";
   const a = Math.abs(n);
@@ -89,7 +88,6 @@ const state = {
   profitBuilding: false,
   ethUsd: null,
   lastOk: 0,
-  sortBalance: "desc",
   /** Collections table order; key null keeps the server's (biggest position first). */
   collSort: { key: null, dir: -1 },
   timers: [],
@@ -254,13 +252,10 @@ function renderSummary() {
   if (!s) return;
   $("eth-price").textContent = state.ethUsd ? `ETH $${Math.round(state.ethUsd).toLocaleString("en-US")}` : "ETH —";
 
-  // Sniping wallets only: the funding wallet is the owner's own money and the
-  // server no longer sends it.
-  const wallets = (s.wallets || []).map((w) => ({ ...w, eth: ethNum(w.balance) }));
-  const walletSum = wallets.reduce((n, w) => n + (w.eth ?? 0), 0);
-  const funded = wallets.filter((w) => (w.eth ?? 0) > 0).length;
-
-  setKpi("k-wallets", fmtEth(walletSum), `${fmtUsd(usdOf(walletSum))} · ${wallets.length} кошельков · ${funded} с балансом`);
+  // Addresses and labels only — the server sends no balances to the dashboard.
+  const wallets = s.wallets || [];
+  const labels = new Set(wallets.map((w) => w.label).filter(Boolean)).size;
+  setKpi("k-wallets", String(wallets.length), labels ? `${labels} групп по меткам` : "кошельков в работе");
 
   const runs = s.runs || [];
   const tried = runs.reduce((n, r) => n + r.tried, 0);
@@ -276,7 +271,6 @@ function renderSummary() {
   renderFeed(s);
   renderWatch(s);
   renderWallets(wallets);
-  renderBalanceChart(s, walletSum);
   $("foot-updated").textContent = `обновлено ${fmtDate(Date.now())}`;
   tick();
 }
@@ -448,47 +442,23 @@ function renderWatch(s) {
 
 function renderWallets(wallets) {
   const q = $("wallet-filter").value.trim().toLowerCase();
-  const onlyFunded = $("wallet-funded").checked;
   let rows = wallets.map((w, i) => ({ ...w, n: i + 1 }));
   if (q) rows = rows.filter((w) => w.address.toLowerCase().includes(q) || String(w.label || "").toLowerCase().includes(q));
-  if (onlyFunded) rows = rows.filter((w) => (w.eth ?? 0) > 0);
-  if (state.sortBalance !== "none") {
-    const dir = state.sortBalance === "desc" ? -1 : 1;
-    rows.sort((a, b) => dir * ((a.eth ?? -1) - (b.eth ?? -1)));
-  }
-  const max = Math.max(0, ...wallets.map((w) => w.eth ?? 0));
-  const funded = wallets.filter((w) => (w.eth ?? 0) > 0).length;
-  const total = wallets.reduce((n, w) => n + (w.eth ?? 0), 0);
-  const shown = rows.reduce((n, w) => n + (w.eth ?? 0), 0);
-  const filtered = rows.length !== wallets.length;
-  $("wallet-count").textContent =
-    `${wallets.length} кошельков · ${funded} с балансом · всего ${fmtEth(total)} ${fmtUsd(usdOf(total))}` +
-    (filtered ? ` · в фильтре ${rows.length}: ${fmtEth(shown)}` : "");
+  $("wallet-count").textContent = `${wallets.length} кошельков${rows.length !== wallets.length ? ` · в фильтре ${rows.length}` : ""}`;
   $("wallet-empty").hidden = rows.length > 0;
-  const th = $("sort-bal");
-  th.setAttribute("aria-sort", state.sortBalance === "desc" ? "descending" : state.sortBalance === "asc" ? "ascending" : "none");
-  th.textContent = state.sortBalance === "desc" ? "Баланс ↓" : state.sortBalance === "asc" ? "Баланс ↑" : "Баланс ↕";
   $("wallet-table").querySelector("tbody").innerHTML = rows
     .slice(0, 1000)
-    .map((w) => {
-      const width = max > 0 && w.eth ? Math.max(2, Math.round((w.eth / max) * 60)) : 0;
-      return `<tr>
+    .map(
+      (w) => `<tr>
         <td class="muted hide-sm">${w.n}</td>
         <td>${esc(w.label || "—")}</td>
         <td>${addrLink(w.address)}</td>
-        <td class="r">${w.eth === null ? `<span class="muted">—</span>` : fmtEth(w.eth, { unit: false })}${width ? `<span class="bar hide-sm" style="width:${width}px"></span>` : ""}</td>
-        <td class="r muted hide-sm">${fmtUsd(usdOf(w.eth))}</td>
-      </tr>`;
-    })
+      </tr>`,
+    )
     .join("");
 }
-$("wallet-filter").addEventListener("input", () => state.summary && renderWallets(currentWallets()));
-$("wallet-funded").addEventListener("change", () => state.summary && renderWallets(currentWallets()));
-$("sort-bal").addEventListener("click", () => {
-  state.sortBalance = state.sortBalance === "desc" ? "asc" : state.sortBalance === "asc" ? "none" : "desc";
-  if (state.summary) renderWallets(currentWallets());
-});
-const currentWallets = () => (state.summary?.wallets || []).map((w) => ({ ...w, eth: ethNum(w.balance) }));
+$("wallet-filter").addEventListener("input", () => state.summary && renderWallets(state.summary.wallets || []));
+
 
 // ── rendering: profit ──────────────────────────────────────────────────────
 function floorEth(floor) {
@@ -719,18 +689,6 @@ function renderPnlChart(p) {
   });
 }
 
-function renderBalanceChart(s, currentTotal) {
-  const hist = (s.balanceHistory || []).map((p) => ({ x: p.at, y: weiToEth(p.walletsWei) }));
-  const last = hist[hist.length - 1];
-  if (!last || Date.now() - last.x > 5 * 60_000) hist.push({ x: Date.now(), y: currentTotal, note: "сейчас" });
-  lineChart($("chart-bal"), hist.length > 1 ? hist : [], {
-    color: "var(--series-bal)",
-    name: "Общий баланс",
-    valueFmt: (v, axis) => fmtEth(v, { unit: !axis }),
-    emptyText: "Линия появится после первого снимка (раз в 30 мин)",
-    includeZero: false,
-  });
-}
 
 // Redraw charts when their box changes size — the SVG is drawn in pixels.
 const ro = new ResizeObserver((entries) => {
@@ -740,7 +698,6 @@ const ro = new ResizeObserver((entries) => {
   }
 });
 ro.observe($("chart-pnl"));
-ro.observe($("chart-bal"));
 
 // ── tooltip ────────────────────────────────────────────────────────────────
 function showTip(x, y, html) {

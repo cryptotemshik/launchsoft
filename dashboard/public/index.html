@@ -104,13 +104,6 @@
           </header>
           <div class="chart" id="chart-pnl" role="img" aria-label="Накопленный реализованный PnL"></div>
         </article>
-        <article class="panel chart-panel">
-          <header class="panel-head">
-            <h2>Баланс во времени</h2>
-            <span class="hint" id="bal-hint">снайп-кошельки, снимок раз в 30 мин</span>
-          </header>
-          <div class="chart" id="chart-bal" role="img" aria-label="Баланс снайп-кошельков во времени"></div>
-        </article>
       </section>
 
       <div class="cols">
@@ -181,11 +174,10 @@
         </header>
         <div class="wallet-tools">
           <input id="wallet-filter" type="search" placeholder="Фильтр по адресу или метке" aria-label="Фильтр кошельков" />
-          <label class="check"><input id="wallet-funded" type="checkbox" /> только с балансом</label>
         </div>
         <div class="table-wrap">
           <table class="tbl" id="wallet-table">
-            <thead><tr><th class="hide-sm">#</th><th>Метка</th><th>Адрес</th><th class="r sortable" id="sort-bal" aria-sort="none">Баланс ↕</th><th class="r hide-sm">USD</th></tr></thead>
+            <thead><tr><th class="hide-sm">#</th><th>Метка</th><th>Адрес</th></tr></thead>
             <tbody></tbody>
           </table>
         </div>

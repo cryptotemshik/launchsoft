@@ -70,8 +70,6 @@ import {
   appendBalancePoint,
   cutProfitSince,
   dashboardTokenOk,
-  downsample,
-  loadBalanceHistory,
   loadDashboardSettings,
   parseDashboardWallets,
   saveDashboardSettings,
@@ -3028,7 +3026,8 @@ async function dashboardSummary(): Promise<Record<string, unknown>> {
     now: Math.floor(Date.now() / 1000),
     ethUsd,
     mainWallets: [],
-    wallets: view.wallets,
+    // Addresses and labels only: what the wallets hold is not the team's to see.
+    wallets: view.wallets.map((w) => ({ address: w.address, label: w.label })),
     queue,
     failures,
     runs: summariseRuns(
@@ -3042,8 +3041,8 @@ async function dashboardSummary(): Promise<Record<string, unknown>> {
       ...m,
       chainStart: m.contract ? (starts.get(m.contract.toLowerCase()) ?? null) : null,
     })),
-    // Sniping wallets only: the funding wallet's share is left out here too.
-    balanceHistory: downsample(loadBalanceHistory(CONFIG_PATH), 400).map((p) => ({ ...p, mainWei: "0" })),
+    // No balance line any more: balances are not shown on the dashboard.
+    balanceHistory: [],
   };
 }
 
