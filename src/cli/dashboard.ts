@@ -9,7 +9,7 @@
  * never reaches `acting()`, so a leaked key cannot arm a snipe, move funds or
  * see a private key — the worst it does is show balances.
  */
-import { appendFileSync, readFileSync } from "node:fs";
+import { appendFileSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { timingSafeEqual } from "node:crypto";
 import type { MintRecord } from "./ledger";
@@ -170,4 +170,140 @@ export function downsample<T>(points: readonly T[], max: number): T[] {
   const step = (points.length - 1) / (max - 1);
   for (let i = 0; i < max; i++) out.push(points[Math.round(i * step)]);
   return out;
+}
+
+// ── Counting profit from a chosen moment ───────────────────────────────────
+//
+// The owner can draw a line: "profit starts here". Everything before it —
+// mints, their gas, sales of what they bought, the runs in the feed — drops
+// out of the dashboard, so it shows a clean slate instead of history that no
+// longer matters. The operator's own profit panel is untouched; this only
+// cuts what the dashboard serves.
+
+export interface DashboardSettings {
+  /** Unix seconds. Profit and history before this are not shown. */
+  profitSince?: number;
+}
+
+export function dashboardSettingsPath(configPath: string): string {
+  return `${resolve(configPath)}.dashboard.json`;
+}
+
+export function loadDashboardSettings(configPath: string): DashboardSettings {
+  try {
+    const v = JSON.parse(readFileSync(dashboardSettingsPath(configPath), "utf8")) as DashboardSettings;
+    return typeof v.profitSince === "number" && v.profitSince > 0 ? { profitSince: Math.floor(v.profitSince) } : {};
+  } catch {
+    return {};
+  }
+}
+
+export function saveDashboardSettings(configPath: string, s: DashboardSettings): void {
+  const target = dashboardSettingsPath(configPath);
+  const tmp = `${target}.tmp`;
+  writeFileSync(tmp, `${JSON.stringify(s)}\n`, { mode: 0o600 });
+  renameSync(tmp, target);
+}
+
+export interface ProfitEvent {
+  collection: string;
+  kind: "mint" | "sale";
+  /** Unix seconds. */
+  at: number;
+  /** Signed wei: negative for a mint (gas + price), positive for a sale. */
+  wei: string;
+  tokens: number;
+  wallet?: string;
+}
+
+export interface ProfitCollection {
+  collection: string;
+  heldTokens?: number;
+  lastAt?: number;
+  [k: string]: unknown;
+}
+
+/**
+ * The profit report as if it began at `sinceSec`.
+ *
+ * A collection stays only if it was minted at or after the line. Its spend is
+ * what those mints cost (plus the gas burned by reverted attempts the ledger
+ * saw after the line), its revenue the sales after the line. What it still
+ * holds counts in full when every mint of it came after the line; otherwise
+ * only as many as were minted after it and not yet sold — old inventory does
+ * not get to sneak back in as held value.
+ */
+export interface CutCollection extends ProfitCollection {
+  cost?: { gasWei: string; priceWei: string; tokens: number; wallets: number };
+  revenueWei?: string;
+  netWei?: string;
+  soldTokens?: number;
+  runs?: number;
+}
+
+export function cutProfitSince<B extends { collections?: unknown; events?: unknown }>(
+  body: B,
+  sinceSec: number | undefined,
+  ledger: { collection: string; failedGasWei: bigint; runs: number; lastAt: number }[] = [],
+): Omit<B, "collections" | "events"> & {
+  collections: CutCollection[];
+  events: ProfitEvent[];
+  profitSince: number | null;
+} {
+  if (!sinceSec) {
+    return {
+      ...body,
+      collections: (Array.isArray(body.collections) ? body.collections : []) as CutCollection[],
+      events: (Array.isArray(body.events) ? body.events : []) as ProfitEvent[],
+      profitSince: null,
+    };
+  }
+  const all = (Array.isArray(body.events) ? body.events : []) as ProfitEvent[];
+  const events = all.filter((e) => e.at >= sinceSec);
+  const firstMint = new Map<string, number>();
+  for (const e of all) {
+    if (e.kind !== "mint") continue;
+    const k = e.collection.toLowerCase();
+    firstMint.set(k, Math.min(firstMint.get(k) ?? Infinity, e.at));
+  }
+  const per = new Map<string, { spent: bigint; minted: number; wallets: Set<string>; revenue: bigint; sold: number }>();
+  for (const e of events) {
+    const k = e.collection.toLowerCase();
+    const p = per.get(k) ?? { spent: 0n, minted: 0, wallets: new Set<string>(), revenue: 0n, sold: 0 };
+    const wei = BigInt(e.wei || "0");
+    if (e.kind === "mint") {
+      p.spent += -wei;
+      p.minted += e.tokens || 0;
+      if (e.wallet) p.wallets.add(e.wallet.toLowerCase());
+    } else {
+      p.revenue += wei;
+      p.sold += 1;
+    }
+    per.set(k, p);
+  }
+  const led = new Map(ledger.map((l) => [l.collection.toLowerCase(), l]));
+  const collections = ((Array.isArray(body.collections) ? body.collections : []) as ProfitCollection[])
+    .filter((c) => (per.get(c.collection.toLowerCase())?.minted ?? 0) > 0 || led.has(c.collection.toLowerCase()))
+    .map((c) => {
+      const k = c.collection.toLowerCase();
+      const p = per.get(k) ?? { spent: 0n, minted: 0, wallets: new Set<string>(), revenue: 0n, sold: 0 };
+      const l = led.get(k);
+      const spent = p.spent + (l?.failedGasWei ?? 0n);
+      const heldNow = c.heldTokens ?? 0;
+      const allAfter = (firstMint.get(k) ?? Infinity) >= sinceSec;
+      const held = allAfter ? heldNow : Math.min(heldNow, Math.max(0, p.minted - p.sold));
+      return {
+        ...c,
+        // Mint events carry gas and price together, so the cut keeps them as
+        // one figure; the dashboard only ever shows their sum.
+        cost: { gasWei: spent.toString(), priceWei: "0", tokens: p.minted, wallets: p.wallets.size },
+        revenueWei: p.revenue.toString(),
+        netWei: (p.revenue - spent).toString(),
+        soldTokens: p.sold,
+        heldTokens: held,
+        runs: l?.runs ?? 0,
+        lastAt: l && l.lastAt >= sinceSec * 1000 ? l.lastAt : undefined,
+      };
+    });
+  return { ...body, collections, events, profitSince: sinceSec };
 }

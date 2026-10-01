@@ -64,16 +64,6 @@
       <!-- KPIs -->
       <section class="kpis" aria-label="Итоги">
         <article class="kpi">
-          <h3>Общий баланс</h3>
-          <div class="kpi-val" id="k-total">—</div>
-          <div class="kpi-sub" id="k-total-sub">&nbsp;</div>
-        </article>
-        <article class="kpi">
-          <h3>Фандинг-кошелёк</h3>
-          <div class="kpi-val" id="k-main">—</div>
-          <div class="kpi-sub" id="k-main-sub">&nbsp;</div>
-        </article>
-        <article class="kpi">
           <h3>Снайп-кошельки</h3>
           <div class="kpi-val" id="k-wallets">—</div>
           <div class="kpi-sub" id="k-wallets-sub">&nbsp;</div>
@@ -117,9 +107,9 @@
         <article class="panel chart-panel">
           <header class="panel-head">
             <h2>Баланс во времени</h2>
-            <span class="hint" id="bal-hint">основные + снайп-кошельки, снимок раз в 30 мин</span>
+            <span class="hint" id="bal-hint">снайп-кошельки, снимок раз в 30 мин</span>
           </header>
-          <div class="chart" id="chart-bal" role="img" aria-label="Общий баланс во времени"></div>
+          <div class="chart" id="chart-bal" role="img" aria-label="Баланс снайп-кошельков во времени"></div>
         </article>
       </section>
 
@@ -186,11 +176,9 @@
       <!-- Wallets -->
       <section class="panel">
         <header class="panel-head">
-          <h2>Кошельки — фандинг и снайп</h2>
+          <h2>Снайп-кошельки</h2>
           <span class="count" id="wallet-count"></span>
         </header>
-        <div class="main-wallets" id="main-wallets"></div>
-        <h3 class="sub-h">Снайп-кошельки (метки как на сервере)</h3>
         <div class="wallet-tools">
           <input id="wallet-filter" type="search" placeholder="Фильтр по адресу или метке" aria-label="Фильтр кошельков" />
           <label class="check"><input id="wallet-funded" type="checkbox" /> только с балансом</label>

@@ -109,7 +109,7 @@ h2 { margin: 0; font-size: 13px; font-family: var(--mono); font-weight: 700; let
 .empty { color: var(--faint); font-size: 13px; margin: 8px 0 0; }
 
 /* KPIs */
-.kpis { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px; }
+.kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
 .kpi { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; min-width: 0; }
 .kpi h3 { margin: 0 0 8px; font-size: 11px; font-family: var(--mono); font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--dim); }
 .kpi-val { font-size: 22px; font-weight: 700; color: var(--bright); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

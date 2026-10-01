@@ -254,15 +254,13 @@ function renderSummary() {
   if (!s) return;
   $("eth-price").textContent = state.ethUsd ? `ETH $${Math.round(state.ethUsd).toLocaleString("en-US")}` : "ETH —";
 
-  const main = (s.mainWallets || []).map((w) => ({ ...w, eth: ethNum(w.balance) }));
+  // Sniping wallets only: the funding wallet is the owner's own money and the
+  // server no longer sends it.
   const wallets = (s.wallets || []).map((w) => ({ ...w, eth: ethNum(w.balance) }));
-  const mainSum = main.reduce((n, w) => n + (w.eth ?? 0), 0);
   const walletSum = wallets.reduce((n, w) => n + (w.eth ?? 0), 0);
   const funded = wallets.filter((w) => (w.eth ?? 0) > 0).length;
 
-  setKpi("k-total", fmtEth(mainSum + walletSum), fmtUsd(usdOf(mainSum + walletSum)));
-  setKpi("k-main", main.length ? fmtEth(mainSum) : "—", main.length ? `${fmtUsd(usdOf(mainSum))} · ${main.length} шт` : "задай SNIPE_DASHBOARD_WALLETS на сервере");
-  setKpi("k-wallets", fmtEth(walletSum), `${wallets.length} кошельков · ${funded} с балансом`);
+  setKpi("k-wallets", fmtEth(walletSum), `${fmtUsd(usdOf(walletSum))} · ${wallets.length} кошельков · ${funded} с балансом`);
 
   const runs = s.runs || [];
   const tried = runs.reduce((n, r) => n + r.tried, 0);
@@ -277,9 +275,8 @@ function renderSummary() {
   renderQueue(s);
   renderFeed(s);
   renderWatch(s);
-  renderMainWallets(main);
   renderWallets(wallets);
-  renderBalanceChart(s, mainSum + walletSum);
+  renderBalanceChart(s, walletSum);
   $("foot-updated").textContent = `обновлено ${fmtDate(Date.now())}`;
   tick();
 }
@@ -449,20 +446,6 @@ function renderWatch(s) {
     .join("");
 }
 
-function renderMainWallets(main) {
-  $("main-wallets").innerHTML = main.length
-    ? main
-        .map(
-          (w) => `<div class="mw">
-            <div class="mw-label">${esc(w.label)}</div>
-            <div class="mw-bal">${fmtEth(w.eth)}</div>
-            <div class="mw-addr">${addrLink(w.address)} <span class="muted">${fmtUsd(usdOf(w.eth))}</span></div>
-          </div>`,
-        )
-        .join("")
-    : `<p class="empty">Основные кошельки не заданы (SNIPE_DASHBOARD_WALLETS на сервере).</p>`;
-}
-
 function renderWallets(wallets) {
   const q = $("wallet-filter").value.trim().toLowerCase();
   const onlyFunded = $("wallet-funded").checked;
@@ -566,7 +549,7 @@ function renderProfit() {
   setKpi(
     "k-pnl",
     `${realized >= 0 ? "▲" : "▼"} ${fmtEth(realized, { signed: true })}`,
-    `${fmtUsd(usdOf(realized), { signed: true })}${state.profitBuilding ? " · обновляется…" : ""}`,
+    `${fmtUsd(usdOf(realized), { signed: true })}${p.profitSince ? ` · с ${fmtDate(p.profitSince * 1000)}` : ""}${state.profitBuilding ? " · обновляется…" : ""}`,
     realized > 0 ? "delta-up" : realized < 0 ? "delta-down" : "",
   );
   setKpi(
@@ -577,7 +560,9 @@ function renderProfit() {
       : "сейчас ничего не держим",
   );
 
-  $("coll-hint").textContent = `${cols.length} коллекций${p.cachedAt ? ` · отчёт от ${fmtDate(p.cachedAt)}` : ""}${state.profitBuilding ? " · обновляется…" : ""}`;
+  const sinceTxt = p.profitSince ? `считаем с ${fmtDateTime(p.profitSince * 1000)}` : "";
+  $("pnl-hint").textContent = `реализованный: минты − газ + продажи${sinceTxt ? ` · ${sinceTxt}` : ""}`;
+  $("coll-hint").textContent = `${cols.length} коллекций${sinceTxt ? ` · ${sinceTxt}` : ""}${p.cachedAt ? ` · отчёт от ${fmtDate(p.cachedAt)}` : ""}${state.profitBuilding ? " · обновляется…" : ""}`;
   $("coll-empty").hidden = cols.length > 0;
   $("coll-empty").textContent = "Коллекций пока нет.";
   const signed = (n) =>
@@ -723,6 +708,8 @@ function renderPnlChart(p) {
     cum += weiToEth(e.wei);
     return { x: e.at * 1000, y: cum, note: e.kind === "sale" ? "продажа" : "минт" };
   });
+  // A fresh start begins the line at zero on the day it was drawn.
+  if (p.profitSince) points.unshift({ x: p.profitSince * 1000, y: 0, note: "старт отсчёта" });
   if (points.length) points.push({ x: Date.now(), y: cum, note: "сейчас" });
   lineChart($("chart-pnl"), points, {
     color: "var(--series-pnl)",
@@ -733,7 +720,7 @@ function renderPnlChart(p) {
 }
 
 function renderBalanceChart(s, currentTotal) {
-  const hist = (s.balanceHistory || []).map((p) => ({ x: p.at, y: weiToEth(p.walletsWei) + weiToEth(p.mainWei) }));
+  const hist = (s.balanceHistory || []).map((p) => ({ x: p.at, y: weiToEth(p.walletsWei) }));
   const last = hist[hist.length - 1];
   if (!last || Date.now() - last.x > 5 * 60_000) hist.push({ x: Date.now(), y: currentTotal, note: "сейчас" });
   lineChart($("chart-bal"), hist.length > 1 ? hist : [], {

@@ -68,10 +68,13 @@ import { costByCollection, loadMints, recordMint } from "./ledger";
 import {
   DASHBOARD_TOKEN_MIN,
   appendBalancePoint,
+  cutProfitSince,
   dashboardTokenOk,
   downsample,
   loadBalanceHistory,
+  loadDashboardSettings,
   parseDashboardWallets,
+  saveDashboardSettings,
   summariseRuns,
 } from "./dashboard";
 import {
@@ -2968,9 +2971,11 @@ async function dashboardSummary(): Promise<Record<string, unknown>> {
   const info = getChainInfo(cfg.chainId);
   const mine = jobs.filter((j) => j.cfgPath === CONFIG_PATH);
   const watch = sortByDate(loadUpcoming(CONFIG_PATH));
-  const [view, main, ethUsd, starts] = await Promise.all([
+  // The funding wallet's balance is the owner's own money, not the team's
+  // result, so the dashboard is not told it at all.
+  const since = loadDashboardSettings(CONFIG_PATH).profitSince;
+  const [view, ethUsd, starts] = await Promise.all([
     walletsView(CONFIG_PATH),
-    dashboardMainWallets(),
     usdPerEth(),
     publicStarts([
       ...watch.map((m) => m.contract ?? ""),
@@ -3006,6 +3011,7 @@ async function dashboardSummary(): Promise<Record<string, unknown>> {
   // still in memory are the only record of them.
   const failures = mine
     .filter((j) => j.status === "error" || j.status === "aborted")
+    .filter((j) => !since || j.addedAt >= since * 1000)
     .map((j) => ({
       id: j.id,
       name: j.drop?.name ?? j.label,
@@ -3021,18 +3027,23 @@ async function dashboardSummary(): Promise<Record<string, unknown>> {
     openSeaSlug: info?.openSeaSlug ?? null,
     now: Math.floor(Date.now() / 1000),
     ethUsd,
-    mainWallets: main,
+    mainWallets: [],
     wallets: view.wallets,
     queue,
     failures,
-    runs: summariseRuns(loadMints(CONFIG_PATH), 100),
+    runs: summariseRuns(
+      loadMints(CONFIG_PATH).filter((r) => !since || r.at >= since * 1000),
+      100,
+    ),
+    profitSince: since ?? null,
     // `chainStart` is the public stage's start when the contract has one; the
     // page shows it over the saved `at`, which it keeps for drops with no stage.
     watchlist: watch.map((m) => ({
       ...m,
       chainStart: m.contract ? (starts.get(m.contract.toLowerCase()) ?? null) : null,
     })),
-    balanceHistory: downsample(loadBalanceHistory(CONFIG_PATH), 400),
+    // Sniping wallets only: the funding wallet's share is left out here too.
+    balanceHistory: downsample(loadBalanceHistory(CONFIG_PATH), 400).map((p) => ({ ...p, mainWei: "0" })),
   };
 }
 
@@ -3067,6 +3078,18 @@ async function dashboardProfit(): Promise<{ status: 200 | 202; body: Record<stri
       body = { building: true, ...(now ? { ...now.body, cachedAt: now.at, stale: true } : {}) };
     }
   }
+  // Profit from the line the owner drew, if any: earlier mints, their sales
+  // and their gas drop out of what the dashboard is shown.
+  const since = loadDashboardSettings(CONFIG_PATH).profitSince;
+  const ledger = since
+    ? [...costByCollection(loadMints(CONFIG_PATH).filter((r) => r.at >= since * 1000)).values()].map((l) => ({
+        collection: l.collection,
+        failedGasWei: l.failedGasWei,
+        runs: l.runs,
+        lastAt: l.lastAt,
+      }))
+    : [];
+  body = cutProfitSince(body, since, ledger);
   const collections = Array.isArray(body.collections)
     ? (body.collections as { collection: string; heldTokens?: number }[])
     : [];
@@ -3776,6 +3799,29 @@ const server = createServer(async (req, res) => {
       return;
     }
     json(res, 200, { articleId, checked: setFeedChecked(a.cfgPath, articleId, itemId, checked) });
+    return;
+  }
+
+  // Admin: where the team dashboard starts counting profit. `profitSince`
+  // takes unix seconds, "now", or null to count everything again.
+  if (url.pathname === "/api/admin/dashboard-settings" && (req.method === "GET" || req.method === "POST")) {
+    if (!isAdminReq(req)) {
+      json(res, 403, { error: "admins only" });
+      return;
+    }
+    if (req.method === "POST") {
+      const body = await readBody(req);
+      const v = body.profitSince;
+      const at =
+        v === "now" ? Math.floor(Date.now() / 1000) : typeof v === "number" && v > 0 ? Math.floor(v) : undefined;
+      if (v !== null && v !== undefined && at === undefined) {
+        json(res, 400, { error: 'profitSince must be unix seconds, "now", or null' });
+        return;
+      }
+      saveDashboardSettings(CONFIG_PATH, at ? { profitSince: at } : {});
+      log(`dashboard: profit counted ${at ? `from ${new Date(at * 1000).toISOString()}` : "from the beginning"}`);
+    }
+    json(res, 200, loadDashboardSettings(CONFIG_PATH));
     return;
   }
 

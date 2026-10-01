@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { formatEther } from "viem";
 import { useRunnerApi } from "../lib/runnerClient";
+import DashboardSettings from "./DashboardSettings";
 import { useActiveChain } from "../signer";
 import { fetchEthBalance, fetchTopHolders, type Holder } from "../lib/discoverHolders";
 import AdminFeedEditor from "./AdminFeedEditor";
@@ -523,6 +524,7 @@ export default function AdminTab() {
         </div>
       </div>
     </div>
+    <DashboardSettings />
     <AdminFeedEditor />
     </>
   );
